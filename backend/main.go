@@ -1,6 +1,7 @@
 package main
 
 import (
+	"llm-knowledge/api"
 	"llm-knowledge/config"
 	"llm-knowledge/db"
 	"llm-knowledge/fs"
@@ -32,6 +33,10 @@ func main() {
 	e.GET("/api/health", func(c echo.Context) error {
 		return c.JSON(200, map[string]string{"status": "ok"})
 	})
+
+	// Raw file storage API
+	rawH := &api.RawHandler{DataDir: cfg.DataDir}
+	e.POST("/api/raw/pdf", rawH.UploadPDF)
 
 	e.Logger.Fatal(e.Start(":" + cfg.Port))
 }
