@@ -1,6 +1,9 @@
 package config
 
-import "os"
+import (
+	"os"
+	"path/filepath"
+)
 
 type Config struct {
 	DataDir   string // ~/.llm-knowledge
@@ -9,9 +12,13 @@ type Config struct {
 }
 
 func Load() *Config {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// Fall back to current directory if home directory cannot be determined
+		home = "."
+	}
 	return &Config{
-		DataDir:   home + "/.llm-knowledge",
+		DataDir:   filepath.Join(home, ".llm-knowledge"),
 		Port:      "3456",
 		ClaudeBin: "claude",
 	}
