@@ -37,7 +37,8 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 	defer src.Close()
 
 	// Create paper directory name from filename (without .pdf extension)
-	name := strings.TrimSuffix(file.Filename, ".pdf")
+	// Use filepath.Base to prevent path traversal attacks
+	name := strings.TrimSuffix(filepath.Base(file.Filename), ".pdf")
 	dir := filepath.Join(h.DataDir, "raw", "papers", name)
 
 	// Create directory structure: raw/papers/{name}/ and raw/papers/{name}/assets/
@@ -51,12 +52,11 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create PDF file"})
 	}
+	defer dst.Close()
 
 	if _, err := io.Copy(dst, src); err != nil {
-		dst.Close()
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to save PDF file"})
 	}
-	dst.Close()
 
 	// Extract text from the PDF
 	extracted, err := ingest.ExtractPDFText(pdfPath)

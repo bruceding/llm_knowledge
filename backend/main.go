@@ -36,7 +36,7 @@ func main() {
 
 	// Raw file storage API
 	rawH := &api.RawHandler{DataDir: cfg.DataDir}
-	e.POST("/api/raw/pdf", rawH.UploadPDF)
+	e.POST("/api/raw/pdf", rawH.UploadPDF, middleware.BodyLimit("50M"))
 
 	e.Logger.Fatal(e.Start(":" + cfg.Port))
 }
