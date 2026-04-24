@@ -2,6 +2,8 @@ package main
 
 import (
 	"llm-knowledge/config"
+	"llm-knowledge/fs"
+	"log"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -9,6 +11,11 @@ import (
 
 func main() {
 	cfg := config.Load()
+
+	// Initialize directory structure
+	if err := fs.InitDirs(cfg.DataDir); err != nil {
+		log.Fatalf("Failed to initialize directories: %v", err)
+	}
 
 	e := echo.New()
 	e.Use(middleware.Logger())
