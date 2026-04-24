@@ -26,7 +26,11 @@ func ExtractPDFText(filePath string) (*ExtractedPDF, error) {
 		if p.V.IsNull() {
 			continue
 		}
-		text, _ := p.GetPlainText(nil)
+		text, err := p.GetPlainText(nil)
+		if err != nil {
+			// Skip pages that fail to extract text
+			continue
+		}
 		pages = append(pages, text)
 	}
 
