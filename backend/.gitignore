@@ -1,0 +1,13 @@
+# Compiled binary
+server
+backend
+
+# Go workspace file
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
