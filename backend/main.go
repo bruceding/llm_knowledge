@@ -2,8 +2,10 @@ package main
 
 import (
 	"llm-knowledge/config"
+	"llm-knowledge/db"
 	"llm-knowledge/fs"
 	"log"
+	"path/filepath"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -15,6 +17,12 @@ func main() {
 	// Initialize directory structure
 	if err := fs.InitDirs(cfg.DataDir); err != nil {
 		log.Fatalf("Failed to initialize directories: %v", err)
+	}
+
+	// Initialize database
+	dbPath := filepath.Join(cfg.DataDir, "data", "knowledge.db")
+	if err := db.Init(dbPath); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
 	e := echo.New()
