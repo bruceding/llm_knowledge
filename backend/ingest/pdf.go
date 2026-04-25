@@ -1,9 +1,9 @@
 package ingest
 
 import (
+	"bytes"
+	"os/exec"
 	"strings"
-
-	"github.com/ledongthuc/pdf"
 )
 
 // ExtractedPDF holds the result of PDF text extraction
@@ -12,31 +12,39 @@ type ExtractedPDF struct {
 	Pages    []string
 }
 
-// ExtractPDFText extracts text content from a PDF file
+// ExtractPDFText extracts text content from a PDF file using pdftotext
 func ExtractPDFText(filePath string) (*ExtractedPDF, error) {
-	f, r, err := pdf.Open(filePath)
+	// Use pdftotext with -layout flag to preserve formatting
+	cmd := exec.Command("pdftotext", "-layout", filePath, "-")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 
-	var pages []string
-	for i := 1; i <= r.NumPage(); i++ {
-		p := r.Page(i)
-		if p.V.IsNull() {
-			continue
+	fullText := stdout.String()
+	if fullText == "" {
+		return nil, nil
+	}
+
+	// Split by page breaks (pdftotext uses \f for page breaks)
+	pages := strings.Split(fullText, "\f")
+
+	// Clean each page
+	var cleanedPages []string
+	for _, page := range pages {
+		cleaned := CleanPDFText(page)
+		if cleaned != "" {
+			cleanedPages = append(cleanedPages, cleaned)
 		}
-		text, err := p.GetPlainText(nil)
-		if err != nil {
-			// Skip pages that fail to extract text
-			continue
-		}
-		pages = append(pages, text)
 	}
 
 	return &ExtractedPDF{
-		FullText: strings.Join(pages, "\n\n"),
-		Pages:    pages,
+		FullText: strings.Join(cleanedPages, "\n\n--- Page Break ---\n\n"),
+		Pages:    cleanedPages,
 	}, nil
 }
 

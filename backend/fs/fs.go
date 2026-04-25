@@ -72,6 +72,7 @@ func InitDirs(dataDir string) error {
 		"wiki/topics",
 		"wiki/sources",
 		"data",
+		"logs",
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(filepath.Join(dataDir, d), 0755); err != nil {

@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { fetchDocument, updateDocument, publishDocument, deleteDocument, translateDocument } from '../api'
 import type { Document, SSEEvent } from '../types'
+import PDFViewer from './PDFViewer'
 
 export default function DocDetail() {
   const { id } = useParams<{ id: string }>()
@@ -26,7 +27,12 @@ export default function DocDetail() {
   const [translationLang, setTranslationLang] = useState<string>('')
 
   // View mode
-  const [viewMode, setViewMode] = useState<'raw' | 'wiki' | 'translation'>('raw')
+  const [viewMode, setViewMode] = useState<'raw' | 'wiki' | 'translation' | 'pdf' | 'html'>('raw')
+
+  // HTML content
+  const [htmlAvailable, setHtmlAvailable] = useState(false)
+  const [htmlPages, setHtmlPages] = useState(0)
+  const [currentHtmlPage, setCurrentHtmlPage] = useState(1)
 
   // Load document and content
   useEffect(() => {
@@ -49,6 +55,25 @@ export default function DocDetail() {
         const rawRes = await fetch(`/data/${doc.rawPath}/paper.md`)
         if (rawRes.ok) {
           setRawContent(await rawRes.text())
+        }
+      }
+
+      // Check if HTML exists
+      if (doc.rawPath) {
+        const htmlRes = await fetch(`/data/${doc.rawPath}/html/page-1.html`)
+        if (htmlRes.ok) {
+          setHtmlAvailable(true)
+          // Count HTML pages
+          const checkPages = async () => {
+            let pages = 0
+            for (let i = 1; i <= 100; i++) {
+              const res = await fetch(`/data/${doc.rawPath}/html/page-${i}.html`)
+              if (res.ok) pages++
+              else break
+            }
+            setHtmlPages(pages)
+          }
+          checkPages()
         }
       }
 
@@ -101,6 +126,77 @@ export default function DocDetail() {
     }
   }
 
+  const handleReExtract = async () => {
+    if (!document) return
+    if (!confirm('Re-extract text from the original PDF? This will overwrite the current raw text.')) return
+    try {
+      const res = await fetch(`/api/documents/${document.id}/re-extract`, { method: 'POST' })
+      if (!res.ok) {
+        const body = await res.json()
+        throw new Error(body.error || 'Re-extract failed')
+      }
+      const data = await res.json()
+      setError(null)
+      // Reload raw content
+      if (document.rawPath) {
+        const rawRes = await fetch(`/data/${document.rawPath}/paper.md`)
+        if (rawRes.ok) {
+          setRawContent(await rawRes.text())
+        }
+      }
+      setError(`${data.message} (${data.pages} pages)`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to re-extract')
+    }
+  }
+
+  const handleLLMExtract = async () => {
+    if (!document) return
+    const startPage = prompt('Start page (default: 1)', '1') || '1'
+    const endPage = prompt('End page (default: all, or enter number like 5)', 'all') || 'all'
+    if (!confirm(`Extract pages ${startPage}-${endPage} using Claude AI? This will overwrite the current raw text.`)) return
+    try {
+      setError('LLM extraction in progress...')
+      const res = await fetch(`/api/documents/${document.id}/llm-extract?start_page=${startPage}&end_page=${endPage}`, { method: 'POST' })
+      if (!res.ok) {
+        const body = await res.json()
+        throw new Error(body.error || 'LLM extract failed')
+      }
+      const data = await res.json()
+      // Reload raw content
+      if (document.rawPath) {
+        const rawRes = await fetch(`/data/${document.rawPath}/paper.md`)
+        if (rawRes.ok) {
+          setRawContent(await rawRes.text())
+        }
+      }
+      setError(`${data.message} (${data.pages} pages extracted)`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to LLM extract')
+    }
+  }
+
+  const handleHTMLExtract = async () => {
+    if (!document) return
+    if (!confirm('Convert PDF to HTML preserving original layout?')) return
+    try {
+      setError('HTML conversion in progress...')
+      const res = await fetch(`/api/documents/${document.id}/html-extract`, { method: 'POST' })
+      if (!res.ok) {
+        const body = await res.json()
+        throw new Error(body.error || 'HTML extract failed')
+      }
+      const data = await res.json()
+      setHtmlAvailable(true)
+      setHtmlPages(data.html_pages)
+      setCurrentHtmlPage(1)
+      setViewMode('html')
+      setError(`${data.message} (${data.html_pages} pages)`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to convert to HTML')
+    }
+  }
+
   const handleAddTag = () => {
     const tag = tagInput.trim()
     if (tag && !editTags.includes(tag)) {
@@ -145,10 +241,15 @@ export default function DocDetail() {
         return wikiContent
       case 'translation':
         return translationContent
+      case 'pdf':
+        return null // PDF is rendered in iframe
       default:
         return rawContent
     }
   }
+
+  // Check if PDF file exists
+  const pdfUrl = document?.rawPath ? `/data/${document.rawPath}/paper.pdf` : null
 
   if (loading) {
     return (
@@ -187,12 +288,30 @@ export default function DocDetail() {
         <div className="p-4 border-b border-gray-200 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button
+              onClick={() => setViewMode('pdf')}
+              className={`px-3 py-1.5 rounded-lg text-sm ${
+                viewMode === 'pdf' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              PDF Preview
+            </button>
+            {htmlAvailable && (
+              <button
+                onClick={() => setViewMode('html')}
+                className={`px-3 py-1.5 rounded-lg text-sm ${
+                  viewMode === 'html' ? 'bg-green-100 text-green-700' : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                HTML View
+              </button>
+            )}
+            <button
               onClick={() => setViewMode('raw')}
               className={`px-3 py-1.5 rounded-lg text-sm ${
                 viewMode === 'raw' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
               }`}
             >
-              Raw Content
+              Raw Text
             </button>
             {wikiContent && (
               <button
@@ -241,34 +360,75 @@ export default function DocDetail() {
 
         {/* Markdown content area */}
         <div className="flex-1 overflow-auto p-6">
-          <div className="max-w-4xl mx-auto prose prose-slate">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                // Custom link handling for wiki links
-                a: ({ href, children }) => {
-                  if (href?.startsWith('wiki://')) {
-                    const wikiPath = href.replace('wiki://', '')
-                    return (
-                      <a
-                        href={`/wiki/${wikiPath}`}
-                        className="text-blue-600 hover:underline"
-                        onClick={(e) => {
-                          e.preventDefault()
-                          navigate(`/wiki/${wikiPath}`)
-                        }}
-                      >
-                        {children}
-                      </a>
-                    )
-                  }
-                  return <a href={href} className="text-blue-600 hover:underline">{children}</a>
-                },
-              }}
-            >
-              {getDisplayContent() || 'No content available'}
-            </ReactMarkdown>
-          </div>
+          {viewMode === 'pdf' && pdfUrl ? (
+            <div className="h-full">
+              <PDFViewer url={pdfUrl} />
+            </div>
+          ) : viewMode === 'html' && document?.rawPath ? (
+            <div className="h-full flex flex-col">
+              <div className="flex items-center gap-2 mb-2 px-4">
+                <span className="text-sm text-gray-600">Page {currentHtmlPage} of {htmlPages}</span>
+                <button
+                  onClick={() => setCurrentHtmlPage(Math.max(1, currentHtmlPage - 1))}
+                  disabled={currentHtmlPage <= 1}
+                  className="px-2 py-1 text-sm bg-gray-100 rounded disabled:opacity-50"
+                >
+                  Previous
+                </button>
+                <button
+                  onClick={() => setCurrentHtmlPage(Math.min(htmlPages, currentHtmlPage + 1))}
+                  disabled={currentHtmlPage >= htmlPages}
+                  className="px-2 py-1 text-sm bg-gray-100 rounded disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+              <iframe
+                src={`/data/${document.rawPath}/html/page-${currentHtmlPage}.html`}
+                className="flex-1 w-full border-0 bg-white"
+                title="HTML View"
+              />
+            </div>
+          ) : (
+            <div className="max-w-4xl mx-auto prose prose-slate">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  // Custom link handling for wiki links
+                  a: ({ href, children }) => {
+                    if (href?.startsWith('wiki://')) {
+                      const wikiPath = href.replace('wiki://', '')
+                      return (
+                        <a
+                          href={`/wiki/${wikiPath}`}
+                          className="text-blue-600 hover:underline"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            navigate(`/wiki/${wikiPath}`)
+                          }}
+                        >
+                          {children}
+                        </a>
+                      )
+                    }
+                    return <a href={href} className="text-blue-600 hover:underline">{children}</a>
+                  },
+                  // Handle image paths - convert relative to absolute
+                  img: ({ src, alt }) => {
+                    if (src && document?.rawPath) {
+                      // Convert relative path to absolute /data/ path
+                      if (!src.startsWith('/') && !src.startsWith('http')) {
+                        src = `/data/${document.rawPath}/${src}`
+                      }
+                    }
+                    return <img src={src} alt={alt} className="max-w-full h-auto rounded-lg shadow-sm" />
+                  },
+                }}
+              >
+                {getDisplayContent() || 'No content available'}
+              </ReactMarkdown>
+            </div>
+          )}
         </div>
       </div>
 
@@ -403,6 +563,30 @@ export default function DocDetail() {
               className="w-full px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
             >
               Archive
+            </button>
+          )}
+          {document.sourceType === 'pdf' && (
+            <button
+              onClick={handleReExtract}
+              className="w-full px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+            >
+              Re-extract Text (pdftotext)
+            </button>
+          )}
+          {document.sourceType === 'pdf' && (
+            <button
+              onClick={handleLLMExtract}
+              className="w-full px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors"
+            >
+              LLM Extract (Claude AI)
+            </button>
+          )}
+          {document.sourceType === 'pdf' && (
+            <button
+              onClick={handleHTMLExtract}
+              className="w-full px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
+            >
+              HTML View (Preserve Layout)
             </button>
           )}
           <button

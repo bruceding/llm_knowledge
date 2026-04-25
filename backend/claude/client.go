@@ -50,7 +50,15 @@ type RawEvent struct {
 // Events are sent to the provided channel as they are received.
 // The caller should close the channel after Send returns.
 func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamEvent) error {
-	cmd := exec.CommandContext(ctx, c.BinPath, "--print", "--output-format", "stream-json", "--verbose")
+	// Use --allowedTools to pre-approve file operations
+	// Use --dangerously-skip-permissions for non-interactive ingest scenarios
+	cmd := exec.CommandContext(ctx, c.BinPath,
+		"--print",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--allowedTools", "Read", "Write", "Edit", "Bash",
+		"--dangerously-skip-permissions",
+	)
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdout, err := cmd.StdoutPipe()

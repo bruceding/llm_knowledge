@@ -55,6 +55,10 @@ func (p *Pipeline) Ingest(ctx context.Context, rawPath, name string) error {
 		return err
 	}
 
+	log.Printf("[ingest] Starting ingest for: %s", name)
+	log.Printf("[ingest] Raw path: %s", rawPath)
+	log.Printf("[ingest] Wiki dir: %s", p.WikiDir)
+
 	eventCh := make(chan claude.StreamEvent)
 	go func() {
 		defer close(eventCh)
@@ -63,11 +67,26 @@ func (p *Pipeline) Ingest(ctx context.Context, rawPath, name string) error {
 		}
 	}()
 
+	var lastContent string
 	for evt := range eventCh {
-		// Log events for debugging and future SSE streaming
-		log.Printf("[ingest] %s: %s", evt.Type, truncate(evt.Content, 100))
+		// Only log non-empty content and meaningful events
+		content := strings.TrimSpace(evt.Content)
+		if content != "" && content != lastContent {
+			// Truncate for log readability
+			if len(content) > 200 {
+				content = content[:200] + "..."
+			}
+			log.Printf("[ingest] %s: %s", evt.Type, content)
+			lastContent = content
+		}
+
+		// Log errors always
+		if evt.Type == "error" && evt.Error != "" {
+			log.Printf("[ingest] ERROR: %s", evt.Error)
+		}
 	}
 
+	log.Printf("[ingest] Completed ingest for: %s", name)
 	return nil
 }
 

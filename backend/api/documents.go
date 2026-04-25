@@ -1,11 +1,15 @@
 package api
 
 import (
+	"fmt"
 	"llm-knowledge/db"
+	"llm-knowledge/ingest"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
@@ -201,6 +205,216 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 	return c.JSON(http.StatusOK, echo.Map{
 		"id":      doc.ID,
 		"message": "document deleted",
+	})
+}
+
+// ReExtract re-extracts text from a PDF document and overwrites the raw markdown file
+func (h *DocHandler) ReExtract(c echo.Context) error {
+	id := c.Param("id")
+
+	var doc db.Document
+	result := db.DB.First(&doc, id)
+	if result.Error != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
+	}
+
+	if doc.SourceType != "pdf" {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "only PDF documents can be re-extracted"})
+	}
+
+	pdfPath := filepath.Join(h.DataDir, doc.RawPath, "paper.pdf")
+	if _, err := os.Stat(pdfPath); os.IsNotExist(err) {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "PDF file not found"})
+	}
+
+	extracted, err := ingest.ExtractPDFText(pdfPath)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to extract text: " + err.Error()})
+	}
+
+	mdPath := filepath.Join(h.DataDir, doc.RawPath, "paper.md")
+	if err := os.WriteFile(mdPath, []byte(extracted.FullText), 0644); err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to write markdown file"})
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{
+		"id":      doc.ID,
+		"pages":   len(extracted.Pages),
+		"message": "PDF text re-extracted successfully",
+	})
+}
+
+// LLMExtract extracts PDF to markdown using Claude CLI with vision capabilities
+func (h *DocHandler) LLMExtract(c echo.Context) error {
+	id := c.Param("id")
+
+	var doc db.Document
+	result := db.DB.First(&doc, id)
+	if result.Error != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
+	}
+
+	if doc.SourceType != "pdf" {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "only PDF documents can be LLM-extracted"})
+	}
+
+	pdfPath := filepath.Join(h.DataDir, doc.RawPath, "paper.pdf")
+	if _, err := os.Stat(pdfPath); os.IsNotExist(err) {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "PDF file not found"})
+	}
+
+	// Get page range from query params
+	startPage := c.QueryParam("start_page")
+	endPage := c.QueryParam("end_page")
+	if startPage == "" {
+		startPage = "1"
+	}
+	if endPage == "" {
+		endPage = "all"
+	}
+
+	// Get PDF info
+	pdfInfoCmd := exec.Command("pdfinfo", pdfPath)
+	pdfInfoOutput, err := pdfInfoCmd.Output()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to get PDF info"})
+	}
+
+	// Parse total pages
+	lines := strings.Split(string(pdfInfoOutput), "\n")
+	var totalPages int
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Pages:") {
+			totalPages, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "Pages:")))
+			break
+		}
+	}
+
+	if endPage == "all" {
+		endPage = strconv.Itoa(totalPages)
+	}
+
+	start, _ := strconv.Atoi(startPage)
+	end, _ := strconv.Atoi(endPage)
+	if end > totalPages {
+		end = totalPages
+	}
+
+	// Create temp directory for images
+	tempDir := filepath.Join("/tmp", "pdf_pages")
+	os.MkdirAll(tempDir, 0755)
+
+	// Convert PDF to images
+	pdftoppmCmd := exec.Command("pdftoppm", "-png", "-r", "150", "-f", startPage, "-l", endPage, pdfPath, filepath.Join(tempDir, "page"))
+	if err := pdftoppmCmd.Run(); err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to convert PDF to images"})
+	}
+
+	// Process each page with Claude CLI
+	outputDir := filepath.Join(h.DataDir, doc.RawPath)
+	os.MkdirAll(outputDir, 0755)
+	assetsDir := filepath.Join(outputDir, "assets")
+	os.MkdirAll(assetsDir, 0755)
+
+	mdPath := filepath.Join(outputDir, "paper.md")
+	mdFile, err := os.Create(mdPath)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create markdown file"})
+	}
+	defer mdFile.Close()
+
+	for i := start; i <= end; i++ {
+		// Image filename format: page-01.png, page-02.png
+		pageImg := filepath.Join(tempDir, fmt.Sprintf("page-%02d.png", i))
+
+		if _, err := os.Stat(pageImg); os.IsNotExist(err) {
+			continue
+		}
+
+		// Copy page image to assets with proper naming
+		assetImgPath := filepath.Join(assetsDir, fmt.Sprintf("img_%d.png", i))
+		input, err := os.ReadFile(pageImg)
+		if err != nil {
+			continue
+		}
+		os.WriteFile(assetImgPath, input, 0644)
+
+		// Write page header
+		mdFile.WriteString("\n---\n\n## Page " + strconv.Itoa(i) + "\n\n")
+
+		// Call Claude CLI
+		claudeCmd := exec.Command("claude", "--model", "sonnet", "--allowed-tools", "Read", "-p",
+			"读取图片 "+pageImg+"，将其转换为 Markdown 格式。保留标题层级、段落结构、表格。如果有图片，用 ![描述](assets/img_"+strconv.Itoa(i)+".png) 标记。如果有公式，用 LaTeX 格式。直接输出内容，不要解释。")
+
+		claudeCmd.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
+		output, err := claudeCmd.Output()
+		if err != nil {
+			mdFile.WriteString("[Error processing page " + strconv.Itoa(i) + ": " + err.Error() + "]\n")
+			continue
+		}
+
+		mdFile.WriteString(string(output))
+		mdFile.WriteString("\n")
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{
+		"id":           doc.ID,
+		"total_pages":  totalPages,
+		"pages":        end - start + 1,
+		"message":      "PDF extracted with LLM successfully",
+		"output_path":  mdPath,
+	})
+}
+
+// HTMLExtract converts PDF to HTML using pdftohtml, preserving original layout
+func (h *DocHandler) HTMLExtract(c echo.Context) error {
+	id := c.Param("id")
+
+	var doc db.Document
+	result := db.DB.First(&doc, id)
+	if result.Error != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
+	}
+
+	if doc.SourceType != "pdf" {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "only PDF documents can be converted to HTML"})
+	}
+
+	pdfPath := filepath.Join(h.DataDir, doc.RawPath, "paper.pdf")
+	if _, err := os.Stat(pdfPath); os.IsNotExist(err) {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "PDF file not found"})
+	}
+
+	// Create HTML output directory
+	htmlDir := filepath.Join(h.DataDir, doc.RawPath, "html")
+	os.RemoveAll(htmlDir)
+	os.MkdirAll(htmlDir, 0755)
+
+	// Execute pdftohtml
+	cmd := exec.Command("pdftohtml", "-c", pdfPath, filepath.Join(htmlDir, "page"))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{
+			"error":  "failed to convert PDF to HTML",
+			"output": string(output),
+		})
+	}
+
+	// Count generated files
+	files, _ := os.ReadDir(htmlDir)
+	htmlFiles := 0
+	for _, f := range files {
+		if strings.HasSuffix(f.Name(), ".html") {
+			htmlFiles++
+		}
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{
+		"id":          doc.ID,
+		"html_dir":    htmlDir,
+		"html_pages":  htmlFiles,
+		"first_page":  "/data/" + doc.RawPath + "/html/page-1.html",
+		"message":     "PDF converted to HTML successfully",
 	})
 }
 
