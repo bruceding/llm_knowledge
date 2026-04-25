@@ -1,0 +1,62 @@
+{
+  "sidebar": {
+    "title": "LLM 知识库",
+    "searchPlaceholder": "搜索...",
+    "navigation": "导航",
+    "inbox": "收件箱",
+    "allDocuments": "所有文档",
+    "tags": "标签",
+    "chatHistory": "对话历史",
+    "wiki": "Wiki",
+    "wikiIndex": "索引",
+    "entities": "实体",
+    "topics": "主题",
+    "sources": "来源",
+    "import": "导入",
+    "settings": "设置",
+    "connected": "已连接"
+  },
+  "inbox": {
+    "title": "收件箱",
+    "documentsPending": "个文档待审核",
+    "noDocuments": "暂无待审核文档",
+    "importHint": "导入新文档开始构建您的知识库",
+    "pendingReview": "待审核",
+    "published": "已发布",
+    "archived": "已归档",
+    "retry": "重试"
+  },
+  "import": {
+    "title": "导入",
+    "description": "上传并导入新文档到您的知识库。",
+    "uploadPdf": "上传 PDF",
+    "dragDropHint": "拖拽 PDF 文件到此处，或点击选择文件",
+    "pdfSizeLimit": "支持最大 50MB 的 PDF 文件",
+    "selectPdf": "选择 PDF",
+    "webClipping": "网页裁剪",
+    "webClipHint": "粘贴网址以裁剪网页内容并保存到知识库。",
+    "clip": "裁剪",
+    "clipping": "裁剪中...",
+    "rssFeeds": "RSS 订阅",
+    "rssHint": "订阅 RSS 源以自动导入新文章。",
+    "addFeed": "添加源",
+    "adding": "添加中...",
+    "activeFeeds": "已订阅源",
+    "viewDocument": "查看文档"
+  },
+  "settings": {
+    "title": "设置",
+    "language": "语言",
+    "languageHint": "选择界面的首选显示语言。",
+    "english": "English",
+    "chinese": "中文"
+  },
+  "common": {
+    "loading": "加载中...",
+    "error": "错误",
+    "save": "保存",
+    "cancel": "取消",
+    "delete": "删除",
+    "edit": "编辑"
+  }
+}

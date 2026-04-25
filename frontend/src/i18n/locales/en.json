@@ -1,0 +1,62 @@
+{
+  "sidebar": {
+    "title": "LLM Knowledge",
+    "searchPlaceholder": "Search...",
+    "navigation": "Navigation",
+    "inbox": "Inbox",
+    "allDocuments": "All Documents",
+    "tags": "Tags",
+    "chatHistory": "Chat History",
+    "wiki": "Wiki",
+    "wikiIndex": "Index",
+    "entities": "Entities",
+    "topics": "Topics",
+    "sources": "Sources",
+    "import": "Import",
+    "settings": "Settings",
+    "connected": "Connected"
+  },
+  "inbox": {
+    "title": "Inbox",
+    "documentsPending": "documents pending review",
+    "noDocuments": "No documents to review",
+    "importHint": "Import new documents to start building your knowledge base",
+    "pendingReview": "Pending Review",
+    "published": "Published",
+    "archived": "Archived",
+    "retry": "Retry"
+  },
+  "import": {
+    "title": "Import",
+    "description": "Upload and import new documents into your knowledge base.",
+    "uploadPdf": "Upload PDF",
+    "dragDropHint": "Drag and drop PDF files here, or click to browse",
+    "pdfSizeLimit": "Supports PDF files up to 50MB",
+    "selectPdf": "Select PDF",
+    "webClipping": "Web Clipping",
+    "webClipHint": "Paste a URL to clip web content and save it to your knowledge base.",
+    "clip": "Clip",
+    "clipping": "Clipping...",
+    "rssFeeds": "RSS Feeds",
+    "rssHint": "Subscribe to RSS feeds to automatically import new articles.",
+    "addFeed": "Add Feed",
+    "adding": "Adding...",
+    "activeFeeds": "Active Feeds",
+    "viewDocument": "View Document"
+  },
+  "settings": {
+    "title": "Settings",
+    "language": "Language",
+    "languageHint": "Select your preferred display language for the interface.",
+    "english": "English",
+    "chinese": "中文"
+  },
+  "common": {
+    "loading": "Loading...",
+    "error": "Error",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit"
+  }
+}
