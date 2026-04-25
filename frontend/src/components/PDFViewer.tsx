@@ -3,6 +3,22 @@ import * as pdfjsLib from 'pdfjs-dist'
 import * as pdfjsViewer from 'pdfjs-dist/web/pdf_viewer.mjs'
 import 'pdfjs-dist/web/pdf_viewer.css'
 
+// Hide link annotation borders
+const hideLinkStyles = `
+  .annotationLayer .linkAnnotation {
+    border: none !important;
+    outline: none !important;
+    background: transparent !important;
+  }
+  .annotationLayer .linkAnnotation > a {
+    border: none !important;
+    outline: none !important;
+  }
+`
+const styleSheet = document.createElement('style')
+styleSheet.textContent = hideLinkStyles
+document.head.appendChild(styleSheet)
+
 // Set worker path using Vite's URL handling
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.mjs',
