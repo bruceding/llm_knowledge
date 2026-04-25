@@ -100,6 +100,11 @@ func main() {
 	}
 	e.POST("/api/translate", translateH.Translate)
 
+	// Settings API
+	settingsH := &api.SettingsHandler{}
+	e.GET("/api/settings", settingsH.GetSettings)
+	e.PUT("/api/settings", settingsH.UpdateSettings)
+
 	// Serve frontend static files from embedded filesystem
 	// Create a sub filesystem from the embedded dist directory
 	distSubFS, err := fs.Sub(embedfs.DistFS, "dist")
