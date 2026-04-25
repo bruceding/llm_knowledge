@@ -1,3 +1,8 @@
 .worktrees/
 backend/fs/dist/
 llm-knowledge
+.claude/
+.playwright-mcp/
+.venv/
+.vscode/
+logs/

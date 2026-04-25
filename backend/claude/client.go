@@ -50,7 +50,15 @@ type RawEvent struct {
 // Events are sent to the provided channel as they are received.
 // The caller should close the channel after Send returns.
 func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamEvent) error {
-	cmd := exec.CommandContext(ctx, c.BinPath, "--print", "--output-format", "stream-json", "--verbose")
+	// Use --allowedTools to pre-approve file operations
+	// Use --dangerously-skip-permissions for non-interactive ingest scenarios
+	cmd := exec.CommandContext(ctx, c.BinPath,
+		"--print",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--allowedTools", "Read", "Write", "Edit", "Bash",
+		"--dangerously-skip-permissions",
+	)
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdout, err := cmd.StdoutPipe()
@@ -144,6 +152,37 @@ func (c *Client) SendSimple(ctx context.Context, prompt string) (string, error) 
 		return "", fmt.Errorf("claude command failed: %w", err)
 	}
 	return string(out), nil
+}
+
+// SendWithTools executes the Claude CLI with tools enabled (like Read for PDFs).
+// Returns the final response as a string.
+func (c *Client) SendWithTools(ctx context.Context, prompt string) (string, error) {
+	// Create a channel to collect events
+	eventCh := make(chan StreamEvent, 100)
+
+	// Run Send in a goroutine
+	go func() {
+		defer close(eventCh)
+		if err := c.Send(ctx, prompt, eventCh); err != nil {
+			eventCh <- StreamEvent{Type: "error", Error: err.Error()}
+		}
+	}()
+
+	// Collect all content from events
+	var result strings.Builder
+	for evt := range eventCh {
+		if evt.Type == "error" && evt.Error != "" {
+			return "", fmt.Errorf("claude error: %s", evt.Error)
+		}
+		if evt.Type == "result" && evt.Result != "" {
+			result.WriteString(evt.Result)
+		}
+		if evt.Content != "" && evt.Type != "result" {
+			result.WriteString(evt.Content)
+		}
+	}
+
+	return result.String(), nil
 }
 
 // SendWithOutput executes the Claude CLI and writes output to the provided writer.

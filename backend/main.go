@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"io/fs"
 	"llm-knowledge/api"
 	"llm-knowledge/config"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -24,6 +26,21 @@ func main() {
 		log.Fatalf("Failed to initialize directories: %v", err)
 	}
 
+	// Setup log file
+	logDir := cfg.LogDir
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		log.Fatalf("Failed to create log directory: %v", err)
+	}
+
+	// Open log file with daily rotation naming
+	logFileName := filepath.Join(logDir, "app-"+time.Now().Format("2006-01-02")+".log")
+	logFile, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatalf("Failed to open log file: %v", err)
+	}
+	// Write to both file and stdout
+	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
+
 	// Initialize database
 	dbPath := filepath.Join(cfg.DataDir, "data", "knowledge.db")
 	if err := db.Init(dbPath); err != nil {
@@ -31,7 +48,11 @@ func main() {
 	}
 
 	e := echo.New()
-	e.Use(middleware.Logger())
+
+	// Configure Echo logger to write to file
+	e.Use(middleware.LoggerWithConfig(middleware.LoggerConfig{
+		Output: io.MultiWriter(os.Stdout, logFile),
+	}))
 	e.Use(middleware.CORS())
 
 	e.GET("/api/health", func(c echo.Context) error {
@@ -84,7 +105,18 @@ func main() {
 	e.GET("/api/documents/:id", docH.GetDoc)
 	e.PUT("/api/documents/:id", docH.UpdateDoc)
 	e.POST("/api/documents/:id/publish", docH.Publish)
+	e.POST("/api/documents/:id/re-extract", docH.ReExtract)
+	e.POST("/api/documents/:id/llm-extract", docH.LLMExtract)
+	e.POST("/api/documents/:id/html-extract", docH.HTMLExtract)
+	e.POST("/api/documents/:id/regenerate-summary", docH.RegenerateSummary)
 	e.DELETE("/api/documents/:id", docH.DeleteDoc)
+
+	// Pages API (page image generation for bilingual view)
+	pagesH := &api.PagesHandler{
+		DataDir: cfg.DataDir,
+	}
+	e.POST("/api/documents/:id/generate-pages", pagesH.GeneratePages)
+	e.GET("/api/documents/:id/pages-status", pagesH.CheckPages)
 
 	// Query API (SSE streaming)
 	queryH := &api.QueryHandler{

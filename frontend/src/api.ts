@@ -44,6 +44,12 @@ export async function deleteDocument(id: number): Promise<{ id: number; message:
   return res.json()
 }
 
+export async function regenerateSummary(id: number): Promise<{ summary: string }> {
+  const res = await fetch(`${API_BASE}/documents/${id}/regenerate-summary`, { method: 'POST' })
+  if (!res.ok) throw new Error('Failed to regenerate summary')
+  return res.json()
+}
+
 export async function uploadPDF(file: File): Promise<{ id: number; path: string; message: string; pages: number }> {
   const formData = new FormData()
   formData.append('file', file)
@@ -160,5 +166,18 @@ export async function updateSettings(language: 'en' | 'zh'): Promise<UserSetting
     body: JSON.stringify({ language }),
   })
   if (!res.ok) throw new Error('Failed to update settings')
+  return res.json()
+}
+
+// Pages API - generate page images for bilingual view
+export async function generatePages(docId: number): Promise<{ id: number; total_pages: number; message: string }> {
+  const res = await fetch(`${API_BASE}/documents/${docId}/generate-pages`, { method: 'POST' })
+  if (!res.ok) throw new Error('Failed to generate page images')
+  return res.json()
+}
+
+export async function getPagesStatus(docId: number): Promise<{ exists: boolean; page_count: number }> {
+  const res = await fetch(`${API_BASE}/documents/${docId}/pages-status`)
+  if (!res.ok) throw new Error('Failed to get pages status')
   return res.json()
 }

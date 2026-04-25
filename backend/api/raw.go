@@ -99,10 +99,22 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 
 	// Trigger async ingest pipeline
 	if h.ClaudeBin != "" {
+		// Generate summary asynchronously
+		go func() {
+			summary, err := ingest.GenerateSummary(h.DataDir, rawRelPath, h.ClaudeBin)
+			if err != nil {
+				log.Printf("[api] summary generation failed for %s: %v", name, err)
+			} else {
+				db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
+				log.Printf("[api] summary generated for %s", name)
+			}
+		}()
+
+		// Trigger wiki ingest
 		go func() {
 			wikiDir := filepath.Join(h.DataDir, "wiki")
 			p := ingest.NewPipeline(wikiDir, h.ClaudeBin)
-			if err := p.Ingest(context.Background(), mdPath, name); err != nil {
+			if err := p.Ingest(context.Background(), mdPath, name, docID); err != nil {
 				log.Printf("[api] ingest failed for %s: %v", name, err)
 			} else {
 				// Update WikiPath after successful ingest

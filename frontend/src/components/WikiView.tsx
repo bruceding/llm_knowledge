@@ -12,7 +12,7 @@ export default function WikiView() {
   const [content, setContent] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [availablePages, setAvailablePages] = useState<string[]>([])
+  const [availablePages, setAvailablePages] = useState<{ name: string; path: string }[]>([])
 
   useEffect(() => {
     loadWikiContent()
@@ -43,16 +43,21 @@ export default function WikiView() {
 
   const loadAvailablePages = async () => {
     try {
-      // Fetch wiki index to get available pages
+      // Fetch wiki index to get available pages with their full paths
       const res = await fetch('/data/wiki/index.md')
       if (res.ok) {
         const indexContent = await res.text()
-        // Extract page names from links in index
-        const links = indexContent.match(/\[([^\]]+)\]\([^)]+\)/g) || []
+        // Extract full link paths from index
+        const links = indexContent.match(/\[([^\]]+)\]\(([^)]+)\)/g) || []
         const pages = links.map((link) => {
-          const match = link.match(/\[([^\]]+)\]/)
-          return match ? match[1] : ''
-        }).filter(Boolean)
+          const nameMatch = link.match(/\[([^\]]+)\]/)
+          const pathMatch = link.match(/\]\(([^)]+)\)/)
+          if (nameMatch && pathMatch) {
+            const path = pathMatch[1].replace('.md', '')
+            return { name: nameMatch[1], path }
+          }
+          return null
+        }).filter((p): p is { name: string; path: string } => p !== null)
         setAvailablePages(pages)
       }
     } catch {
@@ -66,11 +71,13 @@ export default function WikiView() {
     // Replace [[link]] with [link](wiki://link)
     return content.replace(/\[\[([^\]]+)\]\]/g, (_match, linkText) => {
       const linkName = linkText.trim()
-      // Try to find matching page
+      // Try to find matching page by name
       const matchingPage = availablePages.find(
-        (page) => page.toLowerCase() === linkName.toLowerCase()
-      ) || linkName
-      return `[${linkName}](wiki://${matchingPage})`
+        (page) => page.name.toLowerCase() === linkName.toLowerCase()
+      )
+      // Use the full path if found, otherwise just the link name
+      const linkPath = matchingPage ? matchingPage.path : linkName
+      return `[${linkName}](wiki://${linkPath})`
     })
   }, [content, availablePages])
 
@@ -166,15 +173,33 @@ export default function WikiView() {
                         </a>
                       )
                     }
-                    // Relative links within wiki
+                    // Relative links within wiki - resolve based on current path
                     if (href && !href.startsWith('#')) {
+                      let fullPath = href.replace('.md', '')
+
+                      // Handle relative paths with .. or .
+                      if (fullPath.startsWith('../')) {
+                        // ../entities/CSA from topics/X becomes entities/CSA
+                        fullPath = fullPath.replace('../', '')
+                      } else if (fullPath.startsWith('./')) {
+                        fullPath = fullPath.replace('./', '')
+                      } else if (!fullPath.includes('/')) {
+                        // Link without / - resolve relative to current directory
+                        const currentDir = wikiPath.includes('/')
+                          ? wikiPath.substring(0, wikiPath.lastIndexOf('/'))
+                          : wikiPath
+                        if (currentDir !== 'index' && currentDir !== '') {
+                          fullPath = currentDir + '/' + fullPath
+                        }
+                      }
+
                       return (
                         <a
-                          href={`/wiki/${href.replace('.md', '')}`}
+                          href={`/wiki/${fullPath}`}
                           className="text-blue-600 hover:underline cursor-pointer"
                           onClick={(e) => {
                             e.preventDefault()
-                            navigate(`/wiki/${href.replace('.md', '')}`)
+                            navigate(`/wiki/${fullPath}`)
                           }}
                         >
                           {children}
@@ -279,11 +304,11 @@ export default function WikiView() {
 
             {/* Dynamic pages from wiki content */}
             {availablePages.slice(0, 10).map((page) => (
-              <li key={page}>
+              <li key={page.name}>
                 <Link
-                  to={`/wiki/${page.toLowerCase()}`}
+                  to={`/wiki/${page.path}`}
                   className={`flex items-center gap-2 px-2 py-1.5 text-sm rounded-lg ${
-                    wikiPath.toLowerCase() === page.toLowerCase()
+                    wikiPath.toLowerCase() === page.path.toLowerCase()
                       ? 'bg-blue-100 text-blue-700'
                       : 'text-gray-700 hover:bg-gray-200'
                   }`}
@@ -291,7 +316,7 @@ export default function WikiView() {
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                   </svg>
-                  <span className="truncate">{page}</span>
+                  <span className="truncate">{page.name}</span>
                 </Link>
               </li>
             ))}

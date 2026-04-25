@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -34,6 +35,7 @@ var validTargetLangs = map[string]string{
 }
 
 // Translate handles SSE streaming translation of a document
+// For PDF documents, it also generates page images for bilingual view
 func (h *TranslateHandler) Translate(c echo.Context) error {
 	var req TranslateRequest
 	if err := c.Bind(&req); err != nil {
@@ -61,6 +63,36 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "document has no raw content"})
 	}
 
+	// For PDF documents, generate page images if not exist
+	if doc.SourceType == "pdf" {
+		pagesDir := filepath.Join(h.DataDir, doc.RawPath, "pages")
+		if _, err := os.Stat(pagesDir); os.IsNotExist(err) {
+			// Generate page images
+			pdfPath := filepath.Join(h.DataDir, doc.RawPath, "paper.pdf")
+			os.MkdirAll(pagesDir, 0755)
+			pdftoppmCmd := exec.Command("pdftoppm", "-png", "-r", "100", pdfPath, filepath.Join(pagesDir, "page"))
+			if err := pdftoppmCmd.Run(); err != nil {
+				log.Printf("[translate] failed to generate page images: %v", err)
+			} else {
+				// Rename files from page-01.png to page_1.png (remove leading zeros)
+				files, _ := os.ReadDir(pagesDir)
+				for _, f := range files {
+					oldName := f.Name()
+					if strings.HasPrefix(oldName, "page-") && strings.HasSuffix(oldName, ".png") {
+						pageNum := strings.TrimPrefix(oldName, "page-")
+						pageNum = strings.TrimSuffix(pageNum, ".png")
+						// Remove leading zero for single-digit pages
+						if len(pageNum) > 1 && pageNum[0] == '0' {
+							pageNum = pageNum[1:]
+						}
+						newName := fmt.Sprintf("page_%s.png", pageNum)
+						os.Rename(filepath.Join(pagesDir, oldName), filepath.Join(pagesDir, newName))
+					}
+				}
+			}
+		}
+	}
+
 	// Read source content
 	rawPath := filepath.Join(h.DataDir, doc.RawPath, "paper.md")
 	content, err := os.ReadFile(rawPath)
@@ -68,9 +100,45 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": fmt.Sprintf("failed to read source content: %v", err)})
 	}
 
-	// Build translation prompt
-	prompt := fmt.Sprintf("请将以下内容翻译为%s，保持学术性和专业性，不要添加任何额外的解释或评论：\n\n%s",
-		targetLangName, string(content))
+	// Build translation prompt with page segmentation for PDF
+	var prompt string
+	if doc.SourceType == "pdf" {
+		// PDF: preserve page structure with --- Page N --- markers
+		// First, convert --- Page Break --- to numbered pages
+		pageContent := string(content)
+		pageNum := 1
+		pageContent = strings.Replace(pageContent, "--- Page Break ---", fmt.Sprintf("\n\n--- Page %d ---\n", pageNum), 1)
+		for strings.Contains(pageContent, "--- Page Break ---") {
+			pageNum++
+			pageContent = strings.Replace(pageContent, "--- Page Break ---", fmt.Sprintf("\n\n--- Page %d ---\n", pageNum), 1)
+		}
+
+		prompt = fmt.Sprintf(`请将以下PDF内容翻译为%s。
+
+内容已按页面分段，请严格保持页面结构，按以下格式输出：
+
+--- Page 1 ---
+[第1页的翻译内容]
+
+--- Page 2 ---
+[第2页的翻译内容]
+
+...
+
+翻译要求：
+1. 保持学术性和专业性
+2. 保持原文的标题层级、段落结构
+3. 公式用LaTeX格式保留
+4. 不要添加额外解释或评论
+5. 每页翻译后必须有 --- Page N --- 标记分隔
+
+原文内容：
+%s`, targetLangName, pageContent)
+	} else {
+		// Non-PDF: simple translation
+		prompt = fmt.Sprintf("请将以下内容翻译为%s，保持学术性和专业性，不要添加任何额外的解释或评论：\n\n%s",
+			targetLangName, string(content))
+	}
 
 	// Set SSE headers
 	c.Response().Header().Set("Content-Type", "text/event-stream")
@@ -120,7 +188,18 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 		flusher.Flush()
 
 		if evt.Type == "assistant" {
-			fullContent.WriteString(evt.Content)
+			// Use Content field if available
+			if evt.Content != "" {
+				fullContent.WriteString(evt.Content)
+			}
+			// Also check Message.Content for text blocks
+			if evt.Message != nil {
+				for _, block := range evt.Message.Content {
+					if block.Type == "text" && block.Text != "" {
+						fullContent.WriteString(block.Text)
+					}
+				}
+			}
 		}
 	}
 
