@@ -151,3 +151,16 @@ export async function translateDocument(
     }
   }
 }
+
+// Pages API - generate page images for bilingual view
+export async function generatePages(docId: number): Promise<{ id: number; total_pages: number; message: string }> {
+  const res = await fetch(`${API_BASE}/documents/${docId}/generate-pages`, { method: 'POST' })
+  if (!res.ok) throw new Error('Failed to generate page images')
+  return res.json()
+}
+
+export async function getPagesStatus(docId: number): Promise<{ exists: boolean; page_count: number }> {
+  const res = await fetch(`${API_BASE}/documents/${docId}/pages-status`)
+  if (!res.ok) throw new Error('Failed to get pages status')
+  return res.json()
+}

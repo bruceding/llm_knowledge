@@ -111,6 +111,13 @@ func main() {
 	e.POST("/api/documents/:id/regenerate-summary", docH.RegenerateSummary)
 	e.DELETE("/api/documents/:id", docH.DeleteDoc)
 
+	// Pages API (page image generation for bilingual view)
+	pagesH := &api.PagesHandler{
+		DataDir: cfg.DataDir,
+	}
+	e.POST("/api/documents/:id/generate-pages", pagesH.GeneratePages)
+	e.GET("/api/documents/:id/pages-status", pagesH.CheckPages)
+
 	// Query API (SSE streaming)
 	queryH := &api.QueryHandler{
 		DataDir:   cfg.DataDir,
