@@ -171,7 +171,7 @@ export default function Inbox() {
 
               <div className="flex items-center gap-2">
                 {getStatusBadge(doc.status)}
-                {doc.tags.length > 0 && (
+                {doc.tags && doc.tags.length > 0 && (
                   <div className="flex items-center gap-1 flex-wrap">
                     {doc.tags.slice(0, 3).map((tag) => (
                       <span

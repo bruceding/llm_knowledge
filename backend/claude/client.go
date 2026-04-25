@@ -17,17 +17,40 @@ type Client struct {
 
 // StreamEvent represents a single event in the streaming response from Claude CLI.
 type StreamEvent struct {
-	Type    string `json:"type"`             // assistant, tool_use, tool_result, result
-	Content string `json:"content"`           // Text content of the event
-	Tool    string `json:"tool,omitempty"`    // Tool name if type is tool_use or tool_result
+	Type    string `json:"type"`             // system, assistant, result, error
+	Content string `json:"content"`          // Text content of the event (extracted)
+	Subtype string `json:"subtype"`          // subtype for system messages
+	Result  string `json:"result"`           // Result text for type "result"
 	Error   string `json:"error,omitempty"`  // Error message if any
+	Message *Message `json:"message,omitempty"` // Message for type "assistant"
+}
+
+// Message represents the message field in assistant events
+type Message struct {
+	Role    string        `json:"role"`
+	Content []ContentBlock `json:"content"`
+}
+
+// ContentBlock represents a content block in a message
+type ContentBlock struct {
+	Type string `json:"type"` // text, thinking
+	Text string `json:"text"` // text content
+}
+
+// RawEvent represents the raw JSON event from Claude CLI (used for parsing)
+type RawEvent struct {
+	Type    string          `json:"type"`
+	Subtype string          `json:"subtype"`
+	Result  string          `json:"result"`
+	IsError bool            `json:"is_error"`
+	Message json.RawMessage `json:"message"`
 }
 
 // Send executes the Claude CLI with streaming JSON output.
 // Events are sent to the provided channel as they are received.
 // The caller should close the channel after Send returns.
 func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamEvent) error {
-	cmd := exec.CommandContext(ctx, c.BinPath, "--stream-json")
+	cmd := exec.CommandContext(ctx, c.BinPath, "--print", "--output-format", "stream-json", "--verbose")
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdout, err := cmd.StdoutPipe()
@@ -40,13 +63,59 @@ func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamE
 	}
 
 	scanner := bufio.NewScanner(stdout)
+	// Increase buffer size for large messages
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
 	for scanner.Scan() {
-		var event StreamEvent
-		if err := json.Unmarshal(scanner.Bytes(), &event); err == nil {
-			// Only send valid events
-			eventCh <- event
+		line := scanner.Bytes()
+
+		// Parse raw event first
+		var raw RawEvent
+		if err := json.Unmarshal(line, &raw); err != nil {
+			// Skip malformed JSON lines
+			continue
 		}
-		// Silently skip malformed JSON lines
+
+		// Convert to StreamEvent based on type
+		event := StreamEvent{
+			Type:    raw.Type,
+			Subtype: raw.Subtype,
+		}
+
+		switch raw.Type {
+		case "assistant":
+			// Parse message content
+			if raw.Message != nil {
+				var msg Message
+				if err := json.Unmarshal(raw.Message, &msg); err == nil {
+					event.Message = &msg
+					// Extract text from content blocks
+					for _, block := range msg.Content {
+						if block.Type == "text" && block.Text != "" {
+							event.Content = block.Text
+						}
+					}
+				}
+			}
+		case "result":
+			event.Content = raw.Result
+			event.Result = raw.Result
+			if raw.IsError {
+				event.Type = "error"
+				event.Error = raw.Result
+			}
+		case "system":
+			// Skip system messages (hooks, init, etc.) unless it's an error
+			if raw.Subtype == "error" {
+				event.Type = "error"
+			} else {
+				continue
+			}
+		}
+
+		// Send the event
+		eventCh <- event
 	}
 
 	if err := scanner.Err(); err != nil {
