@@ -164,15 +164,26 @@ export default function WikiView() {
                         </a>
                       )
                     }
-                    // Relative links within wiki
+                    // Relative links within wiki - resolve based on current path
                     if (href && !href.startsWith('#')) {
+                      let fullPath = href.replace('.md', '')
+                      // If link doesn't contain '/', resolve relative to current directory
+                      if (!fullPath.includes('/')) {
+                        // Get current directory (handle both 'entities' and 'entities/DeepSeek-V4-Pro')
+                        const currentDir = wikiPath.includes('/')
+                          ? wikiPath.substring(0, wikiPath.lastIndexOf('/'))
+                          : wikiPath
+                        if (currentDir !== 'index') {
+                          fullPath = currentDir + '/' + fullPath
+                        }
+                      }
                       return (
                         <a
-                          href={`/wiki/${href.replace('.md', '')}`}
+                          href={`/wiki/${fullPath}`}
                           className="text-blue-600 hover:underline cursor-pointer"
                           onClick={(e) => {
                             e.preventDefault()
-                            navigate(`/wiki/${href.replace('.md', '')}`)
+                            navigate(`/wiki/${fullPath}`)
                           }}
                         >
                           {children}
