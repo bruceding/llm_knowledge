@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"llm-knowledge/db"
 	"llm-knowledge/ingest"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -192,6 +193,14 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 		if _, err := os.Stat(wikiPath); err == nil {
 			os.Remove(wikiPath)
 		}
+	}
+
+	// Clean wiki content (entities, topics, index files) related to this document
+	wikiDir := filepath.Join(h.DataDir, "wiki")
+	docName := doc.Title
+	if err := ingest.CleanWikiForDocument(wikiDir, docName); err != nil {
+		log.Printf("[api] wiki cleanup error for %s: %v", docName, err)
+		// Continue anyway - document deletion is primary operation
 	}
 
 	// Delete document-tag associations
