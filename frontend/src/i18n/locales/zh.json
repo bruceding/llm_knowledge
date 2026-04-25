@@ -49,7 +49,8 @@
     "language": "语言",
     "languageHint": "选择界面的首选显示语言。",
     "english": "English",
-    "chinese": "中文"
+    "chinese": "中文",
+    "saved": "设置已保存"
   },
   "common": {
     "loading": "加载中...",

@@ -7,6 +7,7 @@ import WikiView from './components/WikiView'
 import ChatView from './components/ChatView'
 import ImportView from './components/ImportView'
 import TagsView from './components/TagsView'
+import SettingsPage from './components/SettingsPage'
 
 function App() {
   return (
@@ -22,6 +23,7 @@ function App() {
             <Route path="/chat/:id?" element={<ChatView />} />
             <Route path="/import" element={<ImportView />} />
             <Route path="/tags" element={<TagsView />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </main>
       </div>
