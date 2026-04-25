@@ -52,5 +52,12 @@ func main() {
 	e.POST("/api/documents/:id/publish", docH.Publish)
 	e.DELETE("/api/documents/:id", docH.DeleteDoc)
 
+	// Query API (SSE streaming)
+	queryH := &api.QueryHandler{
+		DataDir:   cfg.DataDir,
+		ClaudeBin: cfg.ClaudeBin,
+	}
+	e.POST("/api/query/ask", queryH.Ask)
+
 	e.Logger.Fatal(e.Start(":" + cfg.Port))
 }
