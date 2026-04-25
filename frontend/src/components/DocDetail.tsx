@@ -2,9 +2,10 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { fetchDocument, updateDocument, publishDocument, deleteDocument, translateDocument, regenerateSummary } from '../api'
+import { fetchDocument, updateDocument, publishDocument, deleteDocument, translateDocument, regenerateSummary, generatePages, getPagesStatus } from '../api'
 import type { Document, SSEEvent } from '../types'
 import PDFViewer from './PDFViewer'
+import PDFTranslationView from './PDFTranslationView'
 
 export default function DocDetail() {
   const { id } = useParams<{ id: string }>()
@@ -24,9 +25,10 @@ export default function DocDetail() {
   const [translating, setTranslating] = useState(false)
   const [translationContent, setTranslationContent] = useState('')
   const [translationLang, setTranslationLang] = useState<string>('')
+  const [totalPages, setTotalPages] = useState(0)
 
   // View mode - default to PDF, then Wiki if available
-  const [viewMode, setViewMode] = useState<'wiki' | 'translation' | 'pdf'>('pdf')
+  const [viewMode, setViewMode] = useState<'wiki' | 'translation' | 'bilingual' | 'pdf'>('pdf')
 
   // Summary regeneration state
   const [regeneratingSummary, setRegeneratingSummary] = useState(false)
@@ -110,10 +112,32 @@ export default function DocDetail() {
 
   const handleTranslate = useCallback(async (targetLang: string) => {
     if (!document) return
+
+    // For PDF documents, generate page images first
+    if (document.sourceType === 'pdf') {
+      try {
+        // Check if page images already exist
+        const pagesStatus = await getPagesStatus(document.id)
+        if (!pagesStatus.exists) {
+          // Generate page images
+          const result = await generatePages(document.id)
+          setTotalPages(result.total_pages)
+        } else {
+          setTotalPages(pagesStatus.page_count)
+        }
+      } catch (err) {
+        console.error('Failed to generate page images:', err)
+      }
+      // Switch to bilingual view for PDF
+      setViewMode('bilingual')
+    } else {
+      // Non-PDF: use regular translation view
+      setViewMode('translation')
+    }
+
     setTranslating(true)
     setTranslationContent('')
     setTranslationLang(targetLang)
-    setViewMode('translation')
 
     try {
       await translateDocument(document.id, targetLang, (event: SSEEvent) => {
@@ -138,6 +162,8 @@ export default function DocDetail() {
         return wikiContent
       case 'translation':
         return translationContent
+      case 'bilingual':
+        return null // Bilingual view renders separately
       case 'pdf':
         return null // PDF is rendered in iframe
       default:
@@ -204,12 +230,12 @@ export default function DocDetail() {
             )}
             {translationContent && (
               <button
-                onClick={() => setViewMode('translation')}
+                onClick={() => setViewMode(document.sourceType === 'pdf' ? 'bilingual' : 'translation')}
                 className={`px-3 py-1.5 rounded-lg text-sm ${
-                  viewMode === 'translation' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+                  (viewMode === 'bilingual' || viewMode === 'translation') ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
-                Translation ({translationLang.toUpperCase()})
+                {document.sourceType === 'pdf' ? 'Bilingual' : 'Translation'} ({translationLang.toUpperCase()})
               </button>
             )}
           </div>
@@ -238,13 +264,20 @@ export default function DocDetail() {
         </div>
 
         {/* Markdown content area */}
-        <div className="flex-1 overflow-auto p-6">
+        <div className="flex-1 overflow-auto">
           {viewMode === 'pdf' && pdfUrl ? (
             <div className="h-full">
               <PDFViewer url={pdfUrl} />
             </div>
+          ) : viewMode === 'bilingual' && document?.rawPath ? (
+            <PDFTranslationView
+              rawPath={document.rawPath}
+              translatedContent={translationContent}
+              totalPages={totalPages}
+              translating={translating}
+            />
           ) : (
-            <div className="max-w-4xl mx-auto prose prose-slate">
+            <div className="p-6 max-w-4xl mx-auto prose prose-slate">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
