@@ -1,10 +1,11 @@
 package main
 
 import (
+	"io/fs"
 	"llm-knowledge/api"
 	"llm-knowledge/config"
 	"llm-knowledge/db"
-	"llm-knowledge/fs"
+	embedfs "llm-knowledge/fs"
 	"log"
 	"net/http"
 	"os"
@@ -19,7 +20,7 @@ func main() {
 	cfg := config.Load()
 
 	// Initialize directory structure
-	if err := fs.InitDirs(cfg.DataDir); err != nil {
+	if err := embedfs.InitDirs(cfg.DataDir); err != nil {
 		log.Fatalf("Failed to initialize directories: %v", err)
 	}
 
@@ -35,55 +36,6 @@ func main() {
 
 	e.GET("/api/health", func(c echo.Context) error {
 		return c.JSON(200, map[string]string{"status": "ok"})
-	})
-
-	// Serve frontend static files from embedded dist
-	e.GET("/", func(c echo.Context) error {
-		data, err := fs.DistFS.ReadFile("dist/index.html")
-		if err != nil {
-			return c.String(http.StatusNotFound, "index.html not found")
-		}
-		return c.HTML(http.StatusOK, string(data))
-	})
-
-	// Serve frontend static assets
-	e.GET("/assets/*", func(c echo.Context) error {
-		// Get the path from request
-		reqPath := c.Request().URL.Path
-		path := "dist" + reqPath
-		data, err := fs.DistFS.ReadFile(path)
-		if err != nil {
-			return c.String(http.StatusNotFound, "asset not found")
-		}
-		// Determine content type based on extension
-		ext := filepath.Ext(path)
-		contentType := "application/octet-stream"
-		switch ext {
-		case ".js":
-			contentType = "application/javascript"
-		case ".css":
-			contentType = "text/css"
-		case ".svg":
-			contentType = "image/svg+xml"
-		}
-		return c.Blob(http.StatusOK, contentType, data)
-	})
-
-	// Serve favicon and icons
-	e.GET("/favicon.svg", func(c echo.Context) error {
-		data, err := fs.DistFS.ReadFile("dist/favicon.svg")
-		if err != nil {
-			return c.String(http.StatusNotFound, "favicon not found")
-		}
-		return c.Blob(http.StatusOK, "image/svg+xml", data)
-	})
-
-	e.GET("/icons.svg", func(c echo.Context) error {
-		data, err := fs.DistFS.ReadFile("dist/icons.svg")
-		if err != nil {
-			return c.String(http.StatusNotFound, "icons not found")
-		}
-		return c.Blob(http.StatusOK, "image/svg+xml", data)
 	})
 
 	// Serve data directory files (wiki, raw, etc.)
@@ -147,6 +99,44 @@ func main() {
 		ClaudeBin: cfg.ClaudeBin,
 	}
 	e.POST("/api/translate", translateH.Translate)
+
+	// Serve frontend static files from embedded filesystem
+	// Create a sub filesystem from the embedded dist directory
+	distSubFS, err := fs.Sub(embedfs.DistFS, "dist")
+	if err != nil {
+		log.Fatalf("Failed to create sub filesystem: %v", err)
+	}
+	e.StaticFS("/", distSubFS)
+
+	// SPA fallback: serve index.html for unmatched frontend routes
+	// This handles client-side routing for paths like /inbox, /documents, etc.
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			// First try the next handler (static file serving)
+			err := next(c)
+			if err == nil {
+				return nil
+			}
+
+			// Check if it's a 404 error and not an API/data route
+			path := c.Request().URL.Path
+			if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/data/") {
+				return err // Return the original error for API routes
+			}
+
+			// For frontend routes, serve index.html for SPA routing
+			if he, ok := err.(*echo.HTTPError); ok && he.Code == http.StatusNotFound {
+				// Serve index.html from embedded filesystem
+				data, err := embedfs.DistFS.ReadFile("dist/index.html")
+				if err != nil {
+					return c.String(http.StatusInternalServerError, "index.html not found")
+				}
+				return c.HTML(http.StatusOK, string(data))
+			}
+
+			return err
+		}
+	})
 
 	e.Logger.Fatal(e.Start(":" + cfg.Port))
 }
