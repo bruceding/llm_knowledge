@@ -106,7 +106,7 @@ type: topic
 
 更新 {{.WikiDir}}/sources.md（如不存在则创建）：
 # Sources
-列出所有源文档（格式：[名称](sources/名称.md) — 简介）
+列出所有源文档（格式：[名称](sources/路径.md) — 简介）
 
 更新 {{.WikiDir}}/entities.md（如不存在则创建）：
 # Entities
@@ -122,6 +122,11 @@ type: topic
 - YYYY-MM-DD: 导入 {{.Name}}，创建了 X 个实体，Y 个主题
 
 ---
+
+重要提示：
+- Markdown链接的URL路径中如果有空格，必须将空格编码为 %20
+- 例如：[文档名称](sources/文档%20名称.md)
+- 显示文本可以包含空格，但URL路径必须编码
 
 源文档路径: {{.RawPath}}
 
