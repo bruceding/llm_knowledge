@@ -1,7 +1,9 @@
 import { useState, useRef, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { uploadPDF } from '../api'
 
 export default function ImportView() {
+  const { t } = useTranslation()
   const [dragActive, setDragActive] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<string | null>(null)
@@ -42,7 +44,7 @@ export default function ImportView() {
       if (file.type === 'application/pdf') {
         await handleUpload(file)
       } else {
-        setError('Only PDF files are supported for drag and drop upload')
+        setError(t('import.errorOnlyPdf'))
       }
     }
   }, [])
@@ -85,7 +87,7 @@ export default function ImportView() {
     try {
       // Placeholder: would call backend to clip URL
       // Backend doesn't have web clipping endpoint yet
-      setError('Web clipping is not yet implemented. Please use PDF upload.')
+      setError(t('import.errorWebClipNotImplemented'))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to clip URL')
     } finally {
@@ -106,7 +108,7 @@ export default function ImportView() {
       const feedName = rssUrl.split('/').pop() || 'RSS Feed'
       setRssFeeds((prev) => [...prev, { name: feedName, url: rssUrl }])
       setRssUrl('')
-      setError('RSS feed management is not yet implemented. This is a placeholder.')
+      setError(t('import.errorRssNotImplemented'))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add RSS feed')
     } finally {
@@ -116,8 +118,8 @@ export default function ImportView() {
 
   return (
     <div className="p-6">
-      <h2 className="text-2xl font-bold text-gray-800 mb-4">Import</h2>
-      <p className="text-gray-600 mb-6">Upload and import new documents into your knowledge base.</p>
+      <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('import.title')}</h2>
+      <p className="text-gray-600 mb-6">{t('import.description')}</p>
 
       {error && (
         <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 flex items-center justify-between">
@@ -140,7 +142,7 @@ export default function ImportView() {
             href={`/documents/${uploadResult.id}`}
             className="inline-block mt-2 text-green-800 underline hover:text-green-900"
           >
-            View Document
+            {t('import.viewDocument')}
           </a>
         </div>
       )}
@@ -148,7 +150,7 @@ export default function ImportView() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* PDF Upload */}
         <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-700">Upload PDF</h3>
+          <h3 className="text-lg font-semibold text-gray-700">{t('import.uploadPdf')}</h3>
           <div
             className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
               dragActive ? 'border-blue-500 bg-blue-50' : 'border-gray-300'
@@ -180,13 +182,13 @@ export default function ImportView() {
                     />
                   </svg>
                 </div>
-                <p className="text-gray-600 mb-2">Drag and drop PDF files here, or click to browse</p>
-                <p className="text-sm text-gray-400">Supports PDF files up to 50MB</p>
+                <p className="text-gray-600 mb-2">{t('import.dragDropHint')}</p>
+                <p className="text-sm text-gray-400">{t('import.pdfSizeLimit')}</p>
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className="mt-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
                 >
-                  Select PDF
+                  {t('import.selectPdf')}
                 </button>
                 <input
                   ref={fileInputRef}
@@ -202,10 +204,10 @@ export default function ImportView() {
 
         {/* Web Clipping */}
         <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-700">Web Clipping</h3>
+          <h3 className="text-lg font-semibold text-gray-700">{t('import.webClipping')}</h3>
           <div className="border border-gray-200 rounded-lg p-6">
             <p className="text-gray-600 mb-4 text-sm">
-              Paste a URL to clip web content and save it to your knowledge base.
+              {t('import.webClipHint')}
             </p>
             <div className="flex gap-2">
               <input
@@ -221,16 +223,16 @@ export default function ImportView() {
                 disabled={clippingUrl || !urlInput.trim()}
                 className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500"
               >
-                {clippingUrl ? 'Clipping...' : 'Clip'}
+                {clippingUrl ? t('import.clipping') : t('import.clip')}
               </button>
             </div>
           </div>
 
           {/* RSS Feeds */}
-          <h3 className="text-lg font-semibold text-gray-700 mt-6">RSS Feeds</h3>
+          <h3 className="text-lg font-semibold text-gray-700 mt-6">{t('import.rssFeeds')}</h3>
           <div className="border border-gray-200 rounded-lg p-6">
             <p className="text-gray-600 mb-4 text-sm">
-              Subscribe to RSS feeds to automatically import new articles.
+              {t('import.rssHint')}
             </p>
             <div className="flex gap-2 mb-4">
               <input
@@ -246,13 +248,13 @@ export default function ImportView() {
                 disabled={addingRss || !rssUrl.trim()}
                 className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500"
               >
-                {addingRss ? 'Adding...' : 'Add Feed'}
+                {addingRss ? t('import.adding') : t('import.addFeed')}
               </button>
             </div>
 
             {rssFeeds.length > 0 && (
               <div className="space-y-2">
-                <h4 className="text-sm font-medium text-gray-700">Active Feeds</h4>
+                <h4 className="text-sm font-medium text-gray-700">{t('import.activeFeeds')}</h4>
                 <ul className="space-y-2">
                   {rssFeeds.map((feed) => (
                     <li

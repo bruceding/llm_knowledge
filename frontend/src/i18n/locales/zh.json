@@ -42,7 +42,10 @@
     "addFeed": "添加源",
     "adding": "添加中...",
     "activeFeeds": "已订阅源",
-    "viewDocument": "查看文档"
+    "viewDocument": "查看文档",
+    "errorOnlyPdf": "拖拽上传仅支持 PDF 文件",
+    "errorWebClipNotImplemented": "网页裁剪功能尚未实现，请使用 PDF 上传。",
+    "errorRssNotImplemented": "RSS 订阅管理功能尚未实现，这是一个占位符。"
   },
   "settings": {
     "title": "设置",

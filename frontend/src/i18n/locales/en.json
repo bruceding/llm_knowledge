@@ -42,7 +42,10 @@
     "addFeed": "Add Feed",
     "adding": "Adding...",
     "activeFeeds": "Active Feeds",
-    "viewDocument": "View Document"
+    "viewDocument": "View Document",
+    "errorOnlyPdf": "Only PDF files are supported for drag and drop upload",
+    "errorWebClipNotImplemented": "Web clipping is not yet implemented. Please use PDF upload.",
+    "errorRssNotImplemented": "RSS feed management is not yet implemented. This is a placeholder."
   },
   "settings": {
     "title": "Settings",
