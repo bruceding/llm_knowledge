@@ -67,3 +67,11 @@ export interface SSEEvent {
   error?: string
   filePath?: string
 }
+
+// User settings types
+export interface UserSettings {
+  id: number
+  language: 'en' | 'zh'
+  createdAt: string
+  updatedAt: string
+}

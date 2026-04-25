@@ -1,4 +1,4 @@
-import type { Document, UpdateDocRequest, AskRequest, SSEEvent } from './types'
+import type { Document, UpdateDocRequest, AskRequest, SSEEvent, UserSettings } from './types'
 
 const API_BASE = '/api'
 
@@ -144,4 +144,21 @@ export async function translateDocument(
       }
     }
   }
+}
+
+// Settings API
+export async function fetchSettings(): Promise<UserSettings> {
+  const res = await fetch(`${API_BASE}/settings`)
+  if (!res.ok) throw new Error('Failed to fetch settings')
+  return res.json()
+}
+
+export async function updateSettings(language: 'en' | 'zh'): Promise<UserSettings> {
+  const res = await fetch(`${API_BASE}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ language }),
+  })
+  if (!res.ok) throw new Error('Failed to update settings')
+  return res.json()
 }
