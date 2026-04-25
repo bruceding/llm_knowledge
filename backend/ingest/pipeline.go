@@ -1,0 +1,93 @@
+package ingest
+
+import (
+	"context"
+	"llm-knowledge/claude"
+	"log"
+	"strings"
+	"text/template"
+)
+
+// ingestPrompt is the template for the Claude CLI to ingest a raw document
+const ingestPrompt = `你是一个知识库维护者。请读取以下源文档，并完成：
+
+1. 在 {{.WikiDir}}/sources/{{.Name}}.md 创建源文档页：
+   - 标题、作者、年份、期刊
+   - 摘要
+   - 关键发现（3-5 点）
+   - 核心方法
+   - 局限性
+
+2. 更新 {{.WikiDir}}/index.md，添加此文档条目
+
+3. 更新 {{.WikiDir}}/entities/ 下相关实体页（如提到的新方法、模型、人物）
+
+4. 更新 {{.WikiDir}}/topics/ 下相关主题页（新发现 vs 已有论断）
+
+5. 在 {{.WikiDir}}/log.md 追加操作日志
+
+源文档路径: {{.RawPath}}
+
+请用 Read 工具读取后，用 Write 工具完成以上所有更新。`
+
+// Pipeline manages the ingestion of raw documents into the wiki
+type Pipeline struct {
+	WikiDir string       // Path to the wiki directory
+	Claude  *claude.Client
+}
+
+// NewPipeline creates a new ingest pipeline
+func NewPipeline(wikiDir string, claudeBin string) *Pipeline {
+	return &Pipeline{
+		WikiDir: wikiDir,
+		Claude:  claude.NewClientWithPath(claudeBin),
+	}
+}
+
+// Ingest reads a raw document and uses Claude to update the wiki
+func (p *Pipeline) Ingest(ctx context.Context, rawPath, name string) error {
+	prompt, err := buildPrompt(ingestPrompt, map[string]string{
+		"WikiDir": p.WikiDir,
+		"Name":    name,
+		"RawPath": rawPath,
+	})
+	if err != nil {
+		return err
+	}
+
+	eventCh := make(chan claude.StreamEvent)
+	go func() {
+		defer close(eventCh)
+		if err := p.Claude.Send(ctx, prompt, eventCh); err != nil {
+			log.Printf("[ingest] error sending to Claude: %v", err)
+		}
+	}()
+
+	for evt := range eventCh {
+		// Log events for debugging and future SSE streaming
+		log.Printf("[ingest] %s: %s", evt.Type, truncate(evt.Content, 100))
+	}
+
+	return nil
+}
+
+// buildPrompt renders a template with the given data
+func buildPrompt(tmplStr string, data map[string]string) (string, error) {
+	tmpl, err := template.New("prompt").Parse(tmplStr)
+	if err != nil {
+		return "", err
+	}
+	var buf strings.Builder
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// truncate shortens a string to maxLen characters
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}

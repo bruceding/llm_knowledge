@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"io"
 	"llm-knowledge/ingest"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,7 +14,8 @@ import (
 )
 
 type RawHandler struct {
-	DataDir string
+	DataDir  string
+	ClaudeBin string // Path to Claude CLI binary
 }
 
 // UploadPDF handles PDF file upload, saves the original file,
@@ -68,6 +71,17 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 	mdPath := filepath.Join(dir, "paper.md")
 	if err := os.WriteFile(mdPath, []byte(extracted.FullText), 0644); err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to write markdown file"})
+	}
+
+	// Trigger async ingest pipeline
+	if h.ClaudeBin != "" {
+		go func() {
+			wikiDir := filepath.Join(h.DataDir, "wiki")
+			p := ingest.NewPipeline(wikiDir, h.ClaudeBin)
+			if err := p.Ingest(context.Background(), mdPath, name); err != nil {
+				log.Printf("[api] ingest failed for %s: %v", name, err)
+			}
+		}()
 	}
 
 	return c.JSON(http.StatusOK, echo.Map{
