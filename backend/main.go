@@ -59,5 +59,12 @@ func main() {
 	}
 	e.POST("/api/query/ask", queryH.Ask)
 
+	// Translate API (SSE streaming)
+	translateH := &api.TranslateHandler{
+		DataDir:   cfg.DataDir,
+		ClaudeBin: cfg.ClaudeBin,
+	}
+	e.POST("/api/translate", translateH.Translate)
+
 	e.Logger.Fatal(e.Start(":" + cfg.Port))
 }
