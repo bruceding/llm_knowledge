@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { fetchDocuments } from '../api'
 import type { Document, Tag } from '../types'
 
 export default function TagsView() {
+  const { t, i18n } = useTranslation()
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -48,7 +50,7 @@ export default function TagsView() {
   if (loading) {
     return (
       <div className="p-6">
-        <h2 className="text-2xl font-bold text-gray-800 mb-4">Tags</h2>
+        <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('tagsView.title')}</h2>
         <div className="flex items-center justify-center py-12">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
         </div>
@@ -59,11 +61,11 @@ export default function TagsView() {
   if (error) {
     return (
       <div className="p-6">
-        <h2 className="text-2xl font-bold text-gray-800 mb-4">Tags</h2>
+        <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('tagsView.title')}</h2>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
           {error}
           <button onClick={loadDocuments} className="ml-4 text-red-800 underline">
-            Retry
+            {t('tagsView.retry')}
           </button>
         </div>
       </div>
@@ -72,23 +74,23 @@ export default function TagsView() {
 
   return (
     <div className="p-6">
-      <h2 className="text-2xl font-bold text-gray-800 mb-4">Tags</h2>
-      <p className="text-gray-600 mb-6">Browse documents by tag</p>
+      <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('tagsView.title')}</h2>
+      <p className="text-gray-600 mb-6">{t('tagsView.browseByTag')}</p>
 
       {tags.length === 0 ? (
         <div className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center text-gray-500">
           <svg className="w-12 h-12 mx-auto mb-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
           </svg>
-          <p className="text-lg font-medium mb-2">No tags found</p>
-          <p className="text-sm">Add tags to documents to organize your knowledge base</p>
+          <p className="text-lg font-medium mb-2">{t('tagsView.noTags')}</p>
+          <p className="text-sm">{t('tagsView.noTagsHint')}</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Tags list */}
           <div className="lg:col-span-1">
             <div className="bg-white border border-gray-200 rounded-lg p-4">
-              <h3 className="text-lg font-semibold text-gray-700 mb-4">All Tags ({tags.length})</h3>
+              <h3 className="text-lg font-semibold text-gray-700 mb-4">{t('tagsView.allTags')} ({tags.length})</h3>
               <div className="space-y-2">
                 {tags.map(({ tag, count }) => (
                   <button
@@ -107,7 +109,7 @@ export default function TagsView() {
                       />
                       <span className="text-sm">{tag.name}</span>
                     </div>
-                    <span className="text-xs text-gray-500">{count} docs</span>
+                    <span className="text-xs text-gray-500">{count} {t('tagsView.docs')}</span>
                   </button>
                 ))}
               </div>
@@ -118,11 +120,11 @@ export default function TagsView() {
           <div className="lg:col-span-2">
             <div className="bg-white border border-gray-200 rounded-lg p-4">
               <h3 className="text-lg font-semibold text-gray-700 mb-4">
-                {selectedTag ? `Documents tagged "${selectedTag}"` : 'Recent Documents'}
+                {selectedTag ? `${t('tagsView.documentsTagged')} "${selectedTag}"` : t('tagsView.recentDocuments')}
               </h3>
               {filteredDocuments.length === 0 ? (
                 <div className="text-center text-gray-500 py-8">
-                  No documents found
+                  {t('tagsView.noDocumentsFound')}
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -137,7 +139,7 @@ export default function TagsView() {
                         <div className="flex items-center gap-2 mt-1">
                           <span className="text-xs text-gray-500 capitalize">{doc.sourceType}</span>
                           <span className="text-xs text-gray-400">
-                            {new Date(doc.createdAt).toLocaleDateString()}
+                            {new Date(doc.createdAt).toLocaleDateString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}
                           </span>
                         </div>
                       </div>

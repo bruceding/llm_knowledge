@@ -2,12 +2,14 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { useTranslation } from 'react-i18next'
 import { fetchDocument, updateDocument, publishDocument, deleteDocument, translateDocument } from '../api'
 import type { Document, SSEEvent } from '../types'
 
 export default function DocDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { t, i18n } = useTranslation()
   const [document, setDocument] = useState<Document | null>(null)
   const [rawContent, setRawContent] = useState<string>('')
   const [wikiContent, setWikiContent] = useState<string>('')
@@ -92,7 +94,7 @@ export default function DocDetail() {
 
   const handleDelete = async () => {
     if (!document) return
-    if (!confirm('Are you sure you want to delete this document? This action cannot be undone.')) return
+    if (!confirm(t('docDetail.deleteConfirm'))) return
     try {
       await deleteDocument(document.id)
       navigate('/')
@@ -164,7 +166,7 @@ export default function DocDetail() {
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
           {error}
           <button onClick={loadDocument} className="ml-4 text-red-800 underline">
-            Retry
+            {t('docDetail.retry')}
           </button>
         </div>
       </div>
@@ -174,7 +176,7 @@ export default function DocDetail() {
   if (!document) {
     return (
       <div className="p-6">
-        <div className="text-gray-500">Document not found</div>
+        <div className="text-gray-500">{t('docDetail.documentNotFound')}</div>
       </div>
     )
   }
@@ -192,7 +194,7 @@ export default function DocDetail() {
                 viewMode === 'raw' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
               }`}
             >
-              Raw Content
+              {t('docDetail.rawContent')}
             </button>
             {wikiContent && (
               <button
@@ -201,7 +203,7 @@ export default function DocDetail() {
                   viewMode === 'wiki' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
-                Wiki Page
+                {t('docDetail.wikiContent')}
               </button>
             )}
             {translationContent && (
@@ -211,7 +213,7 @@ export default function DocDetail() {
                   viewMode === 'translation' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
-                Translation ({translationLang.toUpperCase()})
+                {t('docDetail.translation')} ({translationLang.toUpperCase()})
               </button>
             )}
           </div>
@@ -224,7 +226,7 @@ export default function DocDetail() {
                 disabled={translating}
                 className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50"
               >
-                {translating && translationLang === 'zh' ? 'Translating...' : 'Translate to Chinese'}
+                {translating && translationLang === 'zh' ? t('docDetail.translating') : t('docDetail.translateToChinese')}
               </button>
             )}
             {document.language === 'zh' && (
@@ -233,7 +235,7 @@ export default function DocDetail() {
                 disabled={translating}
                 className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50"
               >
-                {translating && translationLang === 'en' ? 'Translating...' : 'Translate to English'}
+                {translating && translationLang === 'en' ? t('docDetail.translating') : t('docDetail.translateToEnglish')}
               </button>
             )}
           </div>
@@ -266,7 +268,7 @@ export default function DocDetail() {
                 },
               }}
             >
-              {getDisplayContent() || 'No content available'}
+              {getDisplayContent() || t('docDetail.noContent')}
             </ReactMarkdown>
           </div>
         </div>
@@ -275,13 +277,13 @@ export default function DocDetail() {
       {/* Right: Metadata panel */}
       <div className="w-80 border-l border-gray-200 bg-gray-50 flex flex-col overflow-hidden">
         <div className="p-4 border-b border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-800">Metadata</h3>
+          <h3 className="text-lg font-semibold text-gray-800">{t('docDetail.metadata')}</h3>
         </div>
 
         <div className="flex-1 overflow-auto p-4 space-y-4">
           {/* Title */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Title</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">{t('documentsList.titleColumn')}</label>
             <input
               type="text"
               value={editTitle}
@@ -292,7 +294,7 @@ export default function DocDetail() {
 
           {/* Source Type */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Source Type</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">{t('docDetail.sourceType')}</label>
             <div className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-600 capitalize">
               {document.sourceType}
             </div>
@@ -300,7 +302,7 @@ export default function DocDetail() {
 
           {/* Language */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Language</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">{t('docDetail.language')}</label>
             <div className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-600 uppercase">
               {document.language}
             </div>
@@ -308,21 +310,21 @@ export default function DocDetail() {
 
           {/* Status */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">{t('docDetail.status')}</label>
             <select
               value={editStatus}
               onChange={(e) => setEditStatus(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="inbox">Inbox</option>
-              <option value="published">Published</option>
-              <option value="archived">Archived</option>
+              <option value="inbox">{t('docDetail.inbox')}</option>
+              <option value="published">{t('documentsList.published')}</option>
+              <option value="archived">{t('docDetail.archivedStatus')}</option>
             </select>
           </div>
 
           {/* Tags */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Tags</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">{t('docDetail.tags')}</label>
             <div className="flex flex-wrap gap-2 mb-2">
               {editTags.map((tag) => (
                 <span
@@ -344,7 +346,7 @@ export default function DocDetail() {
                 type="text"
                 value={tagInput}
                 onChange={(e) => setTagInput(e.target.value)}
-                placeholder="Add tag..."
+                placeholder={t('docDetail.addTagPlaceholder')}
                 className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') handleAddTag()
@@ -354,23 +356,23 @@ export default function DocDetail() {
                 onClick={handleAddTag}
                 className="px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
               >
-                Add
+                {t('docDetail.addTag')}
               </button>
             </div>
           </div>
 
           {/* Dates */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Created</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">{t('docDetail.createdAt')}</label>
             <div className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-600">
-              {new Date(document.createdAt).toLocaleString('zh-CN')}
+              {new Date(document.createdAt).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}
             </div>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Updated</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">{t('docDetail.updatedAt')}</label>
             <div className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-600">
-              {new Date(document.updatedAt).toLocaleString('zh-CN')}
+              {new Date(document.updatedAt).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}
             </div>
           </div>
         </div>
@@ -384,14 +386,14 @@ export default function DocDetail() {
             onClick={handleSave}
             className="w-full px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
           >
-            Save Changes
+            {t('docDetail.saveChanges')}
           </button>
           {document.status !== 'published' && (
             <button
               onClick={handlePublish}
               className="w-full px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
             >
-              Publish
+              {t('docDetail.publish')}
             </button>
           )}
           {document.status !== 'archived' && (
@@ -402,14 +404,14 @@ export default function DocDetail() {
               }}
               className="w-full px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
             >
-              Archive
+              {t('docDetail.archive')}
             </button>
           )}
           <button
             onClick={handleDelete}
             className="w-full px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
           >
-            Delete
+            {t('docDetail.delete')}
           </button>
         </div>
       </div>

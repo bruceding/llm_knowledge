@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { askQuestion } from '../api'
 import type { SSEEvent } from '../types'
 
@@ -20,6 +21,7 @@ interface Conversation {
 export default function ChatView() {
   const params = useParams<{ id?: string }>()
   const navigate = useNavigate()
+  const { t, i18n } = useTranslation()
   const conversationId = params.id ? parseInt(params.id) : undefined
 
   const [messages, setMessages] = useState<Message[]>([])
@@ -119,7 +121,7 @@ export default function ChatView() {
       setMessages((prev) => {
         const last = prev[prev.length - 1]
         if (last.role === 'assistant') {
-          return [...prev.slice(0, -1), { ...last, content: 'Failed to connect to server. Please try again.' }]
+          return [...prev.slice(0, -1), { ...last, content: t('chatView.connectionError') }]
         }
         return prev
       })
@@ -158,13 +160,13 @@ export default function ChatView() {
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
-              New Chat
+              {t('chatView.newConversation')}
             </button>
           </div>
           <div className="flex-1 overflow-auto p-2">
             {conversations.length === 0 ? (
               <div className="text-center text-gray-500 text-sm p-4">
-                No previous conversations
+                {t('chatView.noPreviousConversations')}
               </div>
             ) : (
               <ul className="space-y-1">
@@ -180,7 +182,7 @@ export default function ChatView() {
                     >
                       <div className="truncate">{conv.title}</div>
                       <div className="text-xs text-gray-500 mt-1">
-                        {new Date(conv.createdAt).toLocaleDateString()}
+                        {new Date(conv.createdAt).toLocaleDateString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}
                       </div>
                     </button>
                   </li>
@@ -205,7 +207,7 @@ export default function ChatView() {
               </svg>
             </button>
             <h2 className="text-xl font-semibold text-gray-800">
-              {currentConversationId ? `Chat #${currentConversationId}` : 'New Chat'}
+              {currentConversationId ? `${t('chatView.title')} #${currentConversationId}` : t('chatView.newConversation')}
             </h2>
           </div>
           {!currentConversationId && (
@@ -213,7 +215,7 @@ export default function ChatView() {
               onClick={handleNewChat}
               className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200"
             >
-              Clear Chat
+              {t('chatView.clearChat')}
             </button>
           )}
         </div>
@@ -226,8 +228,8 @@ export default function ChatView() {
                 <svg className="w-16 h-16 mx-auto mb-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                 </svg>
-                <p className="text-lg font-medium mb-2">Start a conversation</p>
-                <p className="text-sm">Ask questions about your knowledge base</p>
+                <p className="text-lg font-medium mb-2">{t('chatView.startConversation')}</p>
+                <p className="text-sm">{t('chatView.askAboutKnowledge')}</p>
               </div>
             ) : (
               messages.map((msg) => (
@@ -250,13 +252,13 @@ export default function ChatView() {
                     }`}
                   >
                     {msg.role === 'system' && (
-                      <div className="text-xs font-medium mb-1">System</div>
+                      <div className="text-xs font-medium mb-1">{t('chatView.system')}</div>
                     )}
                     <div className="whitespace-pre-wrap">
-                      {msg.content || (streaming && msg.role === 'assistant' ? 'Thinking...' : '')}
+                      {msg.content || (streaming && msg.role === 'assistant' ? t('chatView.thinking') : '')}
                     </div>
                     <div className={`text-xs mt-2 ${msg.role === 'user' ? 'text-blue-200' : 'text-gray-500'}`}>
-                      {msg.timestamp.toLocaleTimeString()}
+                      {msg.timestamp.toLocaleTimeString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}
                     </div>
                   </div>
                   {msg.role === 'user' && (
@@ -272,7 +274,7 @@ export default function ChatView() {
             {toolUseStatus && (
               <div className="flex items-center gap-2 px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg">
                 <div className="animate-spin w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full"></div>
-                <span className="text-sm text-gray-600">Looking up: {toolUseStatus}</span>
+                <span className="text-sm text-gray-600">{t('chatView.lookingUp')} {toolUseStatus}</span>
               </div>
             )}
 
@@ -289,7 +291,7 @@ export default function ChatView() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Ask a question..."
+              placeholder={t('chatView.placeholder')}
               disabled={streaming}
               className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
             />
@@ -308,7 +310,7 @@ export default function ChatView() {
             </button>
           </div>
           <div className="mt-2 text-center text-xs text-gray-400">
-            Press Enter to send, Shift+Enter for new line
+            {t('chatView.sendHint')}
           </div>
         </div>
       </div>

@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { fetchDocuments } from '../api'
 import type { Document } from '../types'
 
 export default function DocumentsList() {
+  const { t, i18n } = useTranslation()
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -59,7 +61,7 @@ export default function DocumentsList() {
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr)
-    return date.toLocaleDateString('zh-CN', {
+    return date.toLocaleDateString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -71,19 +73,19 @@ export default function DocumentsList() {
       case 'inbox':
         return (
           <span className="px-2 py-1 text-xs bg-yellow-100 text-yellow-800 rounded-full">
-            Inbox
+            {t('inbox.pendingReview')}
           </span>
         )
       case 'published':
         return (
           <span className="px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full">
-            Published
+            {t('documentsList.published')}
           </span>
         )
       case 'archived':
         return (
           <span className="px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded-full">
-            Archived
+            {t('documentsList.archived')}
           </span>
         )
       default:
@@ -99,7 +101,7 @@ export default function DocumentsList() {
   if (loading) {
     return (
       <div className="p-6">
-        <h2 className="text-2xl font-bold text-gray-800 mb-4">All Documents</h2>
+        <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('documentsList.title')}</h2>
         <div className="flex items-center justify-center py-12">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
         </div>
@@ -110,11 +112,11 @@ export default function DocumentsList() {
   if (error) {
     return (
       <div className="p-6">
-        <h2 className="text-2xl font-bold text-gray-800 mb-4">All Documents</h2>
+        <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('documentsList.title')}</h2>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
           {error}
           <button onClick={loadDocuments} className="ml-4 text-red-800 underline">
-            Retry
+            {t('documentsList.retry')}
           </button>
         </div>
       </div>
@@ -124,12 +126,12 @@ export default function DocumentsList() {
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-800">All Documents</h2>
+        <h2 className="text-2xl font-bold text-gray-800">{t('documentsList.title')}</h2>
         <div className="flex items-center gap-4">
           <div className="relative">
             <input
               type="text"
-              placeholder="Search..."
+              placeholder={t('documentsList.searchPlaceholder')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -148,10 +150,10 @@ export default function DocumentsList() {
             onChange={(e) => setStatusFilter(e.target.value)}
             className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            <option value="">All Status</option>
-            <option value="inbox">Inbox</option>
-            <option value="published">Published</option>
-            <option value="archived">Archived</option>
+            <option value="">{t('documentsList.allStatus')}</option>
+            <option value="inbox">{t('inbox.pendingReview')}</option>
+            <option value="published">{t('documentsList.published')}</option>
+            <option value="archived">{t('documentsList.archived')}</option>
           </select>
         </div>
       </div>
@@ -161,9 +163,9 @@ export default function DocumentsList() {
           <svg className="w-12 h-12 mx-auto mb-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
           </svg>
-          <p className="text-lg font-medium mb-2">No documents found</p>
+          <p className="text-lg font-medium mb-2">{t('documentsList.noDocuments')}</p>
           <p className="text-sm">
-            {searchQuery ? 'Try a different search query' : 'Import new documents to start'}
+            {searchQuery ? t('documentsList.tryDifferentSearch') : t('documentsList.importNew')}
           </p>
         </div>
       ) : (
@@ -172,22 +174,22 @@ export default function DocumentsList() {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Title
+                  {t('documentsList.titleColumn')}
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Source
+                  {t('documentsList.sourceColumn')}
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Status
+                  {t('documentsList.statusColumn')}
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Tags
+                  {t('documentsList.tagsColumn')}
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Date
+                  {t('documentsList.dateColumn')}
                 </th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
+                  {t('documentsList.actionsColumn')}
                 </th>
               </tr>
             </thead>
@@ -235,7 +237,7 @@ export default function DocumentsList() {
                       to={`/documents/${doc.id}`}
                       className="text-blue-600 hover:text-blue-800 text-sm"
                     >
-                      View
+                      {t('documentsList.view')}
                     </Link>
                   </td>
                 </tr>

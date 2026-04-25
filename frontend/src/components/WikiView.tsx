@@ -2,10 +2,12 @@ import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { useTranslation } from 'react-i18next'
 
 export default function WikiView() {
   const params = useParams<{ '*': string }>()
   const navigate = useNavigate()
+  const { t } = useTranslation()
   const wikiPath = params['*'] || 'index'
   const [content, setContent] = useState<string>('')
   const [loading, setLoading] = useState(true)
@@ -24,16 +26,16 @@ export default function WikiView() {
       const res = await fetch(`/data/wiki/${wikiPath}.md`)
       if (!res.ok) {
         if (res.status === 404) {
-          setError('Wiki page not found')
+          setError(t('wikiView.notFound'))
           setContent('')
         } else {
-          throw new Error('Failed to load wiki content')
+          throw new Error(t('wikiView.error'))
         }
       } else {
         setContent(await res.text())
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load wiki content')
+      setError(err instanceof Error ? err.message : t('wikiView.error'))
     } finally {
       setLoading(false)
     }
@@ -80,13 +82,13 @@ export default function WikiView() {
     parts.forEach((part, index) => {
       const path = parts.slice(0, index + 1).join('/')
       crumbs.push({
-        name: part === 'index' ? 'Home' : part.charAt(0).toUpperCase() + part.slice(1),
+        name: part === 'index' ? t('wikiView.home') : part.charAt(0).toUpperCase() + part.slice(1),
         path: path,
       })
     })
 
     return crumbs
-  }, [wikiPath])
+  }, [wikiPath, t])
 
   if (loading) {
     return (
@@ -104,7 +106,7 @@ export default function WikiView() {
         <div className="p-4 border-b border-gray-200 bg-gray-50">
           <nav className="flex items-center gap-2 text-sm">
             <Link to="/wiki" className="text-blue-600 hover:underline">
-              Wiki
+              {t('wikiView.title')}
             </Link>
             {breadcrumbs.map((crumb, index) => (
               <span key={crumb.path} className="flex items-center gap-2">
@@ -129,7 +131,7 @@ export default function WikiView() {
                 {error}
                 {wikiPath !== 'index' && (
                   <Link to="/wiki" className="ml-4 text-red-800 underline">
-                    Go to Wiki Home
+                    {t('wikiView.goToWikiHome')}
                   </Link>
                 )}
               </div>
@@ -209,7 +211,7 @@ export default function WikiView() {
       {/* Sidebar with quick navigation - only visible on large screens */}
       <aside className="hidden xl:block w-64 border-l border-gray-200 bg-gray-50 overflow-auto">
         <div className="p-4">
-          <h3 className="text-sm font-semibold text-gray-500 uppercase mb-3">Quick Links</h3>
+          <h3 className="text-sm font-semibold text-gray-500 uppercase mb-3">{t('wikiView.quickLinks')}</h3>
           <ul className="space-y-2">
             <li>
               <Link
@@ -223,7 +225,7 @@ export default function WikiView() {
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
                 </svg>
-                Index
+                {t('wikiView.index')}
               </Link>
             </li>
             <li>
@@ -238,7 +240,7 @@ export default function WikiView() {
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
                 </svg>
-                Entities
+                {t('wikiView.entities')}
               </Link>
             </li>
             <li>
@@ -253,7 +255,7 @@ export default function WikiView() {
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
                 </svg>
-                Topics
+                {t('wikiView.topics')}
               </Link>
             </li>
             <li>
@@ -268,7 +270,7 @@ export default function WikiView() {
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                 </svg>
-                Sources
+                {t('wikiView.sources')}
               </Link>
             </li>
 
