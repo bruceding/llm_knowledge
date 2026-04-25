@@ -71,11 +71,15 @@ func (h *PagesHandler) GeneratePages(c echo.Context) error {
 	files, _ := os.ReadDir(pagesDir)
 	for _, f := range files {
 		oldName := f.Name()
-		// pdftoppm generates page-1.png, page-2.png, etc.
+		// pdftoppm generates page-01.png, page-02.png, etc. (with leading zeros)
 		if strings.HasPrefix(oldName, "page-") && strings.HasSuffix(oldName, ".png") {
-			// Convert to page_1.png format
+			// Convert to page_1.png format (without leading zeros)
 			pageNum := strings.TrimPrefix(oldName, "page-")
 			pageNum = strings.TrimSuffix(pageNum, ".png")
+			// Remove leading zero for single-digit pages
+			if len(pageNum) > 1 && pageNum[0] == '0' {
+				pageNum = pageNum[1:]
+			}
 			newName := fmt.Sprintf("page_%s.png", pageNum)
 			os.Rename(filepath.Join(pagesDir, oldName), filepath.Join(pagesDir, newName))
 		}

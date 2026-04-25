@@ -56,6 +56,43 @@ export default function DocDetail() {
           setWikiContent(await wikiRes.text())
         }
       }
+
+      // Load existing translation if available
+      if (doc.rawPath) {
+        // Check for Chinese translation
+        const zhRes = await fetch(`/data/${doc.rawPath}/paper_zh.md`)
+        if (zhRes.ok) {
+          const zhContent = await zhRes.text()
+          if (zhContent.trim()) {
+            setTranslationContent(zhContent)
+            setTranslationLang('zh')
+          }
+        }
+
+        // Check for English translation (if original is Chinese)
+        if (!translationContent && doc.language === 'zh') {
+          const enRes = await fetch(`/data/${doc.rawPath}/paper_en.md`)
+          if (enRes.ok) {
+            const enContent = await enRes.text()
+            if (enContent.trim()) {
+              setTranslationContent(enContent)
+              setTranslationLang('en')
+            }
+          }
+        }
+
+        // Load page count for PDF documents
+        if (doc.sourceType === 'pdf') {
+          try {
+            const pagesStatus = await getPagesStatus(doc.id)
+            if (pagesStatus.exists) {
+              setTotalPages(pagesStatus.page_count)
+            }
+          } catch (err) {
+            console.error('Failed to get pages status:', err)
+          }
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load document')
     } finally {

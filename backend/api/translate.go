@@ -74,13 +74,17 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 			if err := pdftoppmCmd.Run(); err != nil {
 				log.Printf("[translate] failed to generate page images: %v", err)
 			} else {
-				// Rename files from page-1.png to page_1.png
+				// Rename files from page-01.png to page_1.png (remove leading zeros)
 				files, _ := os.ReadDir(pagesDir)
 				for _, f := range files {
 					oldName := f.Name()
 					if strings.HasPrefix(oldName, "page-") && strings.HasSuffix(oldName, ".png") {
 						pageNum := strings.TrimPrefix(oldName, "page-")
 						pageNum = strings.TrimSuffix(pageNum, ".png")
+						// Remove leading zero for single-digit pages
+						if len(pageNum) > 1 && pageNum[0] == '0' {
+							pageNum = pageNum[1:]
+						}
 						newName := fmt.Sprintf("page_%s.png", pageNum)
 						os.Rename(filepath.Join(pagesDir, oldName), filepath.Join(pagesDir, newName))
 					}
@@ -184,7 +188,18 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 		flusher.Flush()
 
 		if evt.Type == "assistant" {
-			fullContent.WriteString(evt.Content)
+			// Use Content field if available
+			if evt.Content != "" {
+				fullContent.WriteString(evt.Content)
+			}
+			// Also check Message.Content for text blocks
+			if evt.Message != nil {
+				for _, block := range evt.Message.Content {
+					if block.Type == "text" && block.Text != "" {
+						fullContent.WriteString(block.Text)
+					}
+				}
+			}
 		}
 	}
 
