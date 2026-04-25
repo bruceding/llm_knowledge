@@ -249,6 +249,17 @@ export default function DocDetail() {
         {/* Header with view mode toggle */}
         <div className="p-4 border-b border-gray-200 flex items-center justify-between">
           <div className="flex items-center gap-4">
+            {/* Back button */}
+            <button
+              onClick={() => navigate('/documents')}
+              className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              title="Back to documents list"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+
             <button
               onClick={() => setViewMode('pdf')}
               className={`px-3 py-1.5 rounded-lg text-sm ${
