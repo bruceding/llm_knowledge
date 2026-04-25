@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"llm-knowledge/claude"
 	"llm-knowledge/db"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -51,6 +52,12 @@ func (h *QueryHandler) Ask(c echo.Context) error {
 			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create conversation"})
 		}
 		convID = conv.ID
+	} else {
+		// Verify conversation exists
+		var existingConv db.Conversation
+		if err := db.DB.First(&existingConv, convID).Error; err != nil {
+			return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
+		}
 	}
 
 	// Save user message
@@ -136,7 +143,9 @@ func (h *QueryHandler) Ask(c echo.Context) error {
 		Content:        fullContent.String(),
 		CreatedAt:      time.Now(),
 	}
-	db.DB.Create(&assistantMsg)
+	if err := db.DB.Create(&assistantMsg).Error; err != nil {
+		log.Printf("failed to save assistant message: %v", err)
+	}
 
 	// Update conversation timestamp
 	db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("updated_at", time.Now())
@@ -145,6 +154,7 @@ func (h *QueryHandler) Ask(c echo.Context) error {
 }
 
 // buildQueryPrompt constructs the prompt for Claude with wiki context and history
+// Note: question is passed for reference but is already included in history
 func (h *QueryHandler) buildQueryPrompt(history []db.ConversationMessage, question string, docID uint) (string, error) {
 	var prompt strings.Builder
 
@@ -159,7 +169,7 @@ func (h *QueryHandler) buildQueryPrompt(history []db.ConversationMessage, questi
 		prompt.WriteString("\n\n")
 	}
 
-	// Add conversation history
+	// Add conversation history (includes the current question)
 	if len(history) > 0 {
 		prompt.WriteString("## 对话历史\n\n")
 		for _, msg := range history {
@@ -173,10 +183,8 @@ func (h *QueryHandler) buildQueryPrompt(history []db.ConversationMessage, questi
 		prompt.WriteString("\n")
 	}
 
-	// Add current question
-	prompt.WriteString("## 当前问题\n\n")
-	prompt.WriteString(question)
-	prompt.WriteString("\n\n请根据上述上下文回答问题。如果上下文中没有相关信息，请说明这一点。")
+	// Add instruction for assistant response
+	prompt.WriteString("请根据上述上下文回答问题。如果上下文中没有相关信息，请说明这一点。")
 
 	return prompt.String(), nil
 }
