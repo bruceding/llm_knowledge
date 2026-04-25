@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
+import * as pdfjsViewer from 'pdfjs-dist/web/pdf_viewer.mjs'
+import 'pdfjs-dist/web/pdf_viewer.css'
 
 // Set worker path using Vite's URL handling
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -14,36 +16,122 @@ interface PDFViewerProps {
 
 export default function PDFViewer({ url, onPageChange }: PDFViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const scaleRef = useRef(1.2)
-  const renderTaskRef = useRef<pdfjsLib.RenderTask | null>(null)
-  const scrollAccumRef = useRef(0)
-  const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null)
+  const viewerRef = useRef<HTMLDivElement>(null)
+  const pdfViewerRef = useRef<pdfjsViewer.PDFViewer | null>(null)
+  const eventBusRef = useRef<pdfjsViewer.EventBus | null>(null)
+  const pdfLinkServiceRef = useRef<pdfjsViewer.PDFLinkService | null>(null)
+  const pdfFindControllerRef = useRef<pdfjsViewer.PDFFindController | null>(null)
+  const initializedRef = useRef(false)
+
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(0)
-  const [scale, setScale] = useState(1.2)
+  const [scale, setScale] = useState(1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [searchText, setSearchText] = useState('')
-  const [searchResults, setSearchResults] = useState<number[]>([])
-  const [currentSearchIndex, setCurrentSearchIndex] = useState(-1)
+  const [searchMatchCount, setSearchMatchCount] = useState(0)
+  const [currentMatchIndex, setCurrentMatchIndex] = useState(0)
 
-  // Update ref when scale changes
+  // Initialize PDFViewer infrastructure - runs once when refs are ready
+  const initializeViewer = useCallback(() => {
+    if (!containerRef.current || !viewerRef.current || initializedRef.current) return
+
+    // Create EventBus
+    const eventBus = new pdfjsViewer.EventBus()
+    eventBusRef.current = eventBus
+
+    // Create PDFLinkService
+    const pdfLinkService = new pdfjsViewer.PDFLinkService({
+      eventBus,
+      externalLinkTarget: pdfjsViewer.LinkTarget.BLANK,
+    })
+    pdfLinkServiceRef.current = pdfLinkService
+
+    // Create PDFFindController
+    const pdfFindController = new pdfjsViewer.PDFFindController({
+      eventBus,
+      linkService: pdfLinkService,
+    })
+    pdfFindControllerRef.current = pdfFindController
+
+    // Create PDFViewer with text layer enabled
+    const pdfViewer = new pdfjsViewer.PDFViewer({
+      container: containerRef.current,
+      viewer: viewerRef.current,
+      eventBus,
+      linkService: pdfLinkService,
+      findController: pdfFindController,
+      textLayerMode: 1, // ENABLE - for text selection
+      removePageBorders: false,
+    })
+    pdfViewerRef.current = pdfViewer
+
+    // Set viewer reference in linkService
+    pdfLinkService.setViewer(pdfViewer)
+
+    // Event listeners
+    const onPageChanging = (evt: { pageNumber: number }) => {
+      setCurrentPage(evt.pageNumber)
+      onPageChange?.(evt.pageNumber)
+    }
+
+    const onScaleChanging = (evt: { scale: number }) => {
+      setScale(evt.scale)
+    }
+
+    const onUpdateFindMatchesCount = (evt: { matchesCount: { total: number; current: number } }) => {
+      setSearchMatchCount(evt.matchesCount.total)
+      setCurrentMatchIndex(evt.matchesCount.current)
+    }
+
+    eventBus.on('pagechanging', onPageChanging)
+    eventBus.on('scalechanging', onScaleChanging)
+    eventBus.on('updatefindmatchescount', onUpdateFindMatchesCount)
+    eventBus.on('pagesinit', () => {
+      // Set initial scale when pages are initialized
+      if (pdfViewerRef.current) {
+        pdfViewerRef.current.currentScaleValue = 'page-width'
+      }
+    })
+
+    initializedRef.current = true
+  }, [onPageChange])
+
+  // Try to initialize on mount and when refs become available
   useEffect(() => {
-    scaleRef.current = scale
-  }, [scale])
+    // Use a small timeout to ensure refs are attached
+    const timer = setTimeout(() => {
+      initializeViewer()
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [initializeViewer])
 
   // Load PDF document
   useEffect(() => {
     const loadPdf = async () => {
+      if (!initializedRef.current) {
+        // Wait for initialization
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+
       try {
         setLoading(true)
         setError(null)
 
         const loadingTask = pdfjsLib.getDocument(url)
         const pdf = await loadingTask.promise
-        setPdfDoc(pdf)
         setTotalPages(pdf.numPages)
+
+        // Set document to viewer
+        if (pdfViewerRef.current && pdfLinkServiceRef.current && pdfFindControllerRef.current) {
+          pdfViewerRef.current.setDocument(pdf)
+          pdfLinkServiceRef.current.setDocument(pdf, null)
+          pdfFindControllerRef.current.setDocument(pdf)
+
+          // Set initial scale to fit page width after document is loaded
+          pdfViewerRef.current.currentScaleValue = 'page-width'
+        }
+
         setLoading(false)
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load PDF')
@@ -54,174 +142,73 @@ export default function PDFViewer({ url, onPageChange }: PDFViewerProps) {
     loadPdf()
   }, [url])
 
-  // Render current page
-  const renderPage = useCallback(async (pageNum: number) => {
-    if (!pdfDoc || !canvasRef.current) return
-
-    // Cancel any in-progress render to prevent canvas race conditions
-    if (renderTaskRef.current) {
-      try { renderTaskRef.current.cancel() } catch {}
-      renderTaskRef.current = null
-    }
-
-    try {
-      const page = await pdfDoc.getPage(pageNum)
-      const currentScale = scaleRef.current
-      const viewport = page.getViewport({ scale: currentScale })
-
-      const canvas = canvasRef.current
-      if (!canvas) return
-      const context = canvas.getContext('2d')
-      if (!context) return
-
-      // Use devicePixelRatio for sharp rendering
-      const dpr = window.devicePixelRatio || 1
-      canvas.width = viewport.width * dpr
-      canvas.height = viewport.height * dpr
-      canvas.style.width = `${viewport.width}px`
-      canvas.style.height = `${viewport.height}px`
-      context.scale(dpr, dpr)
-
-      const renderTask = page.render({
-        canvasContext: context,
-        viewport: viewport,
-        canvas: canvas,
-      })
-      renderTaskRef.current = renderTask
-
-      await renderTask.promise
-      renderTaskRef.current = null
-
-    } catch (err: any) {
-      // RenderingCancelledException is expected when zooming quickly
-      if (err?.name === 'RenderingCancelledException') return
-      console.error('Error rendering page:', err)
-    }
-  }, [pdfDoc])
-
-  useEffect(() => {
-    if (pdfDoc) {
-      renderPage(currentPage)
-    }
-  }, [pdfDoc, currentPage, scale, renderPage]) // Keep scale in dependencies to trigger re-render
-
-  // Wheel-based page flip: accumulate deltaY and flip one page at a time
-  useEffect(() => {
-    const container = containerRef.current
-    if (!container) return
-
-    const handleWheel = (e: WheelEvent) => {
-      e.preventDefault()
-
-      scrollAccumRef.current += e.deltaY
-
-      const threshold = 120
-
-      if (scrollAccumRef.current > threshold) {
-        scrollAccumRef.current = 0
-        if (currentPage < totalPages) {
-          setCurrentPage(prev => prev + 1)
-          onPageChange?.(currentPage + 1)
-        }
-      } else if (scrollAccumRef.current < -threshold) {
-        scrollAccumRef.current = 0
-        if (currentPage > 1) {
-          setCurrentPage(prev => prev - 1)
-          onPageChange?.(currentPage - 1)
-        }
-      }
-    }
-
-    container.addEventListener('wheel', handleWheel, { passive: false })
-    return () => container.removeEventListener('wheel', handleWheel)
-  }, [currentPage, totalPages, onPageChange])
-
   // Page navigation
   const goToPage = (page: number) => {
-    if (page >= 1 && page <= totalPages) {
-      setCurrentPage(page)
-      onPageChange?.(page)
-      if (containerRef.current) {
-        containerRef.current.scrollTop = 0
-      }
+    if (pdfViewerRef.current && page >= 1 && page <= totalPages) {
+      pdfViewerRef.current.currentPageNumber = page
     }
   }
 
-  const goToPrevPage = () => goToPage(currentPage - 1)
-  const goToNextPage = () => goToPage(currentPage + 1)
+  const goToPrevPage = () => {
+    pdfViewerRef.current?.previousPage()
+  }
+
+  const goToNextPage = () => {
+    pdfViewerRef.current?.nextPage()
+  }
 
   // Zoom controls
-  const zoomIn = () => setScale(Math.min(scale + 0.2, 3))
-  const zoomOut = () => setScale(Math.max(scale - 0.2, 0.5))
-  const resetZoom = () => setScale(1.2)
+  const zoomIn = () => {
+    pdfViewerRef.current?.increaseScale()
+  }
 
-  // Search functionality
-  const handleSearch = async () => {
-    if (!searchText.trim() || !pdfDoc) return
+  const zoomOut = () => {
+    pdfViewerRef.current?.decreaseScale()
+  }
 
-    const results: number[] = []
-
-    for (let i = 1; i <= totalPages; i++) {
-      const page = await pdfDoc.getPage(i)
-      const textContent = await page.getTextContent()
-      const pageText = textContent.items
-        .map((item: any) => item.str)
-        .join(' ')
-
-      if (pageText.toLowerCase().includes(searchText.toLowerCase())) {
-        results.push(i)
-      }
+  const resetZoom = () => {
+    if (pdfViewerRef.current) {
+      pdfViewerRef.current.currentScaleValue = 'page-width'
     }
+  }
 
-    setSearchResults(results)
-    if (results.length > 0) {
-      setCurrentSearchIndex(0)
-      goToPage(results[0])
-    }
+  // Search using EventBus
+  const handleSearch = () => {
+    if (!searchText.trim() || !eventBusRef.current) return
+
+    eventBusRef.current.dispatch('find', {
+      type: '',
+      query: searchText,
+      caseSensitive: false,
+      highlightAll: true,
+      findPrevious: false,
+    })
   }
 
   const goToNextSearchResult = () => {
-    if (searchResults.length > 0) {
-      const nextIndex = (currentSearchIndex + 1) % searchResults.length
-      setCurrentSearchIndex(nextIndex)
-      goToPage(searchResults[nextIndex])
-    }
+    eventBusRef.current?.dispatch('findagain', {
+      type: '',
+      query: searchText,
+      caseSensitive: false,
+      highlightAll: true,
+      findPrevious: false,
+    })
   }
 
   const goToPrevSearchResult = () => {
-    if (searchResults.length > 0) {
-      const prevIndex = (currentSearchIndex - 1 + searchResults.length) % searchResults.length
-      setCurrentSearchIndex(prevIndex)
-      goToPage(searchResults[prevIndex])
-    }
-  }
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full bg-gray-50">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
-          <span className="mt-4 text-gray-600 block">Loading PDF...</span>
-        </div>
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-full bg-gray-50">
-        <div className="text-red-600 text-center">
-          <p className="font-semibold">Error loading PDF</p>
-          <p className="text-sm mt-2">{error}</p>
-        </div>
-      </div>
-    )
+    eventBusRef.current?.dispatch('findagain', {
+      type: '',
+      query: searchText,
+      caseSensitive: false,
+      highlightAll: true,
+      findPrevious: true,
+    })
   }
 
   return (
-    <div className="flex flex-col h-full bg-gray-100">
+    <div className="flex flex-col h-full bg-gray-100 relative">
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-3 p-3 bg-white border-b shadow-sm">
+      <div className="flex flex-wrap items-center gap-3 p-3 bg-white border-b shadow-sm z-20 relative">
         {/* Page navigation */}
         <div className="flex items-center gap-2">
           <button
@@ -298,10 +285,10 @@ export default function PDFViewer({ url, onPageChange }: PDFViewerProps) {
           >
             Find
           </button>
-          {searchResults.length > 0 && (
+          {searchMatchCount > 0 && (
             <div className="flex items-center gap-1">
               <span className="text-sm text-gray-600">
-                {currentSearchIndex + 1}/{searchResults.length}
+                {currentMatchIndex + 1}/{searchMatchCount}
               </span>
               <button
                 onClick={goToPrevSearchResult}
@@ -320,14 +307,31 @@ export default function PDFViewer({ url, onPageChange }: PDFViewerProps) {
         </div>
       </div>
 
-      {/* PDF container */}
+      {/* PDF container - always rendered so refs are available */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-hidden flex justify-center bg-gray-300 p-6"
+        className="flex-1 overflow-auto bg-gray-300 absolute inset-0"
+        style={{ position: 'absolute' }}
       >
-        <canvas
-          ref={canvasRef}
-          className="shadow-xl bg-white"
+        {loading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-10">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+              <span className="mt-4 text-gray-600 block">Loading PDF...</span>
+            </div>
+          </div>
+        )}
+        {error && (
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-10">
+            <div className="text-red-600 text-center">
+              <p className="font-semibold">Error loading PDF</p>
+              <p className="text-sm mt-2">{error}</p>
+            </div>
+          </div>
+        )}
+        <div
+          ref={viewerRef}
+          className="pdfViewer"
         />
       </div>
     </div>
