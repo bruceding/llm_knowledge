@@ -94,6 +94,9 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 		// Continue anyway - the file was saved successfully
 	}
 
+	// Capture docID before goroutine to avoid race condition
+	docID := doc.ID
+
 	// Trigger async ingest pipeline
 	if h.ClaudeBin != "" {
 		go func() {
@@ -104,7 +107,7 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 			} else {
 				// Update WikiPath after successful ingest
 				wikiRelPath := filepath.Join("wiki", name+".md")
-				db.DB.Model(&doc).Update("wiki_path", wikiRelPath)
+				db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("wiki_path", wikiRelPath)
 			}
 		}()
 	}

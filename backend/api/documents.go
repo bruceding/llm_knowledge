@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/labstack/echo/v4"
+	"gorm.io/gorm"
 )
 
 // DocHandler handles document CRUD operations
@@ -74,41 +75,53 @@ func (h *DocHandler) UpdateDoc(c echo.Context) error {
 		doc.Title = req.Title
 	}
 
-	// Save document changes
-	if err := db.DB.Save(&doc).Error; err != nil {
-		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to update document"})
-	}
-
-	// Update tags if provided
-	if req.TagNames != nil {
-		// Remove existing tag associations
-		db.DB.Where("document_id = ?", doc.ID).Delete(&db.DocumentTag{})
-
-		// Add new tags
-		for _, tagName := range req.TagNames {
-			if tagName == "" {
-				continue
-			}
-			// Find or create tag
-			var tag db.Tag
-			result := db.DB.Where("name = ?", tagName).First(&tag)
-			if result.Error != nil {
-				// Create new tag
-				tag = db.Tag{
-					Name:  tagName,
-					Color: "#808080", // Default color
-				}
-				if err := db.DB.Create(&tag).Error; err != nil {
-					continue // Skip if tag creation fails
-				}
-			}
-			// Create document-tag association
-			docTag := db.DocumentTag{
-				DocumentID: doc.ID,
-				TagID:      tag.ID,
-			}
-			db.DB.Create(&docTag)
+	// Wrap all database operations in a transaction
+	err := db.DB.Transaction(func(tx *gorm.DB) error {
+		// Save document changes
+		if err := tx.Save(&doc).Error; err != nil {
+			return err
 		}
+
+		// Update tags if provided
+		if req.TagNames != nil {
+			// Remove existing tag associations
+			if err := tx.Where("document_id = ?", doc.ID).Delete(&db.DocumentTag{}).Error; err != nil {
+				return err
+			}
+
+			// Add new tags
+			for _, tagName := range req.TagNames {
+				if tagName == "" {
+					continue
+				}
+				// Find or create tag
+				var tag db.Tag
+				result := tx.Where("name = ?", tagName).First(&tag)
+				if result.Error != nil {
+					// Create new tag
+					tag = db.Tag{
+						Name:  tagName,
+						Color: "#808080", // Default color
+					}
+					if err := tx.Create(&tag).Error; err != nil {
+						continue // Skip if tag creation fails
+					}
+				}
+				// Create document-tag association
+				docTag := db.DocumentTag{
+					DocumentID: doc.ID,
+					TagID:      tag.ID,
+				}
+				if err := tx.Create(&docTag).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to update document"})
 	}
 
 	// Reload document with tags
