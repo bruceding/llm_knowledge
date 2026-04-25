@@ -43,3 +43,10 @@ type ConversationMessage struct {
 	ContextDocIDs  string    `json:"contextDocIds"` // JSON array
 	CreatedAt      time.Time `json:"createdAt"`
 }
+
+type UserSettings struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Language  string    `gorm:"default:en" json:"language"` // 'en' or 'zh'
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}

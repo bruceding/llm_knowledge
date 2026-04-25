@@ -13,5 +13,5 @@ func Init(path string) error {
 	if err != nil {
 		return err
 	}
-	return DB.AutoMigrate(&Document{}, &Tag{}, &DocumentTag{}, &Conversation{}, &ConversationMessage{})
+	return DB.AutoMigrate(&Document{}, &Tag{}, &DocumentTag{}, &Conversation{}, &ConversationMessage{}, &UserSettings{})
 }
