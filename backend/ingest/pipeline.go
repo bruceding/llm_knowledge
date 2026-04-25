@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"llm-knowledge/claude"
+	"llm-knowledge/db"
 	"log"
 	"strings"
 	"text/template"
@@ -10,6 +11,10 @@ import (
 
 // ingestPrompt is the template for the Claude CLI to ingest a raw document
 const ingestPrompt = `你是一个知识库维护者。请读取以下源文档，并完成：
+
+{{if .Summary}}
+文档概述: {{.Summary}}
+{{end}}
 
 1. 在 {{.WikiDir}}/sources/{{.Name}}.md 创建源文档页：
    - 标题、作者、年份、期刊
@@ -45,11 +50,23 @@ func NewPipeline(wikiDir string, claudeBin string) *Pipeline {
 }
 
 // Ingest reads a raw document and uses Claude to update the wiki
-func (p *Pipeline) Ingest(ctx context.Context, rawPath, name string) error {
+// docID is used to fetch the summary from DB if available
+func (p *Pipeline) Ingest(ctx context.Context, rawPath, name string, docID uint) error {
+	// Fetch summary from DB if available
+	var doc db.Document
+	summary := ""
+	if docID > 0 {
+		if err := db.DB.First(&doc, docID).Error; err == nil && doc.Summary != "" {
+			summary = doc.Summary
+			log.Printf("[ingest] Using existing summary for %s: %s", name, truncate(summary, 50))
+		}
+	}
+
 	prompt, err := buildPrompt(ingestPrompt, map[string]string{
 		"WikiDir": p.WikiDir,
 		"Name":    name,
 		"RawPath": rawPath,
+		"Summary": summary,
 	})
 	if err != nil {
 		return err

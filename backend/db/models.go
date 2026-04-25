@@ -8,6 +8,7 @@ type Document struct {
 	SourceType string    `json:"sourceType"` // pdf, rss, web, manual
 	RawPath    string    `json:"rawPath"`
 	WikiPath   string    `json:"wikiPath"`
+	Summary    string    `json:"summary"`                    // AI生成的短摘要（50-100字）
 	Language   string    `json:"language"`
 	Status     string    `gorm:"default:inbox" json:"status"` // inbox, published, archived
 	Metadata   string    `json:"metadata"`                    // JSON string

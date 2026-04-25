@@ -14,11 +14,11 @@ export default function Sidebar() {
   })
 
   useEffect(() => {
-    // Fetch inbox count
+    // Fetch inbox count on mount and when location changes
     fetchInbox()
       .then((docs) => setInboxCount(docs.length))
       .catch(() => {})
-  }, [])
+  }, [location.pathname])
 
   const toggleSection = (section: keyof typeof expandedSections) => {
     setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }))

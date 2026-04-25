@@ -1,16 +1,17 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { fetchInbox } from '../api'
 import type { Document } from '../types'
 
 export default function Inbox() {
+  const location = useLocation()
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     loadDocuments()
-  }, [])
+  }, [location.key])
 
   const loadDocuments = async () => {
     setLoading(true)
@@ -147,7 +148,7 @@ export default function Inbox() {
           <p className="text-sm">Import new documents to start building your knowledge base</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="space-y-4">
           {documents.map((doc) => (
             <Link
               key={doc.id}
@@ -162,6 +163,12 @@ export default function Inbox() {
                   </h3>
                 </div>
               </div>
+
+              {doc.summary && (
+                <p className="text-sm text-gray-600 mb-3 line-clamp-2">
+                  {doc.summary}
+                </p>
+              )}
 
               <div className="flex items-center gap-2 mb-3 text-sm text-gray-500">
                 <span>{formatDate(doc.createdAt)}</span>

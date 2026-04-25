@@ -435,3 +435,42 @@ func (h *DocHandler) ListAll(c echo.Context) error {
 	}
 	return c.JSON(http.StatusOK, docs)
 }
+
+// RegenerateSummary regenerates summary for an existing document
+func (h *DocHandler) RegenerateSummary(c echo.Context) error {
+	id := c.Param("id")
+	idUint, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid document id"})
+	}
+
+	// Get Claude bin path from environment or default
+	claudeBin := os.Getenv("CLAUDE_BIN")
+	if claudeBin == "" {
+		claudeBin = "claude"
+	}
+
+	// Check if document exists
+	var doc db.Document
+	result := db.DB.First(&doc, idUint)
+	if result.Error != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
+	}
+
+	if doc.RawPath == "" {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "document has no raw content"})
+	}
+
+	// Generate summary
+	summary, err := ingest.GenerateSummary(h.DataDir, doc.RawPath, claudeBin)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to generate summary: " + err.Error()})
+	}
+
+	// Update document
+	if err := db.DB.Model(&doc).Update("summary", summary).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to update summary"})
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{"summary": summary})
+}

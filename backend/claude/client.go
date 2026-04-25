@@ -154,6 +154,37 @@ func (c *Client) SendSimple(ctx context.Context, prompt string) (string, error) 
 	return string(out), nil
 }
 
+// SendWithTools executes the Claude CLI with tools enabled (like Read for PDFs).
+// Returns the final response as a string.
+func (c *Client) SendWithTools(ctx context.Context, prompt string) (string, error) {
+	// Create a channel to collect events
+	eventCh := make(chan StreamEvent, 100)
+
+	// Run Send in a goroutine
+	go func() {
+		defer close(eventCh)
+		if err := c.Send(ctx, prompt, eventCh); err != nil {
+			eventCh <- StreamEvent{Type: "error", Error: err.Error()}
+		}
+	}()
+
+	// Collect all content from events
+	var result strings.Builder
+	for evt := range eventCh {
+		if evt.Type == "error" && evt.Error != "" {
+			return "", fmt.Errorf("claude error: %s", evt.Error)
+		}
+		if evt.Type == "result" && evt.Result != "" {
+			result.WriteString(evt.Result)
+		}
+		if evt.Content != "" && evt.Type != "result" {
+			result.WriteString(evt.Content)
+		}
+	}
+
+	return result.String(), nil
+}
+
 // SendWithOutput executes the Claude CLI and writes output to the provided writer.
 // This is useful for capturing output directly to a file or buffer.
 func (c *Client) SendWithOutput(ctx context.Context, prompt string, output io.Writer) error {

@@ -44,6 +44,12 @@ export async function deleteDocument(id: number): Promise<{ id: number; message:
   return res.json()
 }
 
+export async function regenerateSummary(id: number): Promise<{ summary: string }> {
+  const res = await fetch(`${API_BASE}/documents/${id}/regenerate-summary`, { method: 'POST' })
+  if (!res.ok) throw new Error('Failed to regenerate summary')
+  return res.json()
+}
+
 export async function uploadPDF(file: File): Promise<{ id: number; path: string; message: string; pages: number }> {
   const formData = new FormData()
   formData.append('file', file)

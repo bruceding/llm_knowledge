@@ -108,6 +108,7 @@ func main() {
 	e.POST("/api/documents/:id/re-extract", docH.ReExtract)
 	e.POST("/api/documents/:id/llm-extract", docH.LLMExtract)
 	e.POST("/api/documents/:id/html-extract", docH.HTMLExtract)
+	e.POST("/api/documents/:id/regenerate-summary", docH.RegenerateSummary)
 	e.DELETE("/api/documents/:id", docH.DeleteDoc)
 
 	// Query API (SSE streaming)

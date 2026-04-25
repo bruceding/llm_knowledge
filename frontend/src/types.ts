@@ -12,6 +12,7 @@ export interface Document {
   sourceType: string
   rawPath: string
   wikiPath: string
+  summary: string
   language: string
   status: 'inbox' | 'published' | 'archived'
   metadata: string

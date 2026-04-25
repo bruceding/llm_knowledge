@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { fetchDocument, updateDocument, publishDocument, deleteDocument, translateDocument } from '../api'
+import { fetchDocument, updateDocument, publishDocument, deleteDocument, translateDocument, regenerateSummary } from '../api'
 import type { Document, SSEEvent } from '../types'
 import PDFViewer from './PDFViewer'
 
@@ -10,7 +10,6 @@ export default function DocDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [document, setDocument] = useState<Document | null>(null)
-  const [rawContent, setRawContent] = useState<string>('')
   const [wikiContent, setWikiContent] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -26,8 +25,11 @@ export default function DocDetail() {
   const [translationContent, setTranslationContent] = useState('')
   const [translationLang, setTranslationLang] = useState<string>('')
 
-  // View mode
-  const [viewMode, setViewMode] = useState<'raw' | 'wiki' | 'translation' | 'pdf'>('raw')
+  // View mode - default to PDF, then Wiki if available
+  const [viewMode, setViewMode] = useState<'wiki' | 'translation' | 'pdf'>('pdf')
+
+  // Summary regeneration state
+  const [regeneratingSummary, setRegeneratingSummary] = useState(false)
 
   // Load document and content
   useEffect(() => {
@@ -44,14 +46,6 @@ export default function DocDetail() {
       setEditTitle(doc.title)
       setEditTags(doc.tags.map((t) => t.name))
       setEditStatus(doc.status)
-
-      // Load raw content
-      if (doc.rawPath) {
-        const rawRes = await fetch(`/data/${doc.rawPath}/paper.md`)
-        if (rawRes.ok) {
-          setRawContent(await rawRes.text())
-        }
-      }
 
       // Load wiki content
       if (doc.wikiPath) {
@@ -102,56 +96,6 @@ export default function DocDetail() {
     }
   }
 
-  const handleReExtract = async () => {
-    if (!document) return
-    if (!confirm('Re-extract text from the original PDF? This will overwrite the current raw text.')) return
-    try {
-      const res = await fetch(`/api/documents/${document.id}/re-extract`, { method: 'POST' })
-      if (!res.ok) {
-        const body = await res.json()
-        throw new Error(body.error || 'Re-extract failed')
-      }
-      const data = await res.json()
-      setError(null)
-      // Reload raw content
-      if (document.rawPath) {
-        const rawRes = await fetch(`/data/${document.rawPath}/paper.md`)
-        if (rawRes.ok) {
-          setRawContent(await rawRes.text())
-        }
-      }
-      setError(`${data.message} (${data.pages} pages)`)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to re-extract')
-    }
-  }
-
-  const handleLLMExtract = async () => {
-    if (!document) return
-    const startPage = prompt('Start page (default: 1)', '1') || '1'
-    const endPage = prompt('End page (default: all, or enter number like 5)', 'all') || 'all'
-    if (!confirm(`Extract pages ${startPage}-${endPage} using Claude AI? This will overwrite the current raw text.`)) return
-    try {
-      setError('LLM extraction in progress...')
-      const res = await fetch(`/api/documents/${document.id}/llm-extract?start_page=${startPage}&end_page=${endPage}`, { method: 'POST' })
-      if (!res.ok) {
-        const body = await res.json()
-        throw new Error(body.error || 'LLM extract failed')
-      }
-      const data = await res.json()
-      // Reload raw content
-      if (document.rawPath) {
-        const rawRes = await fetch(`/data/${document.rawPath}/paper.md`)
-        if (rawRes.ok) {
-          setRawContent(await rawRes.text())
-        }
-      }
-      setError(`${data.message} (${data.pages} pages extracted)`)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to LLM extract')
-    }
-  }
-
   const handleAddTag = () => {
     const tag = tagInput.trim()
     if (tag && !editTags.includes(tag)) {
@@ -190,8 +134,6 @@ export default function DocDetail() {
 
   const getDisplayContent = () => {
     switch (viewMode) {
-      case 'raw':
-        return rawContent
       case 'wiki':
         return wikiContent
       case 'translation':
@@ -199,7 +141,7 @@ export default function DocDetail() {
       case 'pdf':
         return null // PDF is rendered in iframe
       default:
-        return rawContent
+        return wikiContent
     }
   }
 
@@ -249,14 +191,6 @@ export default function DocDetail() {
               }`}
             >
               PDF Preview
-            </button>
-            <button
-              onClick={() => setViewMode('raw')}
-              className={`px-3 py-1.5 rounded-lg text-sm ${
-                viewMode === 'raw' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
-              }`}
-            >
-              Raw Text
             </button>
             {wikiContent && (
               <button
@@ -439,6 +373,32 @@ export default function DocDetail() {
             </div>
           </div>
 
+          {/* Summary */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Summary</label>
+            <div className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-600 text-sm min-h-[60px]">
+              {document.summary || 'No summary generated'}
+            </div>
+            <button
+              onClick={async () => {
+                if (!document) return
+                setRegeneratingSummary(true)
+                try {
+                  const result = await regenerateSummary(document.id)
+                  setDocument({ ...document, summary: result.summary })
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : 'Failed to regenerate summary')
+                } finally {
+                  setRegeneratingSummary(false)
+                }
+              }}
+              disabled={regeneratingSummary}
+              className="mt-2 w-full px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50"
+            >
+              {regeneratingSummary ? 'Generating...' : 'Regenerate Summary'}
+            </button>
+          </div>
+
           {/* Dates */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Created</label>
@@ -483,22 +443,6 @@ export default function DocDetail() {
               className="w-full px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
             >
               Archive
-            </button>
-          )}
-          {document.sourceType === 'pdf' && (
-            <button
-              onClick={handleReExtract}
-              className="w-full px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-            >
-              Re-extract Text (pdftotext)
-            </button>
-          )}
-          {document.sourceType === 'pdf' && (
-            <button
-              onClick={handleLLMExtract}
-              className="w-full px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors"
-            >
-              LLM Extract (Claude AI)
             </button>
           )}
           <button
