@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom'
+
 export default function Sidebar() {
   return (
     <aside className="w-64 bg-gray-50 border-r border-gray-200 flex flex-col">
@@ -7,36 +9,36 @@ export default function Sidebar() {
       <nav className="flex-1 p-2">
         <ul className="space-y-1">
           <li>
-            <a
-              href="/"
+            <Link
+              to="/"
               className="flex items-center gap-2 px-3 py-2 rounded-lg text-gray-700 hover:bg-gray-200 transition-colors"
             >
               <span>Inbox</span>
-            </a>
+            </Link>
           </li>
           <li>
-            <a
-              href="/wiki"
+            <Link
+              to="/wiki"
               className="flex items-center gap-2 px-3 py-2 rounded-lg text-gray-700 hover:bg-gray-200 transition-colors"
             >
               <span>Wiki</span>
-            </a>
+            </Link>
           </li>
           <li>
-            <a
-              href="/chat"
+            <Link
+              to="/chat"
               className="flex items-center gap-2 px-3 py-2 rounded-lg text-gray-700 hover:bg-gray-200 transition-colors"
             >
               <span>Chat</span>
-            </a>
+            </Link>
           </li>
           <li>
-            <a
-              href="/import"
+            <Link
+              to="/import"
               className="flex items-center gap-2 px-3 py-2 rounded-lg text-gray-700 hover:bg-gray-200 transition-colors"
             >
               <span>Import</span>
-            </a>
+            </Link>
           </li>
         </ul>
       </nav>
