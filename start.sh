@@ -38,5 +38,17 @@ make build
 # 设置端口（默认 9999）
 PORT=${PORT:-9999}
 
+# 终止旧进程
+echo "检查并终止旧进程..."
+OLD_PID=$(pgrep -f "llm-knowledge.*-port.*$PORT" 2>/dev/null || true)
+if [ -n "$OLD_PID" ]; then
+    echo "发现旧进程 (PID: $OLD_PID)，正在终止..."
+    kill "$OLD_PID" 2>/dev/null || true
+    sleep 1
+fi
+
+# 确保日志目录存在
+mkdir -p logs
+
 echo "启动 LLM Knowledge 服务 (端口: $PORT)..."
 ./llm-knowledge -port "$PORT" > logs/llm-knowledge.log 2>&1 & 

@@ -5,3 +5,4 @@ llm-knowledge
 .playwright-mcp/
 .venv/
 .vscode/
+logs/
