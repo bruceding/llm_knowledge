@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { fetchInbox } from '../api'
 import type { Document } from '../types'
 
 export default function Inbox() {
+  const { t, i18n } = useTranslation()
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -57,7 +59,8 @@ export default function Inbox() {
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr)
-    return date.toLocaleDateString('zh-CN', {
+    const locale = i18n.language === 'zh' ? 'zh-CN' : 'en-US'
+    return date.toLocaleDateString(locale, {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -69,19 +72,19 @@ export default function Inbox() {
       case 'inbox':
         return (
           <span className="px-2 py-1 text-xs bg-yellow-100 text-yellow-800 rounded-full">
-            Pending Review
+            {t('inbox.pendingReview')}
           </span>
         )
       case 'published':
         return (
           <span className="px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full">
-            Published
+            {t('inbox.published')}
           </span>
         )
       case 'archived':
         return (
           <span className="px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded-full">
-            Archived
+            {t('inbox.archived')}
           </span>
         )
       default:
@@ -92,7 +95,7 @@ export default function Inbox() {
   if (loading) {
     return (
       <div className="p-6">
-        <h2 className="text-2xl font-bold text-gray-800 mb-4">Inbox</h2>
+        <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('inbox.title')}</h2>
         <div className="flex items-center justify-center py-12">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
         </div>
@@ -103,11 +106,11 @@ export default function Inbox() {
   if (error) {
     return (
       <div className="p-6">
-        <h2 className="text-2xl font-bold text-gray-800 mb-4">Inbox</h2>
+        <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('inbox.title')}</h2>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
           {error}
           <button onClick={loadDocuments} className="ml-4 text-red-800 underline">
-            Retry
+            {t('inbox.retry')}
           </button>
         </div>
       </div>
@@ -117,9 +120,9 @@ export default function Inbox() {
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-800">Inbox</h2>
+        <h2 className="text-2xl font-bold text-gray-800">{t('inbox.title')}</h2>
         <div className="flex items-center gap-2 text-sm text-gray-600">
-          <span>{documents.length} documents pending review</span>
+          <span>{documents.length} {t('inbox.documentsPending')}</span>
           <button onClick={loadDocuments} className="p-2 hover:bg-gray-100 rounded-lg">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path
@@ -143,8 +146,8 @@ export default function Inbox() {
               d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"
             />
           </svg>
-          <p className="text-lg font-medium mb-2">No documents to review</p>
-          <p className="text-sm">Import new documents to start building your knowledge base</p>
+          <p className="text-lg font-medium mb-2">{t('inbox.noDocuments')}</p>
+          <p className="text-sm">{t('inbox.importHint')}</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
