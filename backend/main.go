@@ -41,5 +41,16 @@ func main() {
 	}
 	e.POST("/api/raw/pdf", rawH.UploadPDF, middleware.BodyLimit("50M"))
 
+	// Document CRUD API
+	docH := &api.DocHandler{
+		DataDir: cfg.DataDir,
+	}
+	e.GET("/api/documents/inbox", docH.ListInbox)
+	e.GET("/api/documents", docH.ListAll)
+	e.GET("/api/documents/:id", docH.GetDoc)
+	e.PUT("/api/documents/:id", docH.UpdateDoc)
+	e.POST("/api/documents/:id/publish", docH.Publish)
+	e.DELETE("/api/documents/:id", docH.DeleteDoc)
+
 	e.Logger.Fatal(e.Start(":" + cfg.Port))
 }

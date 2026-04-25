@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"io"
+	"llm-knowledge/db"
 	"llm-knowledge/ingest"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 )
@@ -73,6 +75,25 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to write markdown file"})
 	}
 
+	// Create Document record in database
+	rawRelPath := filepath.Join("raw", "papers", name)
+	mdRelPath := filepath.Join("raw", "papers", name, "paper.md")
+
+	doc := db.Document{
+		Title:      name,
+		SourceType: "pdf",
+		RawPath:    rawRelPath,
+		WikiPath:   "",
+		Language:   detectLanguage(extracted.FullText),
+		Status:     "inbox",
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	if err := db.DB.Create(&doc).Error; err != nil {
+		log.Printf("[api] failed to create document record: %v", err)
+		// Continue anyway - the file was saved successfully
+	}
+
 	// Trigger async ingest pipeline
 	if h.ClaudeBin != "" {
 		go func() {
@@ -80,13 +101,34 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 			p := ingest.NewPipeline(wikiDir, h.ClaudeBin)
 			if err := p.Ingest(context.Background(), mdPath, name); err != nil {
 				log.Printf("[api] ingest failed for %s: %v", name, err)
+			} else {
+				// Update WikiPath after successful ingest
+				wikiRelPath := filepath.Join("wiki", name+".md")
+				db.DB.Model(&doc).Update("wiki_path", wikiRelPath)
 			}
 		}()
 	}
 
 	return c.JSON(http.StatusOK, echo.Map{
-		"path":    dir,
-		"message": "PDF uploaded and text extracted",
-		"pages":   len(extracted.Pages),
+		"id":       doc.ID,
+		"path":     dir,
+		"message":  "PDF uploaded and text extracted",
+		"pages":    len(extracted.Pages),
+		"rawPath":  mdRelPath,
 	})
+}
+
+// detectLanguage performs simple language detection based on character frequency
+func detectLanguage(text string) string {
+	// Simple heuristic: count CJK characters
+	cjkCount := 0
+	for _, r := range text {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			cjkCount++
+		}
+	}
+	if cjkCount > len(text)/10 {
+		return "zh"
+	}
+	return "en"
 }
