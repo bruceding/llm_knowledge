@@ -27,12 +27,7 @@ export default function DocDetail() {
   const [translationLang, setTranslationLang] = useState<string>('')
 
   // View mode
-  const [viewMode, setViewMode] = useState<'raw' | 'wiki' | 'translation' | 'pdf' | 'html'>('raw')
-
-  // HTML content
-  const [htmlAvailable, setHtmlAvailable] = useState(false)
-  const [htmlPages, setHtmlPages] = useState(0)
-  const [currentHtmlPage, setCurrentHtmlPage] = useState(1)
+  const [viewMode, setViewMode] = useState<'raw' | 'wiki' | 'translation' | 'pdf'>('raw')
 
   // Load document and content
   useEffect(() => {
@@ -55,25 +50,6 @@ export default function DocDetail() {
         const rawRes = await fetch(`/data/${doc.rawPath}/paper.md`)
         if (rawRes.ok) {
           setRawContent(await rawRes.text())
-        }
-      }
-
-      // Check if HTML exists
-      if (doc.rawPath) {
-        const htmlRes = await fetch(`/data/${doc.rawPath}/html/page-1.html`)
-        if (htmlRes.ok) {
-          setHtmlAvailable(true)
-          // Count HTML pages
-          const checkPages = async () => {
-            let pages = 0
-            for (let i = 1; i <= 100; i++) {
-              const res = await fetch(`/data/${doc.rawPath}/html/page-${i}.html`)
-              if (res.ok) pages++
-              else break
-            }
-            setHtmlPages(pages)
-          }
-          checkPages()
         }
       }
 
@@ -176,27 +152,6 @@ export default function DocDetail() {
     }
   }
 
-  const handleHTMLExtract = async () => {
-    if (!document) return
-    if (!confirm('Convert PDF to HTML preserving original layout?')) return
-    try {
-      setError('HTML conversion in progress...')
-      const res = await fetch(`/api/documents/${document.id}/html-extract`, { method: 'POST' })
-      if (!res.ok) {
-        const body = await res.json()
-        throw new Error(body.error || 'HTML extract failed')
-      }
-      const data = await res.json()
-      setHtmlAvailable(true)
-      setHtmlPages(data.html_pages)
-      setCurrentHtmlPage(1)
-      setViewMode('html')
-      setError(`${data.message} (${data.html_pages} pages)`)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to convert to HTML')
-    }
-  }
-
   const handleAddTag = () => {
     const tag = tagInput.trim()
     if (tag && !editTags.includes(tag)) {
@@ -295,16 +250,6 @@ export default function DocDetail() {
             >
               PDF Preview
             </button>
-            {htmlAvailable && (
-              <button
-                onClick={() => setViewMode('html')}
-                className={`px-3 py-1.5 rounded-lg text-sm ${
-                  viewMode === 'html' ? 'bg-green-100 text-green-700' : 'text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                HTML View
-              </button>
-            )}
             <button
               onClick={() => setViewMode('raw')}
               className={`px-3 py-1.5 rounded-lg text-sm ${
@@ -363,31 +308,6 @@ export default function DocDetail() {
           {viewMode === 'pdf' && pdfUrl ? (
             <div className="h-full">
               <PDFViewer url={pdfUrl} />
-            </div>
-          ) : viewMode === 'html' && document?.rawPath ? (
-            <div className="h-full flex flex-col">
-              <div className="flex items-center gap-2 mb-2 px-4">
-                <span className="text-sm text-gray-600">Page {currentHtmlPage} of {htmlPages}</span>
-                <button
-                  onClick={() => setCurrentHtmlPage(Math.max(1, currentHtmlPage - 1))}
-                  disabled={currentHtmlPage <= 1}
-                  className="px-2 py-1 text-sm bg-gray-100 rounded disabled:opacity-50"
-                >
-                  Previous
-                </button>
-                <button
-                  onClick={() => setCurrentHtmlPage(Math.min(htmlPages, currentHtmlPage + 1))}
-                  disabled={currentHtmlPage >= htmlPages}
-                  className="px-2 py-1 text-sm bg-gray-100 rounded disabled:opacity-50"
-                >
-                  Next
-                </button>
-              </div>
-              <iframe
-                src={`/data/${document.rawPath}/html/page-${currentHtmlPage}.html`}
-                className="flex-1 w-full border-0 bg-white"
-                title="HTML View"
-              />
             </div>
           ) : (
             <div className="max-w-4xl mx-auto prose prose-slate">
@@ -579,14 +499,6 @@ export default function DocDetail() {
               className="w-full px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors"
             >
               LLM Extract (Claude AI)
-            </button>
-          )}
-          {document.sourceType === 'pdf' && (
-            <button
-              onClick={handleHTMLExtract}
-              className="w-full px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
-            >
-              HTML View (Preserve Layout)
             </button>
           )}
           <button
