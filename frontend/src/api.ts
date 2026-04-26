@@ -208,14 +208,65 @@ export async function fetchSettings(): Promise<UserSettings> {
   return res.json()
 }
 
-export async function updateSettings(language: 'en' | 'zh'): Promise<UserSettings> {
+export async function updateSettings(settings: Partial<UserSettings>): Promise<UserSettings> {
   const res = await fetch(`${API_BASE}/settings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ language }),
+    body: JSON.stringify(settings),
   })
   if (!res.ok) throw new Error('Failed to update settings')
   return res.json()
+}
+
+// PDF Translation API
+export async function checkPDFTranslationStatus(docId: number): Promise<{
+  exists: boolean
+  path?: string
+  targetLang?: string
+}> {
+  const res = await fetch(`${API_BASE}/documents/${docId}/translation-status`)
+  if (!res.ok) throw new Error('Failed to check translation status')
+  return res.json()
+}
+
+export async function translatePDF(
+  docId: number,
+  onEvent: (event: SSEEvent) => void,
+  targetLang?: string
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/pdf-translate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ docId, targetLang }),
+  })
+
+  if (!res.ok) throw new Error('Failed to start PDF translation')
+
+  const reader = res.body?.getReader()
+  if (!reader) throw new Error('No response body')
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6))
+          onEvent(data)
+        } catch {
+          // Ignore parse errors
+        }
+      }
+    }
+  }
 }
 
 // Pages API - generate page images for bilingual view

@@ -53,7 +53,14 @@
     "languageHint": "Select your preferred display language for the interface.",
     "english": "English",
     "chinese": "中文",
-    "saved": "Settings saved successfully"
+    "saved": "Settings saved successfully",
+    "pdfTranslation": "PDF Translation",
+    "pdfTranslationHint": "Configure layout-preserving PDF translation using an OpenAI-compatible API.",
+    "enableTranslation": "Enable PDF Translation",
+    "apiBaseUrl": "API Base URL",
+    "apiKey": "API Key",
+    "apiKeyWarning": "Your API key is stored locally. Keep it secure.",
+    "modelName": "Model Name"
   },
   "documentsList": {
     "title": "Documents",
@@ -108,7 +115,12 @@
     "chatPlaceholder": "Ask about this document...",
     "send": "Send",
     "clearChat": "Clear",
-    "sessionExpired": "Session expired. Please try again."
+    "sessionExpired": "Session expired. Please try again.",
+    "translatePdf": "Translate PDF",
+    "dualPdfView": "Dual PDF",
+    "translationProgress": "Translation progress...",
+    "viewOriginal": "Original",
+    "viewTranslation": "Translation"
   },
   "wikiView": {
     "title": "Wiki",

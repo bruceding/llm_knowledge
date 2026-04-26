@@ -6,8 +6,10 @@ import (
 	"llm-knowledge/api"
 	"llm-knowledge/claude"
 	"llm-knowledge/config"
+	"llm-knowledge/dependencies"
 	"llm-knowledge/db"
 	embedfs "llm-knowledge/fs"
+	"llm-knowledge/pdf2zh"
 	"log"
 	"net/http"
 	"os"
@@ -47,6 +49,12 @@ func main() {
 	if err := db.Init(dbPath); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
+
+	// Check and install pdf2zh asynchronously
+	pdf2zh.CheckAndInstall(cfg.PDF2ZhVenvDir)
+
+	// Check all dependencies (Claude CLI, plugins) asynchronously
+	dependencies.CheckAll()
 
 	e := echo.New()
 
@@ -145,6 +153,19 @@ func main() {
 	settingsH := &api.SettingsHandler{}
 	e.GET("/api/settings", settingsH.GetSettings)
 	e.PUT("/api/settings", settingsH.UpdateSettings)
+
+	// Dependencies API
+	depsH := &api.DependenciesHandler{}
+	e.GET("/api/dependencies/status", depsH.GetStatus)
+	e.POST("/api/dependencies/check", depsH.Check)
+
+	// PDF Translation API
+	pdfTranslateH := &api.PDFTranslateHandler{
+		DataDir:       cfg.DataDir,
+		PDF2ZhVenvDir: cfg.PDF2ZhVenvDir,
+	}
+	e.GET("/api/documents/:id/translation-status", pdfTranslateH.CheckTranslationStatus)
+	e.POST("/api/pdf-translate", pdfTranslateH.TranslatePDF)
 
 	// Document Chat API (SSE streaming with session pool)
 	sessionPool := claude.NewSessionPool(cfg.DataDir, cfg.ClaudeBin)

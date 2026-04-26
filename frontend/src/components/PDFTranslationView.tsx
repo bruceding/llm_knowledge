@@ -5,7 +5,7 @@ interface PDFTranslationViewProps {
   rawPath: string
   translatedContent: string
   totalPages: number
-  translating: boolean
+  translating?: boolean
 }
 
 // Parse translated content by page markers

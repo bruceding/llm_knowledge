@@ -58,7 +58,7 @@ export interface TranslateRequest {
 
 // SSE event types from backend
 export interface SSEEvent {
-  type: 'conversation' | 'document' | 'assistant' | 'tool_use' | 'error' | 'complete'
+  type: 'conversation' | 'document' | 'assistant' | 'tool_use' | 'error' | 'complete' | 'progress'
   conversationId?: number
   docId?: number
   title?: string
@@ -67,12 +67,20 @@ export interface SSEEvent {
   toolName?: string
   error?: string
   filePath?: string
+  // PDF translation progress
+  message?: string
+  translatedPdf?: string
+  dualPdf?: string
 }
 
 // User settings types
 export interface UserSettings {
   id: number
   language: 'en' | 'zh'
+  translationEnabled: boolean
+  translationApiBase: string
+  translationApiKey: string
+  translationModel: string
   createdAt: string
   updatedAt: string
 }

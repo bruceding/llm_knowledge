@@ -48,10 +48,14 @@ type ConversationMessage struct {
 }
 
 type UserSettings struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	Language  string    `gorm:"default:en" json:"language"` // 'en' or 'zh'
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID                 uint      `gorm:"primaryKey" json:"id"`
+	Language           string    `gorm:"default:en" json:"language"` // 'en' or 'zh'
+	TranslationEnabled bool      `gorm:"default:false" json:"translationEnabled"`
+	TranslationApiBase string    `gorm:"default:https://dashscope.aliyuncs.com/compatible-mode/v1" json:"translationApiBase"`
+	TranslationApiKey  string    `gorm:"" json:"translationApiKey"`
+	TranslationModel   string    `gorm:"default:deepseek-v4-flash" json:"translationModel"`
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
 }
 
 type RSSFeed struct {

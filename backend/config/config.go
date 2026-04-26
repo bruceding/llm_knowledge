@@ -7,10 +7,11 @@ import (
 )
 
 type Config struct {
-	DataDir   string // ~/.llm-knowledge
-	LogDir    string // ~/.llm-knowledge/logs
-	Port      string
-	ClaudeBin string // claude binary path
+	DataDir       string // ~/.llm-knowledge
+	LogDir        string // ~/.llm-knowledge/logs
+	Port          string
+	ClaudeBin     string // claude binary path
+	PDF2ZhVenvDir string // pdf2zh venv directory
 }
 
 func Load() *Config {
@@ -40,10 +41,17 @@ func Load() *Config {
 		claudeBin = "claude"
 	}
 
+	// PDF2Zh venv directory - default to ~/.llm-knowledge/.venv
+	pdf2zhVenvDir := os.Getenv("PDF2ZH_VENV_DIR")
+	if pdf2zhVenvDir == "" {
+		pdf2zhVenvDir = filepath.Join(dataDir, ".venv")
+	}
+
 	return &Config{
-		DataDir:   dataDir,
-		LogDir:    filepath.Join(dataDir, "logs"),
-		Port:      portValue,
-		ClaudeBin: claudeBin,
+		DataDir:       dataDir,
+		LogDir:        filepath.Join(dataDir, "logs"),
+		Port:          portValue,
+		ClaudeBin:     claudeBin,
+		PDF2ZhVenvDir: pdf2zhVenvDir,
 	}
 }

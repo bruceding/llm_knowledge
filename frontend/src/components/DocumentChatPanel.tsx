@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 
 interface DocumentChatPanelProps {
   docId: number
+  active: boolean // Only connect SSE when active (chat tab is visible)
 }
 
 interface ChatMessage {
@@ -16,7 +17,7 @@ interface ChatMessage {
   isThinking?: boolean
 }
 
-export default function DocumentChatPanel({ docId }: DocumentChatPanelProps) {
+export default function DocumentChatPanel({ docId, active }: DocumentChatPanelProps) {
   const { t } = useTranslation()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sessionId, setSessionId] = useState<string>('')
@@ -108,15 +109,24 @@ export default function DocumentChatPanel({ docId }: DocumentChatPanelProps) {
     }
   }, [docId])
 
-  // Start SSE on mount
+  // Start SSE when active becomes true
   useEffect(() => {
+    if (!active) {
+      // Close connection when inactive
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close()
+        eventSourceRef.current = null
+      }
+      return
+    }
+
     startSSE()
     return () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close()
       }
     }
-  }, [startSSE])
+  }, [active, startSSE])
 
   // Send message
   const handleSend = async () => {

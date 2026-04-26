@@ -28,9 +28,14 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 interface PDFViewerProps {
   url: string
   onPageChange?: (page: number) => void
+  onScrollPositionChange?: (position: number) => void
+  scrollPosition?: number
+  onScaleChange?: (scale: number) => void
+  externalScale?: number
+  syncEnabled?: boolean
 }
 
-export default function PDFViewer({ url, onPageChange }: PDFViewerProps) {
+export default function PDFViewer({ url, onPageChange, onScrollPositionChange, scrollPosition, onScaleChange, externalScale, syncEnabled }: PDFViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<HTMLDivElement>(null)
   const pdfViewerRef = useRef<pdfjsViewer.PDFViewer | null>(null)
@@ -38,6 +43,7 @@ export default function PDFViewer({ url, onPageChange }: PDFViewerProps) {
   const pdfLinkServiceRef = useRef<pdfjsViewer.PDFLinkService | null>(null)
   const pdfFindControllerRef = useRef<pdfjsViewer.PDFFindController | null>(null)
   const initializedRef = useRef(false)
+  const syncingRef = useRef(false) // Prevent infinite loop when syncing
 
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(0)
@@ -93,6 +99,9 @@ export default function PDFViewer({ url, onPageChange }: PDFViewerProps) {
 
     const onScaleChanging = (evt: { scale: number }) => {
       setScale(evt.scale)
+      if (syncEnabled && !syncingRef.current) {
+        onScaleChange?.(evt.scale)
+      }
     }
 
     const onUpdateFindMatchesCount = (evt: { matchesCount: { total: number; current: number } }) => {
@@ -157,6 +166,47 @@ export default function PDFViewer({ url, onPageChange }: PDFViewerProps) {
 
     loadPdf()
   }, [url])
+
+  // Sync scroll: emit scroll position to parent
+  useEffect(() => {
+    if (!syncEnabled || !containerRef.current) return
+
+    const container = containerRef.current
+    const handleScroll = () => {
+      if (syncingRef.current) return // Prevent loop
+      const scrollTop = container.scrollTop
+      const scrollHeight = container.scrollHeight - container.clientHeight
+      const position = scrollHeight > 0 ? scrollTop / scrollHeight : 0
+      onScrollPositionChange?.(position)
+    }
+
+    container.addEventListener('scroll', handleScroll)
+    return () => container.removeEventListener('scroll', handleScroll)
+  }, [syncEnabled, onScrollPositionChange])
+
+  // Sync scroll: apply scroll position from parent
+  useEffect(() => {
+    if (!syncEnabled || !containerRef.current || scrollPosition === undefined) return
+
+    const container = containerRef.current
+    const scrollHeight = container.scrollHeight - container.clientHeight
+    if (scrollHeight > 0) {
+      syncingRef.current = true
+      container.scrollTop = scrollPosition * scrollHeight
+      // Reset syncing flag after a short delay
+      setTimeout(() => { syncingRef.current = false }, 50)
+    }
+  }, [syncEnabled, scrollPosition])
+
+  // Sync scale: apply scale from parent
+  useEffect(() => {
+    if (!syncEnabled || externalScale === undefined || !pdfViewerRef.current) return
+    if (externalScale !== scale && !syncingRef.current) {
+      syncingRef.current = true
+      pdfViewerRef.current.currentScale = externalScale
+      setTimeout(() => { syncingRef.current = false }, 50)
+    }
+  }, [syncEnabled, externalScale, scale])
 
   // Page navigation
   const goToPage = (page: number) => {

@@ -53,7 +53,14 @@
     "languageHint": "选择界面的首选显示语言。",
     "english": "English",
     "chinese": "中文",
-    "saved": "设置已保存"
+    "saved": "设置已保存",
+    "pdfTranslation": "PDF 翻译",
+    "pdfTranslationHint": "配置排版保留的 PDF 翻译功能，使用 OpenAI 兼容 API。",
+    "enableTranslation": "启用 PDF 翻译",
+    "apiBaseUrl": "API 基础地址",
+    "apiKey": "API 密钥",
+    "apiKeyWarning": "API 密钥本地存储，请妥善保管。",
+    "modelName": "模型名称"
   },
   "documentsList": {
     "title": "文档",
@@ -108,7 +115,12 @@
     "chatPlaceholder": "询问关于此文档的问题...",
     "send": "发送",
     "clearChat": "清空",
-    "sessionExpired": "对话已过期，请重新开始。"
+    "sessionExpired": "对话已过期，请重新开始。",
+    "translatePdf": "翻译 PDF",
+    "dualPdfView": "双语对照",
+    "translationProgress": "翻译进度...",
+    "viewOriginal": "原文",
+    "viewTranslation": "译文"
   },
   "wikiView": {
     "title": "Wiki",
