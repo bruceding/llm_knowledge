@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"io"
 	"llm-knowledge/db"
 	"llm-knowledge/ingest"
@@ -110,18 +109,6 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 			}
 		}()
 
-		// Trigger wiki ingest
-		go func() {
-			wikiDir := filepath.Join(h.DataDir, "wiki")
-			p := ingest.NewPipeline(wikiDir, h.ClaudeBin)
-			if err := p.Ingest(context.Background(), mdPath, name, docID); err != nil {
-				log.Printf("[api] ingest failed for %s: %v", name, err)
-			} else {
-				// Update WikiPath after successful ingest
-				wikiRelPath := filepath.Join("wiki", name+".md")
-				db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("wiki_path", wikiRelPath)
-			}
-		}()
 	}
 
 	return c.JSON(http.StatusOK, echo.Map{
