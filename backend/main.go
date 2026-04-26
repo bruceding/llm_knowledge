@@ -105,7 +105,8 @@ func main() {
 
 	// Document CRUD API
 	docH := &api.DocHandler{
-		DataDir: cfg.DataDir,
+		DataDir:   cfg.DataDir,
+			ClaudeBin: cfg.ClaudeBin,
 	}
 	e.GET("/api/documents/inbox", docH.ListInbox)
 	e.GET("/api/documents", docH.ListAll)
