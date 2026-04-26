@@ -4,6 +4,7 @@ import (
 	"io"
 	"io/fs"
 	"llm-knowledge/api"
+	"llm-knowledge/claude"
 	"llm-knowledge/config"
 	"llm-knowledge/db"
 	embedfs "llm-knowledge/fs"
@@ -136,6 +137,16 @@ func main() {
 	settingsH := &api.SettingsHandler{}
 	e.GET("/api/settings", settingsH.GetSettings)
 	e.PUT("/api/settings", settingsH.UpdateSettings)
+
+	// Document Chat API (SSE streaming with session pool)
+	sessionPool := claude.NewSessionPool(cfg.DataDir, cfg.ClaudeBin)
+	docChatH := &api.DocChatHandler{
+		Pool:    sessionPool,
+		DataDir: cfg.DataDir,
+	}
+	e.GET("/api/doc-chat/stream", docChatH.Stream)
+	e.POST("/api/doc-chat/message", docChatH.Message)
+	e.GET("/api/doc-chat/reconnect", docChatH.Reconnect)
 
 	// Serve frontend static files from embedded filesystem
 	// Create a sub filesystem from the embedded dist directory

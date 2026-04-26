@@ -63,3 +63,47 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+## Document Chat 架构
+
+基于 Claude CLI 的 stream-json 模式实现多轮对话。
+
+### Claude CLI 启动参数
+
+```go
+args := []string{
+    "--print",                          // 非交互模式
+    "--output-format", "stream-json",   // 输出 JSON 流
+    "--input-format", "stream-json",    // 输入 JSON 流（支持多轮）
+    "--verbose",
+    "--allowedTools", "Read",           // 只允许 Read 工具
+    "--dangerously-skip-permissions",
+    "--system-prompt", systemPrompt,    // 注入文档上下文
+}
+cmd.Dir = dataDir  // 工作目录设为数据目录，Read 工具可访问本地文件
+```
+
+### 双向流式交互
+
+```
+前端 EventSource → SSE /api/doc-chat/stream → SessionPool.StartSession
+                              ↓
+                    Claude 进程 stdin ← stdout (JSON 流)
+                              ↓
+POST /api/doc-chat/message → stdin 写入 user message
+                              ↓
+                    stdout → eventCh → SSE 推送给前端
+```
+
+### stdin 消息格式
+
+```json
+{"type":"user","message":{"role":"user","content":"用户问题"}}
+```
+
+### 关键注意事项
+
+1. **必须先发送 init message**：启动 Claude 进程后，需立即向 stdin 发送一条初始消息，否则 stdout 不会 emit `init` 事件（无法获取 session_id）
+2. **session_id 来自 system init 事件**：首条 stdout 输出是 `{type: "system", subtype: "init", session_id: "..."}`
+3. **Session 超时清理**：SSE 断开 30 秒后自动关闭 session，避免资源泄漏
+4. **stdout buffer**：设置 1MB buffer，防止大消息截断

@@ -102,7 +102,13 @@
     "translateToEnglish": "Translate to English",
     "translation": "Translation",
     "inbox": "Inbox",
-    "archivedStatus": "Archived"
+    "archivedStatus": "Archived",
+    "metadataTab": "Metadata",
+    "chatTab": "Chat",
+    "chatPlaceholder": "Ask about this document...",
+    "send": "Send",
+    "clearChat": "Clear",
+    "sessionExpired": "Session expired. Please try again."
   },
   "wikiView": {
     "title": "Wiki",

@@ -7,6 +7,7 @@ import { fetchDocument, updateDocument, publishDocument, deleteDocument, transla
 import type { Document, SSEEvent } from '../types'
 import PDFViewer from './PDFViewer'
 import PDFTranslationView from './PDFTranslationView'
+import DocumentChatPanel from './DocumentChatPanel'
 
 export default function DocDetail() {
   const { id } = useParams<{ id: string }>()
@@ -34,6 +35,18 @@ export default function DocDetail() {
 
   // Summary regeneration state
   const [regeneratingSummary, setRegeneratingSummary] = useState(false)
+
+  // Metadata panel tab state
+  const [metadataTab, setMetadataTab] = useState<'metadata' | 'chat'>('metadata')
+
+  // Panel width state - responsive default based on screen size
+  const [panelWidth, setPanelWidth] = useState(() => {
+    const width = window.innerWidth
+    if (width >= 1920) return 480
+    if (width >= 1440) return 400
+    return 320
+  })
+  const [isResizing, setIsResizing] = useState(false)
 
   // Load document and content
   useEffect(() => {
@@ -100,6 +113,34 @@ export default function DocDetail() {
     } finally {
       setLoading(false)
     }
+  }
+
+  // Handle panel resize
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing) return
+      const newWidth = window.innerWidth - e.clientX
+      // Clamp width between 240 and 600
+      setPanelWidth(Math.max(240, Math.min(600, newWidth)))
+    }
+
+    const handleMouseUp = () => {
+      setIsResizing(false)
+    }
+
+    if (isResizing) {
+      window.document.addEventListener('mousemove', handleMouseMove)
+      window.document.addEventListener('mouseup', handleMouseUp)
+    }
+
+    return () => {
+      window.document.removeEventListener('mousemove', handleMouseMove)
+      window.document.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isResizing])
+
+  const startResizing = () => {
+    setIsResizing(true)
   }
 
   const handleSave = async () => {
@@ -370,96 +411,59 @@ export default function DocDetail() {
       </div>
 
       {/* Right: Metadata panel */}
-      <div className="w-80 border-l border-gray-200 bg-gray-50 flex flex-col overflow-hidden">
-        <div className="p-4 border-b border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-800">{t('docDetail.metadata')}</h3>
+      <div
+        style={{ width: panelWidth }}
+        className="border-l border-gray-200 bg-gray-50 flex flex-col overflow-hidden relative"
+      >
+        {/* Resize handle */}
+        <div
+          onMouseDown={startResizing}
+          className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-blue-400 transition-colors"
+          style={{ backgroundColor: isResizing ? '#60a5fa' : 'transparent' }}
+        />
+
+        {/* Tab bar */}
+        <div className="flex border-b border-gray-200 bg-white">
+          <button
+            onClick={() => setMetadataTab('metadata')}
+            className={`flex-1 px-3 py-1.5 text-xs font-medium ${
+              metadataTab === 'metadata'
+                ? 'text-blue-600 border-b-2 border-blue-600'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {t('docDetail.metadataTab')}
+          </button>
+          <button
+            onClick={() => setMetadataTab('chat')}
+            className={`flex-1 px-3 py-1.5 text-xs font-medium ${
+              metadataTab === 'chat'
+                ? 'text-blue-600 border-b-2 border-blue-600'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {t('docDetail.chatTab')}
+          </button>
         </div>
 
-        <div className="flex-1 overflow-auto p-4 space-y-4">
+        {/* Metadata tab content - CSS hidden/show */}
+        <div className={`flex-1 overflow-auto ${metadataTab === 'metadata' ? '' : 'hidden'}`}>
+          <div className="p-3 space-y-2">
           {/* Title */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">{t('documentsList.titleColumn')}</label>
+            <label className="block text-xs font-medium text-gray-500 mb-0.5">{t('documentsList.titleColumn')}</label>
             <input
               type="text"
               value={editTitle}
               onChange={(e) => setEditTitle(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
-          </div>
-
-          {/* Source Type */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">{t('docDetail.sourceType')}</label>
-            <div className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-600 capitalize">
-              {document.sourceType}
-            </div>
-          </div>
-
-          {/* Language */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">{t('docDetail.language')}</label>
-            <div className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-600 uppercase">
-              {document.language}
-            </div>
-          </div>
-
-          {/* Status */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">{t('docDetail.status')}</label>
-            <select
-              value={editStatus}
-              onChange={(e) => setEditStatus(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="inbox">{t('docDetail.inbox')}</option>
-              <option value="published">{t('documentsList.published')}</option>
-              <option value="archived">{t('docDetail.archivedStatus')}</option>
-            </select>
-          </div>
-
-          {/* Tags */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">{t('docDetail.tags')}</label>
-            <div className="flex flex-wrap gap-2 mb-2">
-              {editTags.map((tag) => (
-                <span
-                  key={tag}
-                  className="px-2 py-1 text-sm bg-blue-100 text-blue-700 rounded-full flex items-center gap-1"
-                >
-                  {tag}
-                  <button
-                    onClick={() => handleRemoveTag(tag)}
-                    className="w-4 h-4 text-blue-500 hover:text-blue-700"
-                  >
-                    x
-                  </button>
-                </span>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={tagInput}
-                onChange={(e) => setTagInput(e.target.value)}
-                placeholder={t('docDetail.addTagPlaceholder')}
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleAddTag()
-                }}
-              />
-              <button
-                onClick={handleAddTag}
-                className="px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
-              >
-                {t('docDetail.addTag')}
-              </button>
-            </div>
           </div>
 
           {/* Summary */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Summary</label>
-            <div className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-600 text-sm min-h-[60px]">
+            <label className="block text-xs font-medium text-gray-500 mb-0.5">Summary</label>
+            <div className="px-2 py-1 bg-white border border-gray-200 rounded text-gray-600 text-xs min-h-[40px]">
               {document.summary || 'No summary generated'}
             </div>
             <button
@@ -476,43 +480,99 @@ export default function DocDetail() {
                 }
               }}
               disabled={regeneratingSummary}
-              className="mt-2 w-full px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50"
+              className="mt-1 w-full px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 disabled:opacity-50"
             >
-              {regeneratingSummary ? 'Generating...' : 'Regenerate Summary'}
+              {regeneratingSummary ? 'Generating...' : 'Regenerate'}
             </button>
           </div>
 
-          {/* Dates */}
+          {/* Status */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">{t('docDetail.createdAt')}</label>
-            <div className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-600">
-              {new Date(document.createdAt).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}
+            <label className="block text-xs font-medium text-gray-500 mb-0.5">{t('docDetail.status')}</label>
+            <select
+              value={editStatus}
+              onChange={(e) => setEditStatus(e.target.value)}
+              className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="inbox">{t('docDetail.inbox')}</option>
+              <option value="published">{t('documentsList.published')}</option>
+              <option value="archived">{t('docDetail.archivedStatus')}</option>
+            </select>
+          </div>
+
+          {/* Tags */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-0.5">{t('docDetail.tags')}</label>
+            <div className="flex flex-wrap gap-1 mb-1">
+              {editTags.map((tag) => (
+                <span
+                  key={tag}
+                  className="px-1.5 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-full flex items-center gap-0.5"
+                >
+                  {tag}
+                  <button
+                    onClick={() => handleRemoveTag(tag)}
+                    className="w-3 h-3 text-blue-500 hover:text-blue-700"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-1">
+              <input
+                type="text"
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                placeholder={t('docDetail.addTagPlaceholder')}
+                className="flex-1 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleAddTag()
+                }}
+              />
+              <button
+                onClick={handleAddTag}
+                className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600"
+              >
+                +
+              </button>
             </div>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">{t('docDetail.updatedAt')}</label>
-            <div className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-gray-600">
-              {new Date(document.updatedAt).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}
+          {/* Dates */}
+          <div className="text-xs text-gray-500 pt-2 border-t border-gray-200">
+            <div className="flex justify-between">
+              <span>Created:</span>
+              <span>{new Date(document.createdAt).toLocaleDateString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}</span>
             </div>
+            <div className="flex justify-between mt-0.5">
+              <span>Updated:</span>
+              <span>{new Date(document.updatedAt).toLocaleDateString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}</span>
+            </div>
+          </div>
           </div>
         </div>
 
-        {/* Action buttons */}
-        <div className="p-4 border-t border-gray-200 space-y-2">
+        {/* Chat tab content - CSS hidden/show */}
+        <div className={`flex-1 overflow-hidden ${metadataTab === 'chat' ? '' : 'hidden'}`}>
+          <DocumentChatPanel docId={document.id} />
+        </div>
+
+        {/* Action buttons - only show in metadata tab */}
+        <div className={`p-2 border-t border-gray-200 space-y-1 ${metadataTab === 'metadata' ? '' : 'hidden'}`}>
           {error && (
-            <div className="text-sm text-red-600 mb-2">{error}</div>
+            <div className="text-xs text-red-600 mb-1">{error}</div>
           )}
           <button
             onClick={handleSave}
-            className="w-full px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+            className="w-full px-3 py-1.5 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
           >
             {t('docDetail.saveChanges')}
           </button>
           {document.status !== 'published' && (
             <button
               onClick={handlePublish}
-              className="w-full px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
+              className="w-full px-3 py-1.5 text-sm bg-green-500 text-white rounded hover:bg-green-600 transition-colors"
             >
               {t('docDetail.publish')}
             </button>
@@ -523,14 +583,14 @@ export default function DocDetail() {
                 setEditStatus('archived')
                 handleSave()
               }}
-              className="w-full px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
+              className="w-full px-3 py-1.5 text-sm bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors"
             >
               {t('docDetail.archive')}
             </button>
           )}
           <button
             onClick={handleDelete}
-            className="w-full px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
+            className="w-full px-3 py-1.5 text-sm bg-red-500 text-white rounded hover:bg-red-600 transition-colors"
           >
             {t('docDetail.delete')}
           </button>

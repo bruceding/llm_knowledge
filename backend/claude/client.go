@@ -17,12 +17,13 @@ type Client struct {
 
 // StreamEvent represents a single event in the streaming response from Claude CLI.
 type StreamEvent struct {
-	Type    string `json:"type"`             // system, assistant, result, error
-	Content string `json:"content"`          // Text content of the event (extracted)
-	Subtype string `json:"subtype"`          // subtype for system messages
-	Result  string `json:"result"`           // Result text for type "result"
-	Error   string `json:"error,omitempty"`  // Error message if any
-	Message *Message `json:"message,omitempty"` // Message for type "assistant"
+	Type      string    `json:"type"`                // system, assistant, result, error
+	Content   string    `json:"content"`             // Text content of the event (extracted)
+	Subtype   string    `json:"subtype"`             // subtype for system messages
+	SessionID string    `json:"session_id,omitempty"` // Session ID from system events
+	Result    string    `json:"result"`              // Result text for type "result"
+	Error     string    `json:"error,omitempty"`     // Error message if any
+	Message   *Message  `json:"message,omitempty"`   // Message for type "assistant"
 }
 
 // Message represents the message field in assistant events
