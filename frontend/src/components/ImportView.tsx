@@ -1,6 +1,6 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { uploadPDF, clipWeb } from '../api'
+import { uploadPDF, clipWeb, addRSSFeed, listRSSFeeds, deleteRSSFeed, syncRSSFeed } from '../api'
 
 export default function ImportView() {
   const { t } = useTranslation()
@@ -16,10 +16,27 @@ export default function ImportView() {
 
   // RSS state
   const [rssUrl, setRssUrl] = useState('')
-  const [rssFeeds, setRssFeeds] = useState<{ name: string; url: string; count?: number }[]>([])
+  const [rssName, setRssName] = useState('')
+  const [rssAutoSync, setRssAutoSync] = useState(false)
+  const [rssFeeds, setRssFeeds] = useState<any[]>([])
   const [addingRss, setAddingRss] = useState(false)
+  const [syncingFeedId, setSyncingFeedId] = useState<number | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Load RSS feeds on mount
+  useEffect(() => {
+    loadRSSFeeds()
+  }, [])
+
+  const loadRSSFeeds = async () => {
+    try {
+      const feeds = await listRSSFeeds()
+      setRssFeeds(feeds)
+    } catch (err) {
+      console.error('Failed to load RSS feeds:', err)
+    }
+  }
 
   // Handle drag events
   const handleDrag = useCallback((e: React.DragEvent) => {
@@ -101,7 +118,7 @@ export default function ImportView() {
     }
   }
 
-  // Handle adding RSS feed (placeholder)
+  // Handle adding RSS feed
   const handleAddRss = async () => {
     if (!rssUrl.trim()) return
 
@@ -109,16 +126,49 @@ export default function ImportView() {
     setError(null)
 
     try {
-      // Placeholder: would call backend to add RSS feed
-      // Backend doesn't have RSS endpoint yet
-      const feedName = rssUrl.split('/').pop() || 'RSS Feed'
-      setRssFeeds((prev) => [...prev, { name: feedName, url: rssUrl }])
+      const feedName = rssName.trim() || rssUrl.split('/').pop() || 'RSS Feed'
+      await addRSSFeed(feedName, rssUrl, rssAutoSync)
       setRssUrl('')
-      setError(t('import.errorRssNotImplemented'))
+      setRssName('')
+      setRssAutoSync(false)
+      await loadRSSFeeds()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add RSS feed')
     } finally {
       setAddingRss(false)
+    }
+  }
+
+  // Handle syncing RSS feed
+  const handleSyncFeed = async (feedId: number) => {
+    setSyncingFeedId(feedId)
+    setError(null)
+
+    try {
+      const result = await syncRSSFeed(feedId)
+      if (result.newArticles > 0) {
+        setUploadResult({
+          id: 0,
+          path: '',
+          message: `Synced ${result.newArticles} new articles`,
+          pages: result.newArticles,
+        })
+      }
+      await loadRSSFeeds()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to sync RSS feed')
+    } finally {
+      setSyncingFeedId(null)
+    }
+  }
+
+  // Handle deleting RSS feed
+  const handleDeleteFeed = async (feedId: number) => {
+    try {
+      await deleteRSSFeed(feedId)
+      await loadRSSFeeds()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete RSS feed')
     }
   }
 
@@ -240,45 +290,86 @@ export default function ImportView() {
             <p className="text-gray-600 mb-4 text-sm">
               {t('import.rssHint')}
             </p>
-            <div className="flex gap-2 mb-4">
+            <div className="space-y-3">
+              <input
+                type="text"
+                value={rssName}
+                onChange={(e) => setRssName(e.target.value)}
+                placeholder="Feed name (optional)"
+                disabled={addingRss}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+              />
               <input
                 type="url"
                 value={rssUrl}
                 onChange={(e) => setRssUrl(e.target.value)}
                 placeholder="https://example.com/rss"
                 disabled={addingRss}
-                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
               />
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="autoSync"
+                  checked={rssAutoSync}
+                  onChange={(e) => setRssAutoSync(e.target.checked)}
+                  disabled={addingRss}
+                  className="w-4 h-4"
+                />
+                <label htmlFor="autoSync" className="text-sm text-gray-600">
+                  Auto sync (sync automatically in background)
+                </label>
+              </div>
               <button
                 onClick={handleAddRss}
                 disabled={addingRss || !rssUrl.trim()}
-                className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500"
+                className="w-full px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500"
               >
                 {addingRss ? t('import.adding') : t('import.addFeed')}
               </button>
             </div>
 
             {rssFeeds.length > 0 && (
-              <div className="space-y-2">
+              <div className="mt-6 space-y-2">
                 <h4 className="text-sm font-medium text-gray-700">{t('import.activeFeeds')}</h4>
                 <ul className="space-y-2">
                   {rssFeeds.map((feed) => (
                     <li
-                      key={feed.url}
+                      key={feed.id}
                       className="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg"
                     >
                       <div>
                         <div className="text-sm font-medium text-gray-800">{feed.name}</div>
                         <div className="text-xs text-gray-500 truncate max-w-xs">{feed.url}</div>
+                        <div className="text-xs text-gray-400">
+                          {feed.articleCount} articles • Last sync: {feed.lastSyncAt ? new Date(feed.lastSyncAt).toLocaleDateString() : 'Never'}
+                        </div>
                       </div>
-                      <button
-                        onClick={() => setRssFeeds((prev) => prev.filter((f) => f.url !== feed.url))}
-                        className="text-gray-400 hover:text-red-500"
-                      >
-                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleSyncFeed(feed.id)}
+                          disabled={syncingFeedId === feed.id}
+                          className="text-blue-500 hover:text-blue-700 disabled:text-gray-400"
+                          title="Sync now"
+                        >
+                          {syncingFeedId === feed.id ? (
+                            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"></div>
+                          ) : (
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteFeed(feed.id)}
+                          className="text-gray-400 hover:text-red-500"
+                          title="Delete feed"
+                        >
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
                     </li>
                   ))}
                 </ul>
