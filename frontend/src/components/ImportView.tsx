@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { uploadPDF } from '../api'
+import { uploadPDF, clipWeb } from '../api'
 
 export default function ImportView() {
   const { t } = useTranslation()
@@ -77,17 +77,23 @@ export default function ImportView() {
     }
   }
 
-  // Handle URL clipping (placeholder - would need backend endpoint)
+  // Handle URL clipping
   const handleClipUrl = async () => {
     if (!urlInput.trim()) return
 
     setClippingUrl(true)
     setError(null)
+    setUploadResult(null)
 
     try {
-      // Placeholder: would call backend to clip URL
-      // Backend doesn't have web clipping endpoint yet
-      setError(t('import.errorWebClipNotImplemented'))
+      const result = await clipWeb(urlInput)
+      setUploadResult({
+        id: result.id,
+        path: result.path,
+        message: result.message,
+        pages: result.images, // Reuse pages field for image count
+      })
+      setUrlInput('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to clip URL')
     } finally {

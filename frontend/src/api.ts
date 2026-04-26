@@ -64,6 +64,19 @@ export async function uploadPDF(file: File): Promise<{ id: number; path: string;
   return res.json()
 }
 
+export async function clipWeb(url: string): Promise<{ id: number; title: string; path: string; images: number; message: string }> {
+  const res = await fetch(`${API_BASE}/raw/web`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  })
+  if (!res.ok) {
+    const data = await res.json()
+    throw new Error(data.error || 'Failed to clip web page')
+  }
+  return res.json()
+}
+
 // Wiki API - content fetched from /data/wiki/ path
 export async function fetchWikiContent(path: string): Promise<string> {
   const res = await fetch(`/data/wiki/${path}.md`)
