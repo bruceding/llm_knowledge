@@ -13,6 +13,7 @@ type Document struct {
 	Status     string    `gorm:"default:inbox" json:"status"` // inbox, published, archived
 	Metadata   string    `json:"metadata"`                    // JSON string
 	SourceURL  string    `json:"sourceUrl"`                   // NEW: Original URL for web/rss
+	RSSFeedID  uint      `json:"rssFeedId"`                   // NEW: Associated RSS feed
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
 	Tags       []Tag     `gorm:"many2many:document_tags;" json:"tags"`
