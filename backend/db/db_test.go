@@ -22,3 +22,17 @@ func TestDocumentSourceURL(t *testing.T) {
 		t.Errorf("Expected SourceType to be web, got %s", doc.SourceType)
 	}
 }
+
+func TestRSSFeedModel(t *testing.T) {
+	feed := RSSFeed{
+		Name:     "Go Blog",
+		URL:      "https://go.dev/blog/feed.atom",
+		AutoSync: false,
+	}
+	if feed.Name != "Go Blog" {
+		t.Error("Expected Name to be set")
+	}
+	if feed.AutoSync != false {
+		t.Error("Expected AutoSync to be false")
+	}
+}

@@ -52,3 +52,12 @@ type UserSettings struct {
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
+
+type RSSFeed struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	Name       string    `json:"name"`
+	URL        string    `gorm:"unique" json:"url"`
+	AutoSync   bool      `gorm:"default:false" json:"autoSync"`
+	LastSyncAt time.Time `json:"lastSyncAt"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
