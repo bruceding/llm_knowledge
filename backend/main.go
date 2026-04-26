@@ -153,7 +153,7 @@ func main() {
 		e.POST("/api/rss/feeds", rssH.AddFeed)
 		e.GET("/api/rss/feeds", rssH.ListFeeds)
 		e.DELETE("/api/rss/feeds/:id", rssH.DeleteFeed)
-	// Serve frontend static files from embedded filesystem
+		e.POST("/api/rss/feeds/:id/sync", rssH.SyncFeed)	// Serve frontend static files from embedded filesystem
 	// Create a sub filesystem from the embedded dist directory
 	distSubFS, err := fs.Sub(embedfs.DistFS, "dist")
 	if err != nil {

@@ -78,3 +78,24 @@ func (h *RSSHandler) DeleteFeed(c echo.Context) error {
 
 	return c.JSON(200, echo.Map{"id": id, "message": "feed deleted"})
 }
+
+func (h *RSSHandler) SyncFeed(c echo.Context) error {
+	id := c.Param("id")
+
+	var feed db.RSSFeed
+	if err := db.DB.First(&feed, id).Error; err != nil {
+		return c.JSON(404, echo.Map{"error": "feed not found"})
+	}
+
+	// Placeholder: fetch RSS XML (will implement in next phase)
+	// For now, just update LastSyncAt
+	feed.LastSyncAt = time.Now()
+	db.DB.Save(&feed)
+
+	return c.JSON(200, echo.Map{
+		"feedId":      feed.ID,
+		"newArticles": 0,
+		"total":       0,
+		"message":     "Sync placeholder (XML parsing pending)",
+	})
+}
