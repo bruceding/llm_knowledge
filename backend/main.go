@@ -97,9 +97,17 @@ func main() {
 	}
 	e.POST("/api/raw/pdf", rawH.UploadPDF, middleware.BodyLimit("50M"))
 
+	// Web clipping API
+	webH := &api.WebHandler{
+		DataDir:   cfg.DataDir,
+		ClaudeBin: cfg.ClaudeBin,
+	}
+	e.POST("/api/raw/web", webH.UploadWeb)
+
 	// Document CRUD API
 	docH := &api.DocHandler{
-		DataDir: cfg.DataDir,
+		DataDir:   cfg.DataDir,
+			ClaudeBin: cfg.ClaudeBin,
 	}
 	e.GET("/api/documents/inbox", docH.ListInbox)
 	e.GET("/api/documents", docH.ListAll)
@@ -147,6 +155,16 @@ func main() {
 	e.GET("/api/doc-chat/stream", docChatH.Stream)
 	e.POST("/api/doc-chat/message", docChatH.Message)
 	e.GET("/api/doc-chat/reconnect", docChatH.Reconnect)
+
+	// RSS API
+	rssH := &api.RSSHandler{
+		DataDir:   cfg.DataDir,
+		ClaudeBin: cfg.ClaudeBin,
+	}
+	e.POST("/api/rss/feeds", rssH.AddFeed)
+	e.GET("/api/rss/feeds", rssH.ListFeeds)
+	e.DELETE("/api/rss/feeds/:id", rssH.DeleteFeed)
+	e.POST("/api/rss/feeds/:id/sync", rssH.SyncFeed)
 
 	// Serve frontend static files from embedded filesystem
 	// Create a sub filesystem from the embedded dist directory

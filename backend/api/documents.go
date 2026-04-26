@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"llm-knowledge/db"
 	"llm-knowledge/ingest"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
@@ -18,7 +20,8 @@ import (
 
 // DocHandler handles document CRUD operations
 type DocHandler struct {
-	DataDir string
+	DataDir   string
+	ClaudeBin string
 }
 
 // ListInbox returns all documents with status "inbox"
@@ -134,7 +137,7 @@ func (h *DocHandler) UpdateDoc(c echo.Context) error {
 	return c.JSON(http.StatusOK, doc)
 }
 
-// Publish sets a document's status to "published"
+// Publish sets a document's status to "published" and triggers wiki ingest
 func (h *DocHandler) Publish(c echo.Context) error {
 	id := c.Param("id")
 
@@ -146,13 +149,38 @@ func (h *DocHandler) Publish(c echo.Context) error {
 	}
 
 	// Update status to published
-	if err := db.DB.Model(&doc).Update("status", "published").Error; err != nil {
+	doc.Status = "published"
+	doc.UpdatedAt = time.Now()
+	if err := db.DB.Save(&doc).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to publish document"})
 	}
 
+	// Trigger wiki ingest if raw content exists and ClaudeBin is configured
+	if doc.RawPath != "" && h.ClaudeBin != "" {
+		wikiDir := filepath.Join(h.DataDir, "wiki")
+		mdPath := filepath.Join(h.DataDir, doc.RawPath, "paper.md")
+
+		// Find markdown file
+		if _, err := os.Stat(mdPath); err == nil {
+			p := ingest.NewPipeline(wikiDir, h.ClaudeBin)
+			ctx := context.Background()
+			name := doc.Title
+			if err := p.Ingest(ctx, mdPath, name, doc.ID); err != nil {
+				log.Printf("[api] wiki ingest failed for %d: %v", doc.ID, err)
+				// Still return success - status was updated
+			} else {
+				wikiRelPath := filepath.Join("wiki", name+".md")
+				db.DB.Model(&doc).Update("wiki_path", wikiRelPath)
+				doc.WikiPath = wikiRelPath
+			}
+		}
+	}
+
 	return c.JSON(http.StatusOK, echo.Map{
-		"id":     doc.ID,
-		"status": "published",
+		"id":       doc.ID,
+		"status":   "published",
+		"wikiPath": doc.WikiPath,
+		"message":  "Published and imported to wiki",
 	})
 }
 

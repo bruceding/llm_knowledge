@@ -12,6 +12,8 @@ type Document struct {
 	Language   string    `json:"language"`
 	Status     string    `gorm:"default:inbox" json:"status"` // inbox, published, archived
 	Metadata   string    `json:"metadata"`                    // JSON string
+	SourceURL  string    `json:"sourceUrl"`                   // NEW: Original URL for web/rss
+	RSSFeedID  uint      `json:"rssFeedId"`                   // NEW: Associated RSS feed
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
 	Tags       []Tag     `gorm:"many2many:document_tags;" json:"tags"`
@@ -50,4 +52,13 @@ type UserSettings struct {
 	Language  string    `gorm:"default:en" json:"language"` // 'en' or 'zh'
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type RSSFeed struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	Name       string    `json:"name"`
+	URL        string    `gorm:"unique" json:"url"`
+	AutoSync   bool      `gorm:"default:false" json:"autoSync"`
+	LastSyncAt time.Time `json:"lastSyncAt"`
+	CreatedAt  time.Time `json:"createdAt"`
 }

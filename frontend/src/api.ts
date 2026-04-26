@@ -64,6 +64,55 @@ export async function uploadPDF(file: File): Promise<{ id: number; path: string;
   return res.json()
 }
 
+export async function clipWeb(url: string): Promise<{ id: number; title: string; path: string; images: number; message: string }> {
+  const res = await fetch(`${API_BASE}/raw/web`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  })
+  if (!res.ok) {
+    const data = await res.json()
+    throw new Error(data.error || 'Failed to clip web page')
+  }
+  return res.json()
+}
+
+// RSS API
+export async function addRSSFeed(name: string, url: string, autoSync: boolean): Promise<RSSFeed> {
+  const res = await fetch(`${API_BASE}/rss/feeds`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, url, autoSync }),
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error)
+  return data
+}
+
+export async function listRSSFeeds(): Promise<RSSFeed[]> {
+  const res = await fetch(`${API_BASE}/rss/feeds`)
+  return res.json()
+}
+
+export async function deleteRSSFeed(id: number): Promise<void> {
+  await fetch(`${API_BASE}/rss/feeds/${id}`, { method: 'DELETE' })
+}
+
+export async function syncRSSFeed(id: number): Promise<{ newArticles: number }> {
+  const res = await fetch(`${API_BASE}/rss/feeds/${id}/sync`, { method: 'POST' })
+  return res.json()
+}
+
+interface RSSFeed {
+  id: number
+  name: string
+  url: string
+  autoSync: boolean
+  lastSyncAt: string
+  createdAt: string
+  articleCount: number
+}
+
 // Wiki API - content fetched from /data/wiki/ path
 export async function fetchWikiContent(path: string): Promise<string> {
   const res = await fetch(`/data/wiki/${path}.md`)
