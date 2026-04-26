@@ -96,6 +96,13 @@ func main() {
 	}
 	e.POST("/api/raw/pdf", rawH.UploadPDF, middleware.BodyLimit("50M"))
 
+	// Web clipping API
+	webH := &api.WebHandler{
+		DataDir:   cfg.DataDir,
+		ClaudeBin: cfg.ClaudeBin,
+	}
+	e.POST("/api/raw/web", webH.UploadWeb)
+
 	// Document CRUD API
 	docH := &api.DocHandler{
 		DataDir: cfg.DataDir,
