@@ -35,6 +35,9 @@ export default function DocDetail() {
   // Summary regeneration state
   const [regeneratingSummary, setRegeneratingSummary] = useState(false)
 
+  // Publish state
+  const [publishing, setPublishing] = useState(false)
+
   // Load document and content
   useEffect(() => {
     if (!id) return
@@ -118,11 +121,14 @@ export default function DocDetail() {
 
   const handlePublish = async () => {
     if (!document) return
+    setPublishing(true)
     try {
       await publishDocument(document.id)
-      await loadDocument()
+      await loadDocument() // Refresh to get wikiPath
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to publish')
+    } finally {
+      setPublishing(false)
     }
   }
 
@@ -512,9 +518,10 @@ export default function DocDetail() {
           {document.status !== 'published' && (
             <button
               onClick={handlePublish}
-              className="w-full px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
+              disabled={publishing}
+              className="w-full px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              {t('docDetail.publish')}
+              {publishing ? 'Publishing...' : t('docDetail.publish')}
             </button>
           )}
           {document.status !== 'archived' && (
