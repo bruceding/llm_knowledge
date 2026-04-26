@@ -46,3 +46,9 @@ func TestExtractImageURLs(t *testing.T) {
 		t.Errorf("Expected first URL to be absolute, got %s", imgURLs[0])
 	}
 }
+
+func TestUploadWebIntegration(t *testing.T) {
+	// This test requires database initialization
+	// Skip in normal unit test runs
+	t.Skip("Integration test requires database setup - run manually with full environment")
+}
