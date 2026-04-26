@@ -3,6 +3,8 @@ package api
 import (
 	"strings"
 	"testing"
+
+	"github.com/PuerkitoBio/goquery"
 )
 
 func TestWebHandlerExists(t *testing.T) {
@@ -26,5 +28,21 @@ func TestFetchHTML(t *testing.T) {
 	// Should contain the article title
 	if !strings.Contains(html, "Type Construction") {
 		t.Error("Expected HTML to contain article title")
+	}
+}
+
+func TestExtractImageURLs(t *testing.T) {
+	html := `<html><body><img src="https://example.com/img1.png"/><img src="img2.jpg"/></body></html>`
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	imgURLs := extractImageURLs(doc)
+	if len(imgURLs) != 2 {
+		t.Errorf("Expected 2 image URLs, got %d", len(imgURLs))
+	}
+	if imgURLs[0] != "https://example.com/img1.png" {
+		t.Errorf("Expected first URL to be absolute, got %s", imgURLs[0])
 	}
 }

@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
+
+	"github.com/PuerkitoBio/goquery"
 )
 
 type WebHandler struct {
@@ -30,4 +33,23 @@ func fetchHTML(url string) (string, error) {
 	}
 
 	return string(body), nil
+}
+
+func parseHTML(html string) (*goquery.Document, error) {
+	return goquery.NewDocumentFromReader(strings.NewReader(html))
+}
+
+func extractImageURLs(doc *goquery.Document) []string {
+	var urls []string
+	doc.Find("img").Each(func(i int, s *goquery.Selection) {
+		src, exists := s.Attr("src")
+		if exists && src != "" {
+			// Handle relative URLs (basic case)
+			if !strings.HasPrefix(src, "http") {
+				// Will be resolved later with base URL
+			}
+			urls = append(urls, src)
+		}
+	})
+	return urls
 }
