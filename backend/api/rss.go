@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"llm-knowledge/db"
+	"llm-knowledge/ingest"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/labstack/echo/v4"
 	"github.com/mmcdole/gofeed"
+	"golang.org/x/net/html"
 )
 
 type RSSHandler struct {
@@ -82,12 +84,39 @@ func (h *RSSHandler) ListFeeds(c echo.Context) error {
 func (h *RSSHandler) DeleteFeed(c echo.Context) error {
 	id := c.Param("id")
 
-	result := db.DB.Delete(&db.RSSFeed{}, id)
+	// Get feed to determine directory path
+	var feed db.RSSFeed
+	if err := db.DB.First(&feed, id).Error; err != nil {
+		return c.JSON(404, echo.Map{"error": "feed not found"})
+	}
+
+	// Find all inbox documents for this feed
+	var inboxDocs []db.Document
+	if err := db.DB.Where("rss_feed_id = ? AND status = ?", id, "inbox").Find(&inboxDocs).Error; err != nil {
+		return c.JSON(500, echo.Map{"error": err.Error()})
+	}
+
+	// Delete physical files for inbox documents only
+	for _, doc := range inboxDocs {
+		if doc.RawPath != "" {
+			fullPath := filepath.Join(h.DataDir, doc.RawPath)
+			os.Remove(fullPath)
+		}
+	}
+
+	// Delete inbox documents from database
+	result := db.DB.Where("rss_feed_id = ? AND status = ?", id, "inbox").Delete(&db.Document{})
 	if result.Error != nil {
 		return c.JSON(500, echo.Map{"error": result.Error.Error()})
 	}
 
-	return c.JSON(200, echo.Map{"id": id, "message": "feed deleted"})
+	// Delete the feed itself
+	result = db.DB.Delete(&db.RSSFeed{}, id)
+	if result.Error != nil {
+		return c.JSON(500, echo.Map{"error": result.Error.Error()})
+	}
+
+	return c.JSON(200, echo.Map{"id": id, "message": "feed deleted", "deletedDocs": len(inboxDocs)})
 }
 
 func (h *RSSHandler) SyncFeed(c echo.Context) error {
@@ -168,6 +197,22 @@ func (h *RSSHandler) SyncFeed(c echo.Context) error {
 		if err := db.DB.Create(&doc).Error; err != nil {
 			continue
 		}
+
+		// Generate summary asynchronously if ClaudeBin is configured
+		if h.ClaudeBin != "" {
+			docID := doc.ID
+			rawPath := doc.RawPath
+			go func() {
+				summary, err := ingest.GenerateSummary(h.DataDir, rawPath, h.ClaudeBin)
+				if err != nil {
+					fmt.Printf("[api] summary generation failed for RSS article %d: %v\n", docID, err)
+				} else {
+					db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
+					fmt.Printf("[api] summary generated for RSS article %d\n", docID)
+				}
+			}()
+		}
+
 		newArticles++
 	}
 
@@ -324,17 +369,16 @@ func downloadImageToAssets(imgURL, assetsDir, articleURL string) (string, error)
 	return localPath, nil
 }
 
-func processHTMLImages(htmlContent, assetsDir, articleURL string) (string, int, int) {
+func processHTMLToMarkdown(htmlContent, assetsDir, articleURL string) (string, int, int) {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
 	if err != nil {
-		// If parsing fails, return original content
 		return htmlContent, 0, 0
 	}
 
 	imgCount := 0
 	imgErrors := 0
 
-	// Find and replace img tags
+	// Download images first and replace with markdown syntax
 	doc.Find("img").Each(func(i int, s *goquery.Selection) {
 		src, exists := s.Attr("src")
 		if !exists || src == "" {
@@ -349,24 +393,247 @@ func processHTMLImages(htmlContent, assetsDir, articleURL string) (string, int, 
 		localPath, err := downloadImageToAssets(src, assetsDir, articleURL)
 		if err != nil {
 			imgErrors++
+			s.Remove()
 			return
 		}
 
 		imgCount++
-		// Replace img tag with markdown
 		mdImg := fmt.Sprintf("![%s](assets/%s)", alt, filepath.Base(localPath))
 		s.ReplaceWithHtml(mdImg)
 	})
 
-	// Convert back to text (markdown-friendly)
-	processedContent, err := doc.Html()
-	if err != nil {
-		return htmlContent, imgCount, imgErrors
+	// Convert HTML to markdown by processing the body content
+	var markdown strings.Builder
+	doc.Find("body").Contents().Each(func(i int, s *goquery.Selection) {
+		markdown.WriteString(convertNodeToMarkdown(s))
+	})
+
+	result := markdown.String()
+	// Clean up excessive whitespace
+	result = strings.TrimSpace(result)
+	return result, imgCount, imgErrors
+}
+
+func convertNodeToMarkdown(s *goquery.Selection) string {
+	node := s.Nodes[0]
+	if node.Type == html.TextNode {
+		text := node.Data
+		// Collapse multiple spaces/tabs into single space
+		text = strings.ReplaceAll(text, "\t", " ")
+		for strings.Contains(text, "  ") {
+			text = strings.ReplaceAll(text, "  ", " ")
+		}
+		// Remove newlines within text
+		text = strings.ReplaceAll(text, "\n", " ")
+		// Trim only if it's all whitespace
+		if strings.TrimSpace(text) == "" {
+			return ""
+		}
+		return text
+	}
+	if node.Type != html.ElementNode {
+		return ""
 	}
 
-	// Clean up extra HTML artifacts
-	processedContent = strings.ReplaceAll(processedContent, "<html><head></head><body>", "")
-	processedContent = strings.ReplaceAll(processedContent, "</body></html>", "")
+	tag := node.Data
 
-	return processedContent, imgCount, imgErrors
+	// Handle img tag specially - it has no children
+	if tag == "img" {
+		src, _ := s.Attr("src")
+		alt, _ := s.Attr("alt")
+		if src == "" {
+			return ""
+		}
+		if alt == "" {
+			alt = "image"
+		}
+		return fmt.Sprintf("![%s](%s)\n\n", alt, src)
+	}
+
+	// Determine if this is an inline element
+	inlineElements := []string{"code", "strong", "b", "em", "i", "a", "span"}
+	isInline := false
+	for _, inline := range inlineElements {
+		if tag == inline {
+			isInline = true
+			break
+		}
+	}
+
+	innerContent := ""
+	// Process children, preserving spaces between inline elements
+	children := s.Contents()
+	childrenCount := children.Length()
+	children.Each(func(i int, child *goquery.Selection) {
+		childNode := child.Nodes[0]
+		childText := convertNodeToMarkdown(child)
+
+		// If this is a whitespace-only text node between two inline elements, preserve a space
+		if childNode.Type == html.TextNode && strings.TrimSpace(childNode.Data) == "" {
+			// Check if previous sibling is inline
+			prevIsInline := false
+			if i > 0 {
+				prevNode := children.Eq(i - 1).Nodes[0]
+				if prevNode.Type == html.ElementNode {
+					for _, inline := range inlineElements {
+						if prevNode.Data == inline {
+							prevIsInline = true
+							break
+						}
+					}
+				}
+			}
+			// Check if next sibling is inline
+			nextIsInline := false
+			if i < childrenCount - 1 {
+				nextNode := children.Eq(i + 1).Nodes[0]
+				if nextNode.Type == html.ElementNode {
+					for _, inline := range inlineElements {
+						if nextNode.Data == inline {
+							nextIsInline = true
+							break
+						}
+					}
+				}
+			}
+			// Preserve space between inline elements
+			if prevIsInline && nextIsInline {
+				childText = " "
+			}
+		}
+
+		innerContent += childText
+	})
+
+	// For inline elements, don't trim - preserve spaces around them
+	// For block elements, trim to clean up whitespace
+	if !isInline {
+		innerContent = strings.TrimSpace(innerContent)
+	}
+
+	switch tag {
+	case "p":
+		return innerContent + "\n\n"
+	case "br":
+		return "\n"
+	case "h1":
+		return "# " + innerContent + "\n\n"
+	case "h2":
+		return "## " + innerContent + "\n\n"
+	case "h3":
+		return "### " + innerContent + "\n\n"
+	case "h4":
+		return "#### " + innerContent + "\n\n"
+	case "h5":
+		return "##### " + innerContent + "\n\n"
+	case "h6":
+		return "###### " + innerContent + "\n\n"
+	case "strong", "b":
+		return "**" + innerContent + "**"
+	case "em", "i":
+		return "*" + innerContent + "*"
+	case "code":
+		// Check if this code is inside a pre tag - if so, don't wrap with backticks
+		// The pre tag handler will add the code block syntax
+		parent := s.Parent()
+		if parent.Length() > 0 && parent.Nodes[0].Data == "pre" {
+			return innerContent
+		}
+		return "`" + innerContent + "`"
+	case "pre":
+		// Check if pre contains a code tag with language class
+		codeEl := s.Find("code")
+		language := ""
+		if codeEl.Length() > 0 {
+			// Look for language class like "language-go" or "go"
+			classes, _ := codeEl.Attr("class")
+			for _, class := range strings.Split(classes, " ") {
+				if strings.HasPrefix(class, "language-") {
+					language = strings.TrimPrefix(class, "language-")
+					break
+				}
+				// Common language class names without prefix
+				if class != "" && !strings.HasPrefix(class, "hljs") {
+					language = class
+				}
+			}
+		}
+		// Get raw text content preserving newlines (don't use convertNodeToMarkdown)
+		// For code inside pre, we need to preserve the original formatting
+		codeContent := ""
+		if codeEl.Length() > 0 {
+			// Get text from the code element directly
+			codeContent = codeEl.Text()
+		} else {
+			// Get text from pre directly
+			codeContent = s.Text()
+		}
+		// Strip leading indentation from each line (common in syntax-highlighted HTML)
+		lines := strings.Split(codeContent, "\n")
+		for i, line := range lines {
+			lines[i] = strings.TrimLeft(line, " \t")
+		}
+		codeContent = strings.Join(lines, "\n")
+		return fmt.Sprintf("\n```%s\n%s\n```\n\n", language, strings.TrimSpace(codeContent))
+	case "blockquote":
+		lines := strings.Split(innerContent, "\n")
+		var result strings.Builder
+		for _, line := range lines {
+			result.WriteString("> " + line + "\n")
+		}
+		return result.String() + "\n"
+	case "a":
+		href, _ := s.Attr("href")
+		if href == "" {
+			return innerContent
+		}
+		return "[" + innerContent + "](" + href + ")"
+	case "ul":
+		var result strings.Builder
+		s.Children().Each(func(i int, li *goquery.Selection) {
+			liContent := ""
+			li.Contents().Each(func(j int, child *goquery.Selection) {
+				liContent += convertNodeToMarkdown(child)
+			})
+			result.WriteString("- " + strings.TrimSpace(liContent) + "\n")
+		})
+		return result.String() + "\n"
+	case "ol":
+		var result strings.Builder
+		s.Children().Each(func(i int, li *goquery.Selection) {
+			liContent := ""
+			li.Contents().Each(func(j int, child *goquery.Selection) {
+				liContent += convertNodeToMarkdown(child)
+			})
+			result.WriteString(fmt.Sprintf("%d. %s\n", i+1, strings.TrimSpace(liContent)))
+		})
+		return result.String() + "\n"
+	case "li":
+		// Already handled by ul/ol
+		return ""
+	case "div", "section", "article":
+		// Only add newline if there's actual content
+		if innerContent != "" {
+			return innerContent + "\n"
+		}
+		return ""
+	case "span":
+		// Span is inline, don't add line break
+		return innerContent
+	case "hr":
+		return "\n---\n\n"
+	case "small":
+		return innerContent
+	default:
+		// Unknown tags: keep content if non-empty
+		if innerContent != "" {
+			return innerContent
+		}
+		return ""
+	}
+}
+
+// processHTMLImages is kept for backward compatibility but now uses the markdown converter
+func processHTMLImages(htmlContent, assetsDir, articleURL string) (string, int, int) {
+	return processHTMLToMarkdown(htmlContent, assetsDir, articleURL)
 }

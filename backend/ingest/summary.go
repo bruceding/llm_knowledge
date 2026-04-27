@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"llm-knowledge/claude"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -20,13 +21,23 @@ const summaryPrompt = `请阅读文件 %s 的内容，并用200-300字概括其�
 
 // GenerateSummary generates a summary by providing file path to Claude
 // Claude uses its Read tool to read the paper.md content
+// rawPath can be either:
+//   - A directory path (e.g., "raw/pdf/title") containing paper.md
+//   - A direct .md file path (e.g., "raw/rss/feed/title.md")
 func GenerateSummary(dataDir string, rawPath string, claudeBin string) (string, error) {
-	// Construct paper.md file path
-	paperPath := fmt.Sprintf("%s/%s/paper.md", dataDir, rawPath)
+	// Determine the actual file path
+	var paperPath string
+	if strings.HasSuffix(rawPath, ".md") {
+		// Direct .md file path (RSS format)
+		paperPath = filepath.Join(dataDir, rawPath)
+	} else {
+		// Directory path with paper.md (PDF/Web format)
+		paperPath = filepath.Join(dataDir, rawPath, "paper.md")
+	}
 
 	// Check if file exists
 	if _, err := os.Stat(paperPath); err != nil {
-		return "", fmt.Errorf("paper.md not found: %s", paperPath)
+		return "", fmt.Errorf("file not found: %s", paperPath)
 	}
 
 	// Create Claude client

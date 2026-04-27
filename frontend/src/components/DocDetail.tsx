@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import rehypeHighlight from 'rehype-highlight'
+import 'highlight.js/styles/github.css'
 import { useTranslation } from 'react-i18next'
 import { fetchDocument, updateDocument, publishDocument, deleteDocument, regenerateSummary, getPagesStatus, fetchSettings, checkPDFTranslationStatus, translatePDF } from '../api'
 import type { Document, SSEEvent, UserSettings } from '../types'
@@ -101,10 +103,24 @@ export default function DocDetail() {
 
       // Load raw content for RSS/web documents (markdown files)
       if (doc.sourceType === 'rss' || doc.sourceType === 'web') {
-        if (doc.rawPath && doc.rawPath.endsWith('.md')) {
-          const rawRes = await fetch(`/data/${doc.rawPath}`)
+        if (doc.rawPath) {
+          // RSS: rawPath is the .md file directly
+          // Web: rawPath is directory, need to load paper.md
+          let rawFilePath = doc.rawPath
+          if (doc.sourceType === 'web') {
+            rawFilePath = `${doc.rawPath}/paper.md`
+          }
+          const rawRes = await fetch(`/data/${rawFilePath}`)
           if (rawRes.ok) {
-            setRawContent(await rawRes.text())
+            let content = await rawRes.text()
+            // Strip YAML frontmatter (content between --- markers at the beginning)
+            if (content.startsWith('---')) {
+              const endIndex = content.indexOf('---', 3)
+              if (endIndex !== -1) {
+                content = content.substring(endIndex + 3).trim()
+              }
+            }
+            setRawContent(content)
           }
         }
       }
@@ -289,14 +305,14 @@ export default function DocDetail() {
   }
 
   // Calculate image base path for markdown rendering
-  // For PDF: rawPath is directory, images are relative to it
-  // For RSS/web: rawPath is .md file, images are relative to parent directory
+  // For PDF/Web: rawPath is directory, images are relative to it (assets/)
+  // For RSS: rawPath is .md file, images are relative to parent directory
   const getImageBasePath = () => {
     if (!document?.rawPath) return ''
-    if (document.sourceType === 'pdf') {
+    if (document.sourceType === 'pdf' || document.sourceType === 'web') {
       return `/data/${document.rawPath}`
     }
-    // For .md files, get parent directory
+    // For RSS (.md files), get parent directory
     const lastSlash = document.rawPath.lastIndexOf('/')
     if (lastSlash > 0) {
       return `/data/${document.rawPath.substring(0, lastSlash)}`
@@ -448,6 +464,7 @@ export default function DocDetail() {
             <div className="p-6 max-w-4xl mx-auto prose prose-slate">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeHighlight]}
                 components={{
                   // Custom link handling for wiki links
                   a: ({ href, children }) => {
@@ -473,7 +490,7 @@ export default function DocDetail() {
                     if (src && !src.startsWith('/') && !src.startsWith('http')) {
                       src = `${imageBasePath}/${src}`
                     }
-                    return <img src={src} alt={alt} className="max-w-full h-auto rounded-lg shadow-sm" />
+                    return <img src={src} alt={alt} className="max-w-full h-auto rounded-lg shadow-sm my-6" />
                   },
                 }}
               >

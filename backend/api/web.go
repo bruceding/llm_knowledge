@@ -120,23 +120,83 @@ func getImageExtension(imgURL string) string {
 // extractContent extracts clean text content from HTML for markdown
 func extractContent(doc *goquery.Document) string {
 	// Remove script, style, nav, header, footer, sidebar elements
-	doc.Find("script, style, nav, header, footer, aside, .sidebar, .navigation, .menu, .ads").Remove()
+	// Also remove navigation links, social icons, and other non-content elements
+	doc.Find("script, style, nav, .Header, .Footer, .NavigationDrawer, aside, .sidebar, .navigation, .menu, .ads").Remove()
 
-	// Try to find main content area
-	var content string
-	mainContent := doc.Find("main, article, .content, .post, .article, #content, #main")
-	if mainContent.Length() > 0 {
-		content = mainContent.Text()
-	} else {
-		content = doc.Find("body").Text()
+	// Remove cookie notices and other non-content
+	doc.Find(".Cookie-notice, .cookie-notice, .js-cookieNotice").Remove()
+
+	// Try to find main content area - prioritize specific selectors
+	var contentNode *goquery.Selection
+	// Try multiple selectors in order of specificity
+	selectors := []string{
+		".Article",           // Go blog
+		".Blog-content",      // Go blog alternative
+		"article",
+		"main",
+		".content",
+		".post",
+		"#content",
+		"#main",
+	}
+	for _, sel := range selectors {
+		if doc.Find(sel).Length() > 0 {
+			contentNode = doc.Find(sel).First()
+			break
+		}
+	}
+	if contentNode == nil {
+		contentNode = doc.Find("body")
 	}
 
-	// Clean up whitespace
-	content = strings.TrimSpace(content)
-	// Replace multiple whitespace with single space
-	content = strings.Join(strings.Fields(content), " ")
+	// Convert HTML to markdown using the same logic as RSS
+	var markdown strings.Builder
+	contentNode.Contents().Each(func(i int, s *goquery.Selection) {
+		markdown.WriteString(convertNodeToMarkdown(s))
+	})
 
-	return content
+	content := markdown.String()
+
+	// Clean up excessive blank lines (more than 2 consecutive)
+	content = cleanExcessiveWhitespace(content)
+
+	return strings.TrimSpace(content)
+}
+
+// cleanExcessiveWhitespace removes excessive blank lines, trailing whitespace, and indentation
+func cleanExcessiveWhitespace(content string) string {
+	// Replace multiple consecutive blank lines with max 1
+	lines := strings.Split(content, "\n")
+	var result []string
+	blankCount := 0
+
+	for _, line := range lines {
+		// Remove leading indentation (tabs/spaces at start of line)
+		line = strings.TrimLeft(line, " \t")
+		// Remove trailing whitespace
+		line = strings.TrimRight(line, " \t")
+
+		if strings.TrimSpace(line) == "" {
+			blankCount++
+			// Only keep 1 blank line between content
+			if blankCount <= 1 {
+				result = append(result, "")
+			}
+		} else {
+			blankCount = 0
+			result = append(result, line)
+		}
+	}
+
+	// Remove leading/trailing blank lines
+	for len(result) > 0 && strings.TrimSpace(result[0]) == "" {
+		result = result[1:]
+	}
+	for len(result) > 0 && strings.TrimSpace(result[len(result)-1]) == "" {
+		result = result[:len(result)-1]
+	}
+
+	return strings.Join(result, "\n")
 }
 
 func (h *WebHandler) UploadWeb(c echo.Context) error {
