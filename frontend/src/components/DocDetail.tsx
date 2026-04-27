@@ -16,6 +16,7 @@ export default function DocDetail() {
   const { t, i18n } = useTranslation()
   const [document, setDocument] = useState<Document | null>(null)
   const [wikiContent, setWikiContent] = useState<string>('')
+  const [rawContent, setRawContent] = useState<string>('') // For RSS/web markdown content
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -37,8 +38,8 @@ export default function DocDetail() {
   const [pdfTranslationProgress, setPdfTranslationProgress] = useState('')
   const [translatedPdfPath, setTranslatedPdfPath] = useState<string | null>(null)
 
-  // View mode - default to PDF, then Wiki if available
-  const [viewMode, setViewMode] = useState<'wiki' | 'translation' | 'bilingual' | 'pdf' | 'dual-pdf'>('pdf')
+  // View mode - default set based on sourceType after document loads
+  const [viewMode, setViewMode] = useState<'wiki' | 'translation' | 'bilingual' | 'pdf' | 'dual-pdf' | 'raw'>('raw')
 
   // Summary regeneration state
   const [regeneratingSummary, setRegeneratingSummary] = useState(false)
@@ -75,6 +76,13 @@ export default function DocDetail() {
       setEditTags(doc.tags.map((t) => t.name))
       setEditStatus(doc.status)
 
+      // Set default view mode based on sourceType
+      if (doc.sourceType === 'pdf') {
+        setViewMode('pdf')
+      } else {
+        setViewMode('raw')
+      }
+
       // Load settings
       try {
         const s = await fetchSettings()
@@ -91,8 +99,18 @@ export default function DocDetail() {
         }
       }
 
-      // Load existing translation if available
-      if (doc.rawPath) {
+      // Load raw content for RSS/web documents (markdown files)
+      if (doc.sourceType === 'rss' || doc.sourceType === 'web') {
+        if (doc.rawPath && doc.rawPath.endsWith('.md')) {
+          const rawRes = await fetch(`/data/${doc.rawPath}`)
+          if (rawRes.ok) {
+            setRawContent(await rawRes.text())
+          }
+        }
+      }
+
+      // Load existing translation if available (PDF documents)
+      if (doc.rawPath && doc.sourceType === 'pdf') {
         // Check for Chinese translation
         const zhRes = await fetch(`/data/${doc.rawPath}/paper_zh.md`)
         if (zhRes.ok) {
@@ -116,26 +134,24 @@ export default function DocDetail() {
         }
 
         // Load page count for PDF documents
-        if (doc.sourceType === 'pdf') {
-          try {
-            const pagesStatus = await getPagesStatus(doc.id)
-            if (pagesStatus.exists) {
-              setTotalPages(pagesStatus.page_count)
-            }
-          } catch (err) {
-            console.error('Failed to get pages status:', err)
+        try {
+          const pagesStatus = await getPagesStatus(doc.id)
+          if (pagesStatus.exists) {
+            setTotalPages(pagesStatus.page_count)
           }
+        } catch (err) {
+          console.error('Failed to get pages status:', err)
+        }
 
-          // Check PDF translation status
-          try {
-            const pdfStatus = await checkPDFTranslationStatus(doc.id)
-            setPdfTranslationStatus(pdfStatus)
-            if (pdfStatus.exists && pdfStatus.path) {
-              setTranslatedPdfPath(pdfStatus.path)
-            }
-          } catch (err) {
-            console.error('Failed to check PDF translation status:', err)
+        // Check PDF translation status
+        try {
+          const pdfStatus = await checkPDFTranslationStatus(doc.id)
+          setPdfTranslationStatus(pdfStatus)
+          if (pdfStatus.exists && pdfStatus.path) {
+            setTranslatedPdfPath(pdfStatus.path)
           }
+        } catch (err) {
+          console.error('Failed to check PDF translation status:', err)
         }
       }
     } catch (err) {
@@ -265,13 +281,34 @@ export default function DocDetail() {
         return null // PDF is rendered in iframe
       case 'dual-pdf':
         return null // Dual PDF view renders separately
+      case 'raw':
+        return rawContent
       default:
-        return wikiContent
+        return wikiContent || rawContent
     }
   }
 
-  // Check if PDF file exists
-  const pdfUrl = document?.rawPath ? `/data/${document.rawPath}/paper.pdf` : null
+  // Calculate image base path for markdown rendering
+  // For PDF: rawPath is directory, images are relative to it
+  // For RSS/web: rawPath is .md file, images are relative to parent directory
+  const getImageBasePath = () => {
+    if (!document?.rawPath) return ''
+    if (document.sourceType === 'pdf') {
+      return `/data/${document.rawPath}`
+    }
+    // For .md files, get parent directory
+    const lastSlash = document.rawPath.lastIndexOf('/')
+    if (lastSlash > 0) {
+      return `/data/${document.rawPath.substring(0, lastSlash)}`
+    }
+    return `/data/${document.rawPath}`
+  }
+
+  // Check if PDF file exists (only for PDF sourceType)
+  const pdfUrl = document?.sourceType === 'pdf' && document?.rawPath
+    ? `/data/${document.rawPath}/paper.pdf`
+    : null
+  const imageBasePath = getImageBasePath()
 
   if (loading) {
     return (
@@ -302,6 +339,8 @@ export default function DocDetail() {
     )
   }
 
+  const isPDF = document.sourceType === 'pdf'
+
   return (
     <div className="flex h-full">
       {/* Left: Markdown content */}
@@ -320,14 +359,26 @@ export default function DocDetail() {
               </svg>
             </button>
 
-            <button
-              onClick={() => setViewMode('pdf')}
-              className={`px-3 py-1.5 rounded-lg text-sm ${
-                viewMode === 'pdf' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
-              }`}
-            >
-              {t('docDetail.rawContent')}
-            </button>
+            {/* Raw content button - label depends on sourceType */}
+            {isPDF ? (
+              <button
+                onClick={() => setViewMode('pdf')}
+                className={`px-3 py-1.5 rounded-lg text-sm ${
+                  viewMode === 'pdf' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                PDF
+              </button>
+            ) : (
+              <button
+                onClick={() => setViewMode('raw')}
+                className={`px-3 py-1.5 rounded-lg text-sm ${
+                  viewMode === 'raw' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                {t('docDetail.rawContent')}
+              </button>
+            )}
             {wikiContent && (
               <button
                 onClick={() => setViewMode('wiki')}
@@ -338,11 +389,11 @@ export default function DocDetail() {
                 {t('docDetail.wikiContent')}
               </button>
             )}
-            {translationContent && (
+            {translationContent && isPDF && (
               <button
-                onClick={() => setViewMode(document.sourceType === 'pdf' ? 'bilingual' : 'translation')}
+                onClick={() => setViewMode('bilingual')}
                 className={`px-3 py-1.5 rounded-lg text-sm ${
-                  (viewMode === 'bilingual' || viewMode === 'translation') ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+                  viewMode === 'bilingual' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
                 {t('docDetail.translation')} ({translationLang.toUpperCase()})
@@ -360,10 +411,9 @@ export default function DocDetail() {
             )}
           </div>
 
-          {/* Translate buttons */}
+          {/* Translate buttons - only for PDF */}
           <div className="flex items-center gap-2">
-            {/* PDF Translation button - only when settings enabled and no translation yet */}
-            {document.sourceType === 'pdf' && settings?.translationEnabled && !pdfTranslationStatus?.exists && !pdfTranslating && (
+            {isPDF && settings?.translationEnabled && !pdfTranslationStatus?.exists && !pdfTranslating && (
               <button
                 onClick={() => handlePDFTranslate()}
                 className="px-3 py-1.5 text-sm bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200"
@@ -371,7 +421,6 @@ export default function DocDetail() {
                 {t('docDetail.translatePdf')}
               </button>
             )}
-            {/* PDF Translation progress */}
             {pdfTranslating && (
               <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-50 rounded-lg">
                 <div className="animate-spin h-4 w-4 border-2 border-purple-500 rounded-full border-t-transparent"></div>
@@ -421,11 +470,8 @@ export default function DocDetail() {
                   },
                   // Handle image paths - convert relative to absolute
                   img: ({ src, alt }) => {
-                    if (src && document?.rawPath) {
-                      // Convert relative path to absolute /data/ path
-                      if (!src.startsWith('/') && !src.startsWith('http')) {
-                        src = `/data/${document.rawPath}/${src}`
-                      }
+                    if (src && !src.startsWith('/') && !src.startsWith('http')) {
+                      src = `${imageBasePath}/${src}`
                     }
                     return <img src={src} alt={alt} className="max-w-full h-auto rounded-lg shadow-sm" />
                   },
@@ -589,6 +635,29 @@ export default function DocDetail() {
               </button>
             </div>
           </div>
+
+          {/* Source info */}
+          {document.sourceType !== 'pdf' && document.metadata && (
+            <div className="pt-2 border-t border-gray-200">
+              <label className="block text-xs font-medium text-gray-500 mb-0.5">Source</label>
+              <div className="px-2 py-1 bg-white border border-gray-200 rounded text-gray-600 text-xs">
+                {(() => {
+                  try {
+                    const meta = JSON.parse(document.metadata)
+                    return (
+                      <div className="space-y-0.5">
+                        {meta.feedName && <div>Feed: {meta.feedName}</div>}
+                        {meta.author && <div>Author: {meta.author}</div>}
+                        {meta.published && <div>Published: {meta.published}</div>}
+                      </div>
+                    )
+                  } catch {
+                    return document.sourceType
+                  }
+                })()}
+              </div>
+            </div>
+          )}
 
           {/* Dates */}
           <div className="text-xs text-gray-500 pt-2 border-t border-gray-200">
