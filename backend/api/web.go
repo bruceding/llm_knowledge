@@ -163,6 +163,75 @@ func extractContent(doc *goquery.Document) string {
 	return strings.TrimSpace(content)
 }
 
+// extractPublishedTime extracts publication time from HTML meta tags
+func extractPublishedTime(doc *goquery.Document) time.Time {
+	// Common meta tag names for publication time
+	metaNames := []string{
+		"article:published_time",
+		"datePublished",
+		"publish-date",
+		"published",
+		"date",
+		"article:modified_time",
+		"dateModified",
+		"last-modified",
+	}
+
+	for _, name := range metaNames {
+		// Try meta tag with property attribute
+		if val, exists := doc.Find(fmt.Sprintf("meta[property=\"%s\"]", name)).Attr("content"); exists && val != "" {
+			if t := parseWebDate(val); !t.IsZero() {
+				return t
+			}
+		}
+		// Try meta tag with name attribute
+		if val, exists := doc.Find(fmt.Sprintf("meta[name=\"%s\"]", name)).Attr("content"); exists && val != "" {
+			if t := parseWebDate(val); !t.IsZero() {
+				return t
+			}
+		}
+	}
+
+	// Try to find time element with datetime attribute
+	if val, exists := doc.Find("time[datetime]").Attr("datetime"); exists && val != "" {
+		if t := parseWebDate(val); !t.IsZero() {
+			return t
+		}
+	}
+
+	return time.Time{}
+}
+
+// parseWebDate parses various web date formats
+func parseWebDate(dateStr string) time.Time {
+	if dateStr == "" {
+		return time.Time{}
+	}
+
+	// Common web date formats
+	formats := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02T15:04:05+00:00",
+		"2006-01-02",
+		"Mon, 02 Jan 2006 15:04:05 MST",
+		"Mon, 02 Jan 2006 15:04:05 -0700",
+		"January 02, 2006",
+		"Jan 02, 2006",
+		"02 Jan 2006",
+		"2006/01/02",
+		"01/02/2006",
+	}
+
+	for _, format := range formats {
+		if t, err := time.Parse(format, dateStr); err == nil {
+			return t
+		}
+	}
+
+	return time.Time{}
+}
+
 // cleanExcessiveWhitespace removes excessive blank lines, trailing whitespace
 // but preserves indentation inside code blocks
 func cleanExcessiveWhitespace(content string) string {
@@ -305,11 +374,17 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 	content := extractContent(doc)
 	mdPath := filepath.Join(dir, "paper.md")
 
+	// Extract published time from meta tags
+	publishedTime := extractPublishedTime(doc)
+	if publishedTime.IsZero() {
+		publishedTime = time.Now()
+	}
+
 	// Build markdown content with metadata header
 	mdContent := fmt.Sprintf("---\nsource_url: %s\nsource_type: web\ntitle: %s\ndate: %s\n---\n\n%s",
 		req.URL,
 		doc.Find("title").Text(),
-		time.Now().Format("2006-01-02"),
+		publishedTime.Format("2006-01-02"),
 		content)
 
 	if err := os.WriteFile(mdPath, []byte(mdContent), 0644); err != nil {
@@ -325,7 +400,7 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 		SourceURL:  req.URL,
 		Language:   "en",
 		Status:     "inbox",
-		CreatedAt:  time.Now(),
+		CreatedAt:  publishedTime,
 		UpdatedAt:  time.Now(),
 	}
 	if err := db.DB.Create(&docRecord).Error; err != nil {

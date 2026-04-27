@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -155,26 +156,60 @@ func (h *RSSHandler) SyncFeed(c echo.Context) error {
 		return c.JSON(404, echo.Map{"error": "feed not found"})
 	}
 
+	result := h.syncFeedInternal(&feed)
+	return c.JSON(200, result)
+}
+
+// SyncResult represents the result of a feed sync operation
+type SyncResult struct {
+	FeedID         uint   `json:"feedId"`
+	FeedName       string `json:"feedName"`
+	NewArticles    int    `json:"newArticles"`
+	Total          int    `json:"total"`
+	DownloadErrors int    `json:"downloadErrors"`
+	Message        string `json:"message"`
+	Error          string `json:"error,omitempty"`
+}
+
+// syncFeedInternal performs the actual sync without HTTP context
+func (h *RSSHandler) syncFeedInternal(feed *db.RSSFeed) SyncResult {
 	fp := gofeed.NewParser()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	rssFeed, err := fp.ParseURLWithContext(feed.URL, ctx)
 	if err != nil {
-		return c.JSON(500, echo.Map{"error": "failed to parse RSS feed: " + err.Error()})
+		return SyncResult{
+			FeedID:   feed.ID,
+			FeedName: feed.Name,
+			Error:    "failed to parse RSS feed: " + err.Error(),
+		}
 	}
 
 	feedDir := filepath.Join(h.DataDir, "raw", "rss", sanitizeFilename(feed.Name))
 	assetsDir := filepath.Join(feedDir, "assets")
 	if err := os.MkdirAll(assetsDir, 0755); err != nil {
-		return c.JSON(500, echo.Map{"error": "failed to create directories"})
+		return SyncResult{
+			FeedID:   feed.ID,
+			FeedName: feed.Name,
+			Error:    "failed to create directories",
+		}
+	}
+
+	// For first sync, sort by published date and limit to 5 most recent articles
+	items := rssFeed.Items
+	isFirstSync := feed.LastSyncAt.IsZero()
+	if isFirstSync && len(items) > 5 {
+		// Sort items by published date (most recent first)
+		sortItemsByDate(items)
+		items = items[:5]
 	}
 
 	newArticles := 0
 	downloadErrors := 0
-	total := len(rssFeed.Items)
+	total := len(items)
 
-	for _, item := range rssFeed.Items {
+	for _, item := range items {
 		var existingDoc db.Document
 		if db.DB.Where("source_url = ?", item.Link).First(&existingDoc).Error == nil {
 			continue
@@ -209,6 +244,12 @@ func (h *RSSHandler) SyncFeed(c echo.Context) error {
 		}
 		metadataJSON, _ := json.Marshal(metadata)
 
+		// Use published date as created_at for RSS articles
+		publishedTime := parsePublishedTime(item.Published)
+		if publishedTime.IsZero() {
+			publishedTime = time.Now()
+		}
+
 		doc := db.Document{
 			Title:      item.Title,
 			SourceType: "rss",
@@ -218,7 +259,7 @@ func (h *RSSHandler) SyncFeed(c echo.Context) error {
 			Language:   "en",
 			Status:     "inbox",
 			Metadata:   string(metadataJSON),
-			CreatedAt:  time.Now(),
+			CreatedAt:  publishedTime,
 			UpdatedAt:  time.Now(),
 		}
 
@@ -252,14 +293,61 @@ func (h *RSSHandler) SyncFeed(c echo.Context) error {
 		msg += fmt.Sprintf(" (%d image download errors)", downloadErrors)
 	}
 
-	return c.JSON(200, echo.Map{
-		"feedId":          feed.ID,
-		"feedName":        feed.Name,
-		"newArticles":     newArticles,
-		"total":           total,
-		"downloadErrors":  downloadErrors,
-		"message":         msg,
-	})
+	return SyncResult{
+		FeedID:         feed.ID,
+		FeedName:       feed.Name,
+		NewArticles:    newArticles,
+		Total:          total,
+		DownloadErrors: downloadErrors,
+		Message:        msg,
+	}
+}
+
+// StartAutoSyncScheduler starts a background scheduler that syncs feeds with autoSync enabled
+// It checks every hour and syncs feeds that haven't been synced in the last hour
+func (h *RSSHandler) StartAutoSyncScheduler() {
+	go func() {
+		// Check every hour
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+
+		fmt.Println("[rss] Auto-sync scheduler started, checking every hour")
+
+		for range ticker.C {
+			h.syncAutoSyncFeeds()
+		}
+	}()
+}
+
+// syncAutoSyncFeeds syncs all feeds that have autoSync enabled and need syncing
+func (h *RSSHandler) syncAutoSyncFeeds() {
+	var feeds []db.RSSFeed
+	if err := db.DB.Where("auto_sync = ?", true).Find(&feeds).Error; err != nil {
+		fmt.Printf("[rss] Failed to query auto-sync feeds: %v\n", err)
+		return
+	}
+
+	if len(feeds) == 0 {
+		return
+	}
+
+	fmt.Printf("[rss] Checking %d auto-sync feeds...\n", len(feeds))
+
+	minSyncInterval := 1 * time.Hour
+	for _, feed := range feeds {
+		// Skip if synced recently (within the last hour)
+		if !feed.LastSyncAt.IsZero() && time.Since(feed.LastSyncAt) < minSyncInterval {
+			continue
+		}
+
+		fmt.Printf("[rss] Auto-syncing feed: %s (%s)\n", feed.Name, feed.URL)
+		result := h.syncFeedInternal(&feed)
+		if result.Error != "" {
+			fmt.Printf("[rss] Auto-sync failed for %s: %s\n", feed.Name, result.Error)
+		} else {
+			fmt.Printf("[rss] Auto-sync completed for %s: %s\n", feed.Name, result.Message)
+		}
+	}
 }
 
 func sanitizeFilename(name string) string {
@@ -272,11 +360,47 @@ func sanitizeFilename(name string) string {
 	name = strings.ReplaceAll(name, "<", "-")
 	name = strings.ReplaceAll(name, ">", "-")
 	name = strings.ReplaceAll(name, "|", "-")
+	name = strings.ReplaceAll(name, "'", "")  // Remove single quotes (not replace with -)
 	name = strings.TrimSpace(name)
 	if len(name) > 100 {
 		name = name[:100]
 	}
 	return name
+}
+
+// sortItemsByDate sorts RSS items by published date (most recent first)
+func sortItemsByDate(items []*gofeed.Item) {
+	// Sort in descending order (most recent first)
+	sort.Slice(items, func(i, j int) bool {
+		// Parse published dates
+		timeI := parsePublishedTime(items[i].Published)
+		timeJ := parsePublishedTime(items[j].Published)
+		return timeI.After(timeJ) // Most recent first
+	})
+}
+
+// parsePublishedTime parses various RSS date formats
+func parsePublishedTime(dateStr string) time.Time {
+	if dateStr == "" {
+		return time.Time{} // Zero time for items without date
+	}
+
+	// Common RSS date formats
+	formats := []string{
+		time.RFC3339,
+		"Mon, 02 Jan 2006 15:04:05 MST",
+		"Mon, 02 Jan 2006 15:04:05 -0700",
+		"2006-01-02T15:04:05Z",
+		"2006-01-02T15:04:05+00:00",
+	}
+
+	for _, format := range formats {
+		if t, err := time.Parse(format, dateStr); err == nil {
+			return t
+		}
+	}
+
+	return time.Time{} // Return zero time if parsing fails
 }
 
 func buildArticleContentWithImages(item *gofeed.Item, feedName, assetsDir, articleURL string) (string, int, int) {

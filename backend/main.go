@@ -187,6 +187,9 @@ func main() {
 	e.DELETE("/api/rss/feeds/:id", rssH.DeleteFeed)
 	e.POST("/api/rss/feeds/:id/sync", rssH.SyncFeed)
 
+	// Start RSS auto-sync scheduler
+	rssH.StartAutoSyncScheduler()
+
 	// Serve frontend static files from embedded filesystem
 	// Create a sub filesystem from the embedded dist directory
 	distSubFS, err := fs.Sub(embedfs.DistFS, "dist")
