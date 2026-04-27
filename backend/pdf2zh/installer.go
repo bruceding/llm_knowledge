@@ -40,6 +40,22 @@ func addInstallLog(msg string) {
 	log.Printf("[pdf2zh] %s", msg)
 }
 
+// findPython312 locates a Python 3.12 binary for creating the venv.
+// pdf2zh requires Python >= 3.12 (PEP 695 type parameter syntax).
+func findPython312() string {
+	candidates := []string{
+		"python3.12",
+		"/usr/local/opt/python@3.12/bin/python3.12",
+		"/opt/homebrew/opt/python@3.12/bin/python3.12",
+	}
+	for _, p := range candidates {
+		if _, err := exec.LookPath(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
 // CheckAndInstall checks if pdf2zh is installed, and installs asynchronously if not
 func CheckAndInstall(venvDir string) {
 	// Check if venv exists and pdf2zh is installed
@@ -76,9 +92,17 @@ func CheckAndInstall(venvDir string) {
 func installPDF2Zh(venvDir string) {
 	addInstallLog("Starting pdf2zh installation...")
 
-	// Step 1: Create venv
-	addInstallLog("Creating Python virtual environment at " + venvDir)
-	cmd := exec.Command("python3", "-m", "venv", venvDir)
+	// Step 1: Find Python 3.12 and create venv
+	pythonBin := findPython312()
+	if pythonBin == "" {
+		addInstallLog("Python 3.12 is required but not found. Install it via: brew install python@3.12")
+		installStatusMux.Lock()
+		installStatus = "failed"
+		installStatusMux.Unlock()
+		return
+	}
+	addInstallLog(fmt.Sprintf("Creating Python virtual environment at %s (using %s)", venvDir, pythonBin))
+	cmd := exec.Command(pythonBin, "-m", "venv", venvDir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		addInstallLog(fmt.Sprintf("Failed to create venv: %v\n%s", err, output))
