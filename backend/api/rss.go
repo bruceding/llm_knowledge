@@ -223,7 +223,7 @@ func buildArticleContentWithImages(item *gofeed.Item, feedName, assetsDir, artic
 
 	// Download cover image if exists
 	if item.Image != nil && item.Image.URL != "" {
-		localPath, err := downloadImage(item.Image.URL, assetsDir, articleURL)
+		localPath, err := downloadImageToAssets(item.Image.URL, assetsDir, articleURL)
 		if err == nil {
 			content.WriteString(fmt.Sprintf("![%s](assets/%s)\n\n", item.Image.Title, filepath.Base(localPath)))
 			imgCount++
@@ -235,7 +235,7 @@ func buildArticleContentWithImages(item *gofeed.Item, feedName, assetsDir, artic
 	// Download image enclosures
 	for _, enc := range item.Enclosures {
 		if strings.HasPrefix(enc.Type, "image/") {
-			localPath, err := downloadImage(enc.URL, assetsDir, articleURL)
+			localPath, err := downloadImageToAssets(enc.URL, assetsDir, articleURL)
 			if err == nil {
 				content.WriteString(fmt.Sprintf("![image](assets/%s)\n\n", filepath.Base(localPath)))
 				imgCount++
@@ -271,7 +271,7 @@ func buildArticleContentWithImages(item *gofeed.Item, feedName, assetsDir, artic
 	return content.String(), imgCount, imgErrors
 }
 
-func downloadImage(imgURL, assetsDir, articleURL string) (string, error) {
+func downloadImageToAssets(imgURL, assetsDir, articleURL string) (string, error) {
 	// Resolve relative URLs
 	if !strings.HasPrefix(imgURL, "http://") && !strings.HasPrefix(imgURL, "https://") {
 		base, err := url.Parse(articleURL)
@@ -346,7 +346,7 @@ func processHTMLImages(htmlContent, assetsDir, articleURL string) (string, int, 
 			alt = "image"
 		}
 
-		localPath, err := downloadImage(src, assetsDir, articleURL)
+		localPath, err := downloadImageToAssets(src, assetsDir, articleURL)
 		if err != nil {
 			imgErrors++
 			return
