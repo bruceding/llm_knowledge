@@ -126,8 +126,8 @@ export default function ImportView() {
     setError(null)
 
     try {
-      const feedName = rssName.trim() || rssUrl.split('/').pop() || 'RSS Feed'
-      await addRSSFeed(feedName, rssUrl, rssAutoSync)
+      // Backend will parse RSS feed title if name is empty
+      await addRSSFeed(rssName.trim(), rssUrl, rssAutoSync)
       setRssUrl('')
       setRssName('')
       setRssAutoSync(false)

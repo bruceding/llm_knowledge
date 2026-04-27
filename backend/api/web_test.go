@@ -159,6 +159,14 @@ func TestConvertNodeToMarkdown(t *testing.T) {
 			html:     `<img src="test.png" alt="diagram"/><p>This explains the diagram.</p>`,
 			expected: "![diagram](test.png)\n\nThis explains the diagram.\n\n",
 		},
+		{
+			name:     "code block with indentation",
+			html:     `<pre><code class="language-go">type Node struct {
+  next *Node
+}
+</code></pre>`,
+			expected: "\n```go\ntype Node struct {\n  next *Node\n}\n```\n\n",
+		},
 	}
 
 	for _, tt := range tests {

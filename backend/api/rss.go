@@ -42,8 +42,36 @@ func (h *RSSHandler) AddFeed(c echo.Context) error {
 		return c.JSON(400, echo.Map{"error": "URL is required"})
 	}
 
+	// If name not provided, parse RSS feed to get title
+	feedName := req.Name
+	if feedName == "" {
+		fp := gofeed.NewParser()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		rssFeed, err := fp.ParseURLWithContext(req.URL, ctx)
+		if err != nil {
+			// Fallback: extract domain name from URL
+			u, parseErr := url.Parse(req.URL)
+			if parseErr != nil {
+				feedName = "RSS Feed"
+			} else {
+				feedName = u.Host
+				// Remove common prefixes like www.
+				feedName = strings.TrimPrefix(feedName, "www.")
+			}
+		} else {
+			feedName = rssFeed.Title
+			if feedName == "" {
+				u, _ := url.Parse(req.URL)
+				feedName = strings.TrimPrefix(u.Host, "www.")
+			}
+		}
+	}
+	feedName = sanitizeFilename(feedName)
+
 	feed := db.RSSFeed{
-		Name:      req.Name,
+		Name:      feedName,
 		URL:       req.URL,
 		AutoSync:  req.AutoSync,
 		CreatedAt: time.Now(),
@@ -568,10 +596,33 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 			// Get text from pre directly
 			codeContent = s.Text()
 		}
-		// Strip leading indentation from each line (common in syntax-highlighted HTML)
+		// Strip common leading indentation while preserving relative indentation
+		// Find the minimum indentation among non-empty lines
 		lines := strings.Split(codeContent, "\n")
-		for i, line := range lines {
-			lines[i] = strings.TrimLeft(line, " \t")
+		minIndent := -1
+		for _, line := range lines {
+			if strings.TrimSpace(line) == "" {
+				continue // Skip empty lines
+			}
+			indent := 0
+			for _, ch := range line {
+				if ch == ' ' || ch == '\t' {
+					indent++
+				} else {
+					break
+				}
+			}
+			if minIndent == -1 || indent < minIndent {
+				minIndent = indent
+			}
+		}
+		// Remove the common minimum indentation from each line
+		if minIndent > 0 {
+			for i, line := range lines {
+				if strings.TrimSpace(line) != "" && len(line) >= minIndent {
+					lines[i] = line[minIndent:]
+				}
+			}
 		}
 		codeContent = strings.Join(lines, "\n")
 		return fmt.Sprintf("\n```%s\n%s\n```\n\n", language, strings.TrimSpace(codeContent))

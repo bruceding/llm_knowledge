@@ -163,17 +163,34 @@ func extractContent(doc *goquery.Document) string {
 	return strings.TrimSpace(content)
 }
 
-// cleanExcessiveWhitespace removes excessive blank lines, trailing whitespace, and indentation
+// cleanExcessiveWhitespace removes excessive blank lines, trailing whitespace
+// but preserves indentation inside code blocks
 func cleanExcessiveWhitespace(content string) string {
-	// Replace multiple consecutive blank lines with max 1
 	lines := strings.Split(content, "\n")
 	var result []string
 	blankCount := 0
+	inCodeBlock := false
 
 	for _, line := range lines {
-		// Remove leading indentation (tabs/spaces at start of line)
+		// Check if entering or leaving a code block
+		if strings.HasPrefix(line, "```") {
+			inCodeBlock = !inCodeBlock
+			// Remove trailing whitespace from the ``` line
+			line = strings.TrimRight(line, " \t")
+			blankCount = 0
+			result = append(result, line)
+			continue
+		}
+
+		// Inside code block: only trim trailing whitespace, preserve indentation
+		if inCodeBlock {
+			line = strings.TrimRight(line, " \t")
+			result = append(result, line)
+			continue
+		}
+
+		// Outside code block: trim both leading and trailing whitespace
 		line = strings.TrimLeft(line, " \t")
-		// Remove trailing whitespace
 		line = strings.TrimRight(line, " \t")
 
 		if strings.TrimSpace(line) == "" {
