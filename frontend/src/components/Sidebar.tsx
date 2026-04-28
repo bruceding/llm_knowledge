@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { fetchInbox } from '../api'
+import { fetchInbox, fetchDocuments } from '../api'
 
 export default function Sidebar() {
   const { t } = useTranslation()
@@ -9,6 +9,7 @@ export default function Sidebar() {
   const navigate = useNavigate()
   const [searchQuery, setSearchQuery] = useState('')
   const [inboxCount, setInboxCount] = useState(0)
+  const [archivedCount, setArchivedCount] = useState(0)
   const [expandedSections, setExpandedSections] = useState({
     navigation: true,
     wiki: true,
@@ -16,9 +17,12 @@ export default function Sidebar() {
   })
 
   useEffect(() => {
-    // Fetch inbox count on mount and when location changes
+    // Fetch inbox and archived count on mount and when location changes
     fetchInbox()
       .then((docs) => setInboxCount(docs.length))
+      .catch(() => {})
+    fetchDocuments('archived')
+      .then((docs) => setArchivedCount(docs.length))
       .catch(() => {})
   }, [location.pathname])
 
@@ -35,8 +39,11 @@ export default function Sidebar() {
   }
 
   const isActive = (path: string) => {
-    if (path === '/') return location.pathname === '/'
-    return location.pathname.startsWith(path)
+    if (path === '/') return location.pathname === '/' && !location.search
+    if (path === '/documents?status=archived') {
+      return location.pathname === '/documents' && location.search === '?status=archived'
+    }
+    return location.pathname === path && !location.search
   }
 
   const navItemClass = (path: string) =>
@@ -115,6 +122,24 @@ export default function Sidebar() {
                   {inboxCount > 0 && (
                     <span className="ml-auto px-2 py-0.5 text-xs bg-blue-500 text-white rounded-full">
                       {inboxCount}
+                    </span>
+                  )}
+                </Link>
+              </li>
+              <li>
+                <Link to="/documents?status=archived" className={navItemClass('/documents?status=archived')}>
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-10 4h4"
+                    />
+                  </svg>
+                  <span>{t('sidebar.archived')}</span>
+                  {archivedCount > 0 && (
+                    <span className="ml-auto px-2 py-0.5 text-xs bg-gray-500 text-white rounded-full">
+                      {archivedCount}
                     </span>
                   )}
                 </Link>

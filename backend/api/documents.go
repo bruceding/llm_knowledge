@@ -203,14 +203,17 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 	if doc.RawPath != "" {
 		rawPath := filepath.Join(h.DataDir, doc.RawPath)
 		if _, err := os.Stat(rawPath); err == nil {
-			// Get the parent directory (e.g., raw/papers/{name}/)
-			parentDir := filepath.Dir(rawPath)
-			if filepath.Base(parentDir) != "raw" {
-				// Remove the entire paper directory
-				os.RemoveAll(parentDir)
-			} else {
-				// Just remove the file if it's directly in raw/
+			// RSS articles share a feed directory - only delete the single file
+			if strings.HasPrefix(doc.RawPath, "raw/rss/") {
 				os.Remove(rawPath)
+			} else {
+				// For papers/web clips, each document has its own directory
+				parentDir := filepath.Dir(rawPath)
+				if filepath.Base(parentDir) != "raw" {
+					os.RemoveAll(parentDir)
+				} else {
+					os.Remove(rawPath)
+				}
 			}
 		}
 	}

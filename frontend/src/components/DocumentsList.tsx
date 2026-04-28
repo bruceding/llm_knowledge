@@ -1,26 +1,46 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { fetchDocuments } from '../api'
+import { fetchDocuments, deleteDocument } from '../api'
 import type { Document } from '../types'
 
 export default function DocumentsList() {
   const { t, i18n } = useTranslation()
+  const [searchParams] = useSearchParams()
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [searchQuery, setSearchQuery] = useState('')
+  const [hoveredDocId, setHoveredDocId] = useState<number | null>(null)
+
+  // Sync status filter with URL params on mount and when URL changes
+  useEffect(() => {
+    const status = searchParams.get('status') || ''
+    setStatusFilter(status)
+  }, [searchParams])
 
   useEffect(() => {
-    loadDocuments()
+    loadDocuments(statusFilter)
   }, [statusFilter])
 
-  const loadDocuments = async () => {
+  // Keyboard shortcut: 'd' to delete hovered document
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'd' || hoveredDocId === null) return
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
+      if (!confirm(t('docDetail.deleteConfirm'))) return
+      deleteDocument(hoveredDocId).then(() => loadDocuments(statusFilter))
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [hoveredDocId, t, statusFilter])
+
+  const loadDocuments = async (status: string) => {
     setLoading(true)
     setError(null)
     try {
-      const docs = await fetchDocuments(statusFilter)
+      const docs = await fetchDocuments(status)
       setDocuments(docs)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load documents')
@@ -115,7 +135,7 @@ export default function DocumentsList() {
         <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('documentsList.title')}</h2>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
           {error}
-          <button onClick={loadDocuments} className="ml-4 text-red-800 underline">
+          <button onClick={() => loadDocuments(statusFilter)} className="ml-4 text-red-800 underline">
             {t('documentsList.retry')}
           </button>
         </div>
@@ -195,7 +215,7 @@ export default function DocumentsList() {
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {filteredDocuments.map((doc) => (
-                <tr key={doc.id} className="hover:bg-gray-50">
+                <tr key={doc.id} className="hover:bg-gray-50" onMouseEnter={() => setHoveredDocId(doc.id)} onMouseLeave={() => setHoveredDocId(null)}>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <Link
                       to={`/documents/${doc.id}`}

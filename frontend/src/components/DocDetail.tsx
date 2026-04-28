@@ -12,6 +12,12 @@ import PDFTranslationView from './PDFTranslationView'
 import DocumentChatPanel from './DocumentChatPanel'
 import DualPDFViewer from './DualPDFViewer'
 
+// Helper to properly encode URL path segments (encode special chars but keep /)
+// Note: encodeURIComponent doesn't encode '!' which can cause issues with some servers
+function encodeURIPath(path: string): string {
+  return path.split('/').map(segment => encodeURIComponent(segment).replace(/!/g, '%21')).join('/')
+}
+
 export default function DocDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -62,6 +68,18 @@ export default function DocDetail() {
   // Publish state
   const [publishing, setPublishing] = useState(false)
 
+  // Keyboard shortcut: 'o' to open original URL for web/rss documents
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'o' || !document?.sourceUrl) return
+      if (document.sourceType !== 'web' && document.sourceType !== 'rss') return
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
+      window.open(document.sourceUrl, '_blank')
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [document])
+
   // Load document and content
   useEffect(() => {
     if (!id) return
@@ -95,7 +113,7 @@ export default function DocDetail() {
 
       // Load wiki content
       if (doc.wikiPath) {
-        const wikiRes = await fetch(`/data/${doc.wikiPath}`)
+        const wikiRes = await fetch(`/data/${encodeURIPath(doc.wikiPath)}`)
         if (wikiRes.ok) {
           setWikiContent(await wikiRes.text())
         }
@@ -110,7 +128,7 @@ export default function DocDetail() {
           if (doc.sourceType === 'web') {
             rawFilePath = `${doc.rawPath}/paper.md`
           }
-          const rawRes = await fetch(`/data/${rawFilePath}`)
+          const rawRes = await fetch(`/data/${encodeURIPath(rawFilePath)}`)
           if (rawRes.ok) {
             let content = await rawRes.text()
             // Strip YAML frontmatter (content between --- markers at the beginning)
@@ -128,7 +146,7 @@ export default function DocDetail() {
       // Load existing translation if available (PDF documents)
       if (doc.rawPath && doc.sourceType === 'pdf') {
         // Check for Chinese translation
-        const zhRes = await fetch(`/data/${doc.rawPath}/paper_zh.md`)
+        const zhRes = await fetch(`/data/${encodeURIPath(doc.rawPath)}/paper_zh.md`)
         if (zhRes.ok) {
           const zhContent = await zhRes.text()
           if (zhContent.trim()) {
@@ -139,7 +157,7 @@ export default function DocDetail() {
 
         // Check for English translation (if original is Chinese)
         if (!translationContent && doc.language === 'zh') {
-          const enRes = await fetch(`/data/${doc.rawPath}/paper_en.md`)
+          const enRes = await fetch(`/data/${encodeURIPath(doc.rawPath)}/paper_en.md`)
           if (enRes.ok) {
             const enContent = await enRes.text()
             if (enContent.trim()) {
@@ -310,19 +328,19 @@ export default function DocDetail() {
   const getImageBasePath = () => {
     if (!document?.rawPath) return ''
     if (document.sourceType === 'pdf' || document.sourceType === 'web') {
-      return `/data/${document.rawPath}`
+      return `/data/${encodeURIPath(document.rawPath)}`
     }
     // For RSS (.md files), get parent directory
     const lastSlash = document.rawPath.lastIndexOf('/')
     if (lastSlash > 0) {
-      return `/data/${document.rawPath.substring(0, lastSlash)}`
+      return `/data/${encodeURIPath(document.rawPath.substring(0, lastSlash))}`
     }
-    return `/data/${document.rawPath}`
+    return `/data/${encodeURIPath(document.rawPath)}`
   }
 
   // Check if PDF file exists (only for PDF sourceType)
   const pdfUrl = document?.sourceType === 'pdf' && document?.rawPath
-    ? `/data/${document.rawPath}/paper.pdf`
+    ? `/data/${encodeURIPath(document.rawPath)}/paper.pdf`
     : null
   const imageBasePath = getImageBasePath()
 

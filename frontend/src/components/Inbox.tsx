@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { fetchInbox } from '../api'
+import { fetchInbox, deleteDocument } from '../api'
 import type { Document } from '../types'
 
 export default function Inbox() {
@@ -10,10 +10,23 @@ export default function Inbox() {
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [hoveredDocId, setHoveredDocId] = useState<number | null>(null)
 
   useEffect(() => {
     loadDocuments()
   }, [location.key])
+
+  // Keyboard shortcut: 'd' to delete hovered document
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'd' || hoveredDocId === null) return
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
+      if (!confirm(t('docDetail.deleteConfirm'))) return
+      deleteDocument(hoveredDocId).then(() => loadDocuments())
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [hoveredDocId, t])
 
   const loadDocuments = async () => {
     setLoading(true)
@@ -156,6 +169,8 @@ export default function Inbox() {
             <Link
               key={doc.id}
               to={`/documents/${doc.id}`}
+              onMouseEnter={() => setHoveredDocId(doc.id)}
+              onMouseLeave={() => setHoveredDocId(null)}
               className="block bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md hover:border-blue-300 transition-all cursor-pointer group"
             >
               <div className="flex items-start justify-between mb-2">

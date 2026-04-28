@@ -10,6 +10,7 @@ export interface Document {
   id: number
   title: string
   sourceType: string
+  sourceUrl?: string
   rawPath: string
   wikiPath: string
   summary: string
