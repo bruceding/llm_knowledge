@@ -368,6 +368,81 @@ func sanitizeFilename(name string) string {
 	return name
 }
 
+// discoverRSSFromHTML parses HTML and finds RSS/Atom feed links in <head>
+func discoverRSSFromHTML(htmlURL string) (string, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(htmlURL)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	// Find RSS/Atom link tags
+	var feedURL string
+	doc.Find("link[type='application/rss+xml'], link[type='application/atom+xml']").Each(func(i int, s *goquery.Selection) {
+		href, exists := s.Attr("href")
+		if exists && href != "" && feedURL == "" {
+			// Resolve relative URL
+			base, err := url.Parse(htmlURL)
+			if err == nil {
+				rel, err := url.Parse(href)
+				if err == nil {
+					feedURL = base.ResolveReference(rel).String()
+				}
+			}
+		}
+	})
+
+	if feedURL == "" {
+		return "", fmt.Errorf("no RSS link found in HTML")
+	}
+	return feedURL, nil
+}
+
+// probeCommonRSSPaths tries common RSS path patterns
+func probeCommonRSSPaths(baseURL string) (string, error) {
+	paths := []string{"feed", "rss", "rss.xml", "atom.xml", "feed.xml"}
+
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return "", err
+	}
+
+	fp := gofeed.NewParser()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, path := range paths {
+		rel, _ := url.Parse(path)
+		candidateURL := base.ResolveReference(rel).String()
+
+		_, err := fp.ParseURLWithContext(candidateURL, ctx)
+		if err == nil {
+			return candidateURL, nil
+		}
+	}
+
+	return "", fmt.Errorf("no valid RSS found at common paths")
+}
+
+// tryParseAsRSS attempts to parse URL directly as RSS feed
+func tryParseAsRSS(feedURL string) (*gofeed.Feed, error) {
+	fp := gofeed.NewParser()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	return fp.ParseURLWithContext(feedURL, ctx)
+}
+
 // sortItemsByDate sorts RSS items by published date (most recent first)
 func sortItemsByDate(items []*gofeed.Item) {
 	// Sort in descending order (most recent first)
