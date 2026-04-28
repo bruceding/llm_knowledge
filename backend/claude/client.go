@@ -56,9 +56,11 @@ type RawEvent struct {
 // Events are sent to the provided channel as they are received.
 // The caller should close the channel after Send returns.
 func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamEvent) error {
+	// Use --bare to skip hooks for faster execution in automated scenarios
 	// Use --allowedTools to pre-approve file operations
 	// Use --dangerously-skip-permissions for non-interactive ingest scenarios
 	cmd := exec.CommandContext(ctx, c.BinPath,
+		"--bare",
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
@@ -160,6 +162,26 @@ func (c *Client) SendSimple(ctx context.Context, prompt string) (string, error) 
 	return string(out), nil
 }
 
+// SendSimpleWithRead executes the Claude CLI with -p mode and Read tool enabled.
+// This is faster than stream-json mode for simple tasks like generating summaries.
+func (c *Client) SendSimpleWithRead(ctx context.Context, prompt string) (string, error) {
+	cmd := exec.CommandContext(ctx, c.BinPath,
+		"--bare",
+		"-p",
+		"--allowedTools", "Read",
+		"--dangerously-skip-permissions",
+		prompt,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+			return "", fmt.Errorf("claude command failed: %w, stderr: %s", err, string(exitErr.Stderr))
+		}
+		return "", fmt.Errorf("claude command failed: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // SendWithTools executes the Claude CLI with tools enabled (like Read for PDFs).
 // Returns the final response as a string.
 func (c *Client) SendWithTools(ctx context.Context, prompt string) (string, error) {
@@ -175,6 +197,7 @@ func (c *Client) SendWithTools(ctx context.Context, prompt string) (string, erro
 	}()
 
 	// Collect all content from events
+	// Only use "result" event content - "assistant" text blocks are duplicated in result
 	var result strings.Builder
 	for evt := range eventCh {
 		if evt.Type == "error" && evt.Error != "" {
@@ -182,9 +205,6 @@ func (c *Client) SendWithTools(ctx context.Context, prompt string) (string, erro
 		}
 		if evt.Type == "result" && evt.Result != "" {
 			result.WriteString(evt.Result)
-		}
-		if evt.Content != "" && evt.Type != "result" {
-			result.WriteString(evt.Content)
 		}
 	}
 

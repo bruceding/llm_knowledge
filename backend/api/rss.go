@@ -575,25 +575,19 @@ func buildArticleContentWithImages(item *gofeed.Item, feedName, assetsDir, artic
 		}
 	}
 
-	if item.Description != "" {
-		content.WriteString("## Summary\n\n")
-		processedDesc, imgs, errs := processHTMLImages(item.Description, assetsDir, articleURL)
-		content.WriteString(processedDesc)
-		content.WriteString("\n\n")
-		imgCount += imgs
-		imgErrors += errs
-	}
-
+	// Only write Content section (Summary is stored in database separately)
 	if item.Content != "" {
 		content.WriteString("## Content\n\n")
 		processedContent, imgs, errs := processHTMLImages(item.Content, assetsDir, articleURL)
 		content.WriteString(processedContent)
+		content.WriteString("\n\n")
 		imgCount += imgs
 		imgErrors += errs
 	} else if item.Description != "" {
 		content.WriteString("## Content\n\n")
 		processedDesc, imgs, errs := processHTMLImages(item.Description, assetsDir, articleURL)
 		content.WriteString(processedDesc)
+		content.WriteString("\n\n")
 		imgCount += imgs
 		imgErrors += errs
 	}

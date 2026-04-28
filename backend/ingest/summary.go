@@ -47,15 +47,12 @@ func GenerateSummary(dataDir string, rawPath string, claudeBin string) (string, 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Generate summary - Claude will read the file using its Read tool
+	// Generate summary using -p mode (faster than stream-json)
 	prompt := fmt.Sprintf(summaryPrompt, paperPath)
-	summary, err := client.SendWithTools(ctx, prompt)
+	summary, err := client.SendSimpleWithRead(ctx, prompt)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate summary: %w", err)
 	}
-
-	// Clean up summary (remove leading/trailing whitespace only)
-	summary = strings.TrimSpace(summary)
 
 	return summary, nil
 }
