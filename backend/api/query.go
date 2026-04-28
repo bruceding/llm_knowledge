@@ -1,15 +1,12 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"llm-knowledge/claude"
 	"llm-knowledge/db"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,8 +15,9 @@ import (
 
 // QueryHandler handles query/QA operations with SSE streaming
 type QueryHandler struct {
-	DataDir  string
+	DataDir   string
 	ClaudeBin string
+	Pool      *claude.QuerySessionPool
 }
 
 // AskRequest represents the request body for the Ask endpoint
@@ -42,8 +40,9 @@ func (h *QueryHandler) Ask(c echo.Context) error {
 
 	// Create or get conversation
 	convID := req.ConversationID
+	var conv db.Conversation
 	if convID == 0 {
-		conv := db.Conversation{
+		conv = db.Conversation{
 			Title:     truncate(req.Question, 50),
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
@@ -53,9 +52,7 @@ func (h *QueryHandler) Ask(c echo.Context) error {
 		}
 		convID = conv.ID
 	} else {
-		// Verify conversation exists
-		var existingConv db.Conversation
-		if err := db.DB.First(&existingConv, convID).Error; err != nil {
+		if err := db.DB.First(&conv, convID).Error; err != nil {
 			return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
 		}
 	}
@@ -71,22 +68,30 @@ func (h *QueryHandler) Ask(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to save user message"})
 	}
 
-	// Get history context (last 10 messages)
-	var history []db.ConversationMessage
-	db.DB.Where("conversation_id = ?", convID).
-		Order("created_at desc").
-		Limit(10).
-		Find(&history)
+	// Build system prompt (wiki paths only, Claude reads files itself)
+	systemPrompt := h.buildSystemPrompt(req.DocID)
 
-	// Reverse to get chronological order
-	for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
-		history[i], history[j] = history[j], history[i]
+	// Get or create session
+	ctx := c.Request().Context()
+	qs, err := h.Pool.GetOrCreate(ctx, convID, systemPrompt)
+	if err != nil {
+		// If session creation failed and we have a previous session_id, try resume
+		if conv.SessionID != "" {
+			log.Printf("[query] Session creation failed, trying resume with session %s: %v", conv.SessionID, err)
+			qs, err = h.Pool.ResumeSession(ctx, convID, conv.SessionID, systemPrompt)
+			if err != nil {
+				log.Printf("[query] Resume also failed: %v", err)
+				return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create or resume session"})
+			}
+		} else {
+			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create session"})
+		}
 	}
 
-	// Build prompt with wiki context
-	prompt, err := h.buildQueryPrompt(history, req.Question, req.DocID)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to build prompt"})
+	// Update session_id in conversation if changed
+	newSessionID := qs.SessionID()
+	if newSessionID != conv.SessionID {
+		db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSessionID)
 	}
 
 	// Set SSE headers
@@ -104,29 +109,34 @@ func (h *QueryHandler) Ask(c echo.Context) error {
 	fmt.Fprintf(c.Response(), "data: %s\n\n", convData)
 	flusher.Flush()
 
-	// Create Claude client and channel for streaming
-	claudeClient := claude.NewClientWithPath(h.ClaudeBin)
-	eventCh := make(chan claude.StreamEvent)
-
-	ctx, cancel := context.WithCancel(c.Request().Context())
-	defer cancel()
-
-	// Start Claude in goroutine
-	go func() {
-		defer close(eventCh)
-		if err := claudeClient.Send(ctx, prompt, eventCh); err != nil {
-			// Send error event
-			eventCh <- claude.StreamEvent{
-				Type:  "error",
-				Error: err.Error(),
-			}
+	// Send question to session and get turn channel
+	turnCh, err := qs.Ask(req.Question)
+	if err != nil {
+		log.Printf("[query] Failed to ask question: %v", err)
+		// Session might be dead, try to recreate
+		h.Pool.Remove(convID)
+		qs, err = h.Pool.GetOrCreate(ctx, convID, systemPrompt)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to recreate session"})
 		}
-	}()
-
-	var fullContent strings.Builder
+		// Update session_id
+		if sid := qs.SessionID(); sid != newSessionID {
+			db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", sid)
+		}
+		turnCh, err = qs.Ask(req.Question)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to ask question"})
+		}
+	}
 
 	// Stream events to client
-	for evt := range eventCh {
+	var fullContent strings.Builder
+	for evt := range turnCh {
+		// Skip system events
+		if evt.Type == "system" {
+			continue
+		}
+
 		data, _ := json.Marshal(evt)
 		fmt.Fprintf(c.Response(), "data: %s\n\n", data)
 		flusher.Flush()
@@ -153,68 +163,21 @@ func (h *QueryHandler) Ask(c echo.Context) error {
 	return nil
 }
 
-// buildQueryPrompt constructs the prompt for Claude with wiki context and history
-// Note: question is passed for reference but is already included in history
-func (h *QueryHandler) buildQueryPrompt(history []db.ConversationMessage, question string, docID uint) (string, error) {
+// buildSystemPrompt constructs the system prompt pointing to wiki file paths.
+// Claude uses Read/Glob/Grep tools to find and read files itself.
+func (h *QueryHandler) buildSystemPrompt(docID uint) string {
 	var prompt strings.Builder
 
-	// System prompt
-	prompt.WriteString("你是一个知识库助手。请根据提供的上下文和对话历史回答用户问题。\n\n")
+	prompt.WriteString("你是一个知识库助手。知识库文件在 wiki/ 目录下，wiki/index.md 是索引。请使用 Read、Glob、Grep 等工具读取相关文件回答用户问题。如果文件内容不足以回答，可以使用你自己的知识补充。")
 
-	// Add wiki context
-	wikiContext, err := h.getWikiContext(docID)
-	if err == nil && wikiContext != "" {
-		prompt.WriteString("## 知识库上下文\n\n")
-		prompt.WriteString(wikiContext)
-		prompt.WriteString("\n\n")
-	}
-
-	// Add conversation history (includes the current question)
-	if len(history) > 0 {
-		prompt.WriteString("## 对话历史\n\n")
-		for _, msg := range history {
-			switch msg.Role {
-			case "user":
-				prompt.WriteString(fmt.Sprintf("用户: %s\n", msg.Content))
-			case "assistant":
-				prompt.WriteString(fmt.Sprintf("助手: %s\n", msg.Content))
-			}
-		}
-		prompt.WriteString("\n")
-	}
-
-	// Add instruction for assistant response
-	prompt.WriteString("请根据上述上下文回答问题。如果上下文中没有相关信息，请说明这一点。")
-
-	return prompt.String(), nil
-}
-
-// getWikiContext retrieves relevant wiki content for context
-func (h *QueryHandler) getWikiContext(docID uint) (string, error) {
-	var context strings.Builder
-
-	// If docID is provided, focus on that document's wiki page
 	if docID > 0 {
 		var doc db.Document
 		if err := db.DB.First(&doc, docID).Error; err == nil && doc.WikiPath != "" {
-			wikiPath := filepath.Join(h.DataDir, doc.WikiPath)
-			if content, err := os.ReadFile(wikiPath); err == nil {
-				context.WriteString(fmt.Sprintf("### 文档: %s\n\n", doc.Title))
-				context.WriteString(string(content))
-				context.WriteString("\n\n")
-			}
+			prompt.WriteString(fmt.Sprintf(" 重点关注: %s", doc.WikiPath))
 		}
 	}
 
-	// Read wiki index for general context
-	indexPath := filepath.Join(h.DataDir, "wiki", "index.md")
-	if content, err := os.ReadFile(indexPath); err == nil {
-		context.WriteString("### 知识库索引\n\n")
-		context.WriteString(string(content))
-		context.WriteString("\n")
-	}
-
-	return context.String(), nil
+	return prompt.String()
 }
 
 // truncate shortens a string to maxLen characters

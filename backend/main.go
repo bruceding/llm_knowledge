@@ -6,8 +6,8 @@ import (
 	"llm-knowledge/api"
 	"llm-knowledge/claude"
 	"llm-knowledge/config"
-	"llm-knowledge/dependencies"
 	"llm-knowledge/db"
+	"llm-knowledge/dependencies"
 	embedfs "llm-knowledge/fs"
 	"llm-knowledge/pdf2zh"
 	"log"
@@ -135,10 +135,12 @@ func main() {
 	e.POST("/api/documents/:id/generate-pages", pagesH.GeneratePages)
 	e.GET("/api/documents/:id/pages-status", pagesH.CheckPages)
 
-	// Query API (SSE streaming)
+	// Query API (SSE streaming with session pool)
+	querySessionPool := claude.NewQuerySessionPool(cfg.DataDir, cfg.ClaudeBin)
 	queryH := &api.QueryHandler{
 		DataDir:   cfg.DataDir,
 		ClaudeBin: cfg.ClaudeBin,
+		Pool:      querySessionPool,
 	}
 	e.POST("/api/query/ask", queryH.Ask)
 

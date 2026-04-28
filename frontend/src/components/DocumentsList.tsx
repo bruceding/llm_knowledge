@@ -29,6 +29,7 @@ export default function DocumentsList() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'd' || hoveredDocId === null) return
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
+      e.preventDefault()
       if (!confirm(t('docDetail.deleteConfirm'))) return
       deleteDocument(hoveredDocId).then(() => loadDocuments(statusFilter))
     }

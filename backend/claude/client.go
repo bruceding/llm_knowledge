@@ -17,12 +17,14 @@ type Client struct {
 
 // StreamEvent represents a single event in the streaming response from Claude CLI.
 type StreamEvent struct {
-	Type      string    `json:"type"`                // system, assistant, result, error
+	Type      string    `json:"type"`                // system, assistant, tool_use, thinking, result, error
 	Content   string    `json:"content"`             // Text content of the event (extracted)
 	Subtype   string    `json:"subtype"`             // subtype for system messages
 	SessionID string    `json:"session_id,omitempty"` // Session ID from system events
 	Result    string    `json:"result"`              // Result text for type "result"
 	Error     string    `json:"error,omitempty"`     // Error message if any
+	ToolName  string    `json:"toolName,omitempty"`  // Tool name for tool_use events
+	ToolInput string    `json:"toolInput,omitempty"` // Tool input for tool_use events
 	Message   *Message  `json:"message,omitempty"`   // Message for type "assistant"
 }
 
@@ -34,8 +36,11 @@ type Message struct {
 
 // ContentBlock represents a content block in a message
 type ContentBlock struct {
-	Type string `json:"type"` // text, thinking
-	Text string `json:"text"` // text content
+	Type  string          `json:"type"`  // text, thinking, tool_use
+	Text  string          `json:"text"`  // text content (for text/thinking blocks)
+	ID    string          `json:"id,omitempty"`   // tool use ID
+	Name  string          `json:"name,omitempty"` // tool name (for tool_use blocks)
+	Input json.RawMessage `json:"input,omitempty"` // tool input (for tool_use blocks)
 }
 
 // RawEvent represents the raw JSON event from Claude CLI (used for parsing)

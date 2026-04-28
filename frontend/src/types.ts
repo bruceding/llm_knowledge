@@ -58,18 +58,30 @@ export interface TranslateRequest {
 }
 
 // SSE event types from backend
+export interface ContentBlock {
+  type: 'text' | 'thinking' | 'tool_use'
+  text?: string
+  id?: string
+  name?: string
+  input?: Record<string, unknown>
+}
+
+export interface SSEMessage {
+  role: string
+  content: ContentBlock[]
+}
+
 export interface SSEEvent {
-  type: 'conversation' | 'document' | 'assistant' | 'tool_use' | 'error' | 'complete' | 'progress'
+  type: 'conversation' | 'document' | 'assistant' | 'result' | 'error' | 'complete' | 'progress'
   conversationId?: number
   docId?: number
   title?: string
   targetLang?: string
   content?: string
-  toolName?: string
   error?: string
   filePath?: string
+  message?: SSEMessage | string  // SSEMessage for chat events, string for progress events
   // PDF translation progress
-  message?: string
   translatedPdf?: string
   dualPdf?: string
 }

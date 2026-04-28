@@ -1,14 +1,66 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { askQuestion } from '../api'
-import type { SSEEvent } from '../types'
+import type { SSEEvent, ContentBlock } from '../types'
+
+// Format a tool_use content block into a human-readable description
+function formatToolBlock(block: ContentBlock): string {
+  const name = block.name || 'Tool'
+  try {
+    switch (name) {
+      case 'Read':
+        return `Reading ${(block.input as Record<string, string>)?.file_path || (block.input as Record<string, string>)?.path || 'file'}`
+      case 'Glob':
+        return `Searching ${(block.input as Record<string, string>)?.pattern || 'files'}`
+      case 'Grep':
+        return `Searching for "${(block.input as Record<string, string>)?.pattern || ''}" in ${(block.input as Record<string, string>)?.path || 'files'}`
+      case 'LS':
+        return `Listing ${(block.input as Record<string, string>)?.path || 'directory'}`
+      default:
+        return `Using ${name}`
+    }
+  } catch {
+    return `Using ${name}`
+  }
+}
+
+// Extract display info from message content blocks (handles different model outputs)
+function extractFromContentBlocks(blocks: ContentBlock[]): {
+  text: string
+  isThinking: boolean
+  toolUse?: string
+} {
+  let text = ''
+  let isThinking = false
+  let toolUse: string | undefined
+
+  for (const block of blocks) {
+    switch (block.type) {
+      case 'text':
+        if (block.text) text += block.text
+        break
+      case 'thinking':
+        isThinking = true
+        break
+      case 'tool_use':
+        toolUse = formatToolBlock(block)
+        break
+    }
+  }
+
+  return { text, isThinking, toolUse }
+}
 
 interface Message {
   id: number
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: Date
+  isStreaming?: boolean
+  isThinking?: boolean
   toolUse?: string
 }
 
@@ -28,24 +80,25 @@ export default function ChatView() {
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [currentConversationId, setCurrentConversationId] = useState<number | undefined>(conversationId)
-  const [toolUseStatus, setToolUseStatus] = useState<string | null>(null)
   const [conversations, _setConversations] = useState<Conversation[]>([])
   const [showHistory, setShowHistory] = useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // Track whether the current conversation was just created locally
+  // to avoid resetting messages when navigate updates the URL
+  const [locallyCreatedId, setLocallyCreatedId] = useState<number | undefined>(undefined)
+
   // Scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Load conversation history on mount
+  // Load conversation history on mount (only for conversations not created in current session)
   useEffect(() => {
-    // Placeholder: would load conversation messages from backend
-    // Backend doesn't have list conversations endpoint yet, so we show placeholder
-    if (conversationId) {
-      // Would fetch messages for this conversation
+    if (conversationId && conversationId !== locallyCreatedId) {
+      // TODO: load conversation messages from backend
       setMessages([
         {
           id: 1,
@@ -55,7 +108,7 @@ export default function ChatView() {
         },
       ])
     }
-  }, [conversationId])
+  }, [conversationId, locallyCreatedId])
 
   // Handle sending a message
   const handleSend = useCallback(async () => {
@@ -71,7 +124,6 @@ export default function ChatView() {
     setMessages((prev) => [...prev, userMessage])
     setInput('')
     setStreaming(true)
-    setToolUseStatus(null)
 
     // Add placeholder assistant message
     const assistantMessage: Message = {
@@ -79,6 +131,8 @@ export default function ChatView() {
       role: 'assistant',
       content: '',
       timestamp: new Date(),
+      isStreaming: true,
+      isThinking: true,
     }
     setMessages((prev) => [...prev, assistantMessage])
 
@@ -91,21 +145,44 @@ export default function ChatView() {
         (event: SSEEvent) => {
           if (event.type === 'conversation') {
             setCurrentConversationId(event.conversationId)
-            // Update URL if new conversation
+            // Mark this as locally created so useEffect won't reset messages
             if (!currentConversationId && event.conversationId) {
+              setLocallyCreatedId(event.conversationId)
               navigate(`/chat/${event.conversationId}`, { replace: true })
             }
           } else if (event.type === 'assistant') {
-            // Append content to assistant message
-            setMessages((prev) => {
-              const last = prev[prev.length - 1]
-              if (last.role === 'assistant') {
-                return [...prev.slice(0, -1), { ...last, content: last.content + (event.content || '') }]
-              }
-              return prev
-            })
-          } else if (event.type === 'tool_use') {
-            setToolUseStatus(event.toolName || 'Processing...')
+            // Parse content blocks from the message (works across different models)
+            const msg = event.message
+            const blocks = typeof msg === 'object' ? msg?.content : undefined
+            if (blocks && blocks.length > 0) {
+              const { text, isThinking, toolUse } = extractFromContentBlocks(blocks)
+              setMessages((prev) => {
+                const last = prev[prev.length - 1]
+                if (last.role === 'assistant') {
+                  return [...prev.slice(0, -1), {
+                    ...last,
+                    content: last.content + text,
+                    isThinking: isThinking && !text,
+                    toolUse: toolUse && !text ? toolUse : undefined,
+                  }]
+                }
+                return prev
+              })
+            } else if (event.content) {
+              // Fallback: models without content blocks (just plain text)
+              setMessages((prev) => {
+                const last = prev[prev.length - 1]
+                if (last.role === 'assistant') {
+                  return [...prev.slice(0, -1), { ...last, content: last.content + event.content, isThinking: false, toolUse: undefined }]
+                }
+                return prev
+              })
+            }
+          } else if (event.type === 'result') {
+            // Mark streaming complete
+            setMessages((prev) => prev.map(m =>
+              m.isStreaming ? { ...m, isStreaming: false, isThinking: false, toolUse: undefined } : m
+            ))
           } else if (event.type === 'error') {
             setMessages((prev) => {
               const last = prev[prev.length - 1]
@@ -127,7 +204,6 @@ export default function ChatView() {
       })
     } finally {
       setStreaming(false)
-      setToolUseStatus(null)
       inputRef.current?.focus()
     }
   }, [input, streaming, currentConversationId, messages.length, navigate])
@@ -143,6 +219,7 @@ export default function ChatView() {
   // Start new conversation
   const handleNewChat = () => {
     setCurrentConversationId(undefined)
+    setLocallyCreatedId(undefined)
     setMessages([])
     navigate('/chat')
   }
@@ -254,9 +331,27 @@ export default function ChatView() {
                     {msg.role === 'system' && (
                       <div className="text-xs font-medium mb-1">{t('chatView.system')}</div>
                     )}
-                    <div className="whitespace-pre-wrap">
-                      {msg.content || (streaming && msg.role === 'assistant' ? t('chatView.thinking') : '')}
-                    </div>
+                    {msg.role === 'assistant' && (msg.isThinking || (msg.isStreaming && !msg.content && !msg.toolUse)) ? (
+                      <div className="flex items-center gap-2">
+                        <div className="animate-spin w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full"></div>
+                        <span className="text-gray-500">{t('chatView.thinking')}</span>
+                      </div>
+                    ) : msg.role === 'assistant' && msg.toolUse && !msg.content ? (
+                      <div className="flex items-center gap-2">
+                        <div className="animate-spin w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full"></div>
+                        <span className="text-gray-500 text-sm">{msg.toolUse}</span>
+                      </div>
+                    ) : msg.role === 'assistant' ? (
+                      <div className="prose prose-sm prose-slate max-w-none text-sm [&_p]:my-1 [&_h1]:text-base [&_h2]:text-base [&_h3]:text-sm [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0.5 [&_code]:text-xs [&_pre]:my-1 [&_pre]:bg-gray-800 [&_pre]:text-gray-100 [&_pre]:rounded [&_pre]:p-3 [&_table]:my-1 [&_table]:border [&_table]:border-collapse [&_table]:w-full [&_table]:overflow-x-auto [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-50 [&_th]:px-2 [&_th]:py-1 [&_th]:font-medium [&_th]:text-left [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1 [&_tr:nth-child(even)_td]:bg-gray-50 [&_blockquote]:border-l-3 [&_blockquote]:border-blue-400 [&_blockquote]:pl-3 [&_blockquote]:text-gray-600 [&_strong]:text-gray-900 [&_a]:text-blue-500 [&_a]:underline">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {msg.content}
+                        </ReactMarkdown>
+                      </div>
+                    ) : (
+                      <div className="whitespace-pre-wrap">
+                        {msg.content}
+                      </div>
+                    )}
                     <div className={`text-xs mt-2 ${msg.role === 'user' ? 'text-blue-200' : 'text-gray-500'}`}>
                       {msg.timestamp.toLocaleTimeString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}
                     </div>
@@ -268,14 +363,6 @@ export default function ChatView() {
                   )}
                 </div>
               ))
-            )}
-
-            {/* Tool use status */}
-            {toolUseStatus && (
-              <div className="flex items-center gap-2 px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg">
-                <div className="animate-spin w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full"></div>
-                <span className="text-sm text-gray-600">{t('chatView.lookingUp')} {toolUseStatus}</span>
-              </div>
             )}
 
             <div ref={messagesEndRef} />

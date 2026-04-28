@@ -65,6 +65,49 @@ func (p *SessionPool) cleanupLoop() {
 	}
 }
 
+// Helper functions for creating interactive sessions
+
+func buildCmd(ctx context.Context, claudeBin string, args []string, dataDir string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, claudeBin, args...)
+	cmd.Dir = dataDir
+	return cmd
+}
+
+func createPipes(cmd *exec.Cmd) (io.Writer, io.Reader, error) {
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create stdin pipe: %w", err)
+	}
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+
+	return stdinPipe, stdoutPipe, nil
+}
+
+func newScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(r)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+	return scanner
+}
+
+func waitForInit(session *InteractiveSession, timeout time.Duration) error {
+	for {
+		select {
+		case evt := <-session.eventCh:
+			if evt.Type == "system" && evt.Subtype == "init" {
+				session.SessionID = evt.SessionID
+				return nil
+			}
+		case <-time.After(timeout):
+			return fmt.Errorf("timed out waiting for init event")
+		}
+	}
+}
+
 // StartSession creates a new Claude session
 func (p *SessionPool) StartSession(ctx context.Context, docInfo string) (*InteractiveSession, error) {
 	args := []string{
@@ -81,19 +124,21 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string) (*Intera
 	args = append(args, "--system-prompt", systemPrompt)
 
 	ctx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(ctx, p.claudeBin, args...)
-	cmd.Dir = p.dataDir // Set working directory
+	cmd := buildCmd(ctx, p.claudeBin, args, p.dataDir)
 
-	stdinPipe, err := cmd.StdinPipe()
+	stdinPipe, stdoutPipe, err := createPipes(cmd)
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("failed to create stdin pipe: %w", err)
+		return nil, err
 	}
 
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+	session := &InteractiveSession{
+		cmd:           cmd,
+		stdin:         stdinPipe,
+		stdoutScanner: newScanner(stdoutPipe),
+		eventCh:       make(chan StreamEvent, 100),
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -101,43 +146,18 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string) (*Intera
 		return nil, fmt.Errorf("failed to start claude: %w", err)
 	}
 
-	session := &InteractiveSession{
-		cmd:           cmd,
-		stdin:         stdinPipe,
-		stdoutScanner: bufio.NewScanner(stdoutPipe),
-		eventCh:       make(chan StreamEvent, 100),
-		ctx:           ctx,
-		cancel:        cancel,
-	}
-
-	// Increase buffer size for large messages
-	buf := make([]byte, 0, 64*1024)
-	session.stdoutScanner.Buffer(buf, 1024*1024)
-
 	// IMPORTANT: Send initial stdin message BEFORE readEvents to trigger init
-	// This is required for stream-json mode - stdout won't emit init until stdin receives first input
 	initMsg := "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"用户准备提问，请等待。\"}}\n"
 	session.stdin.Write([]byte(initMsg))
 
 	// Start reading events
 	go session.readEvents()
 
-	// Wait for session_id from system init event (up to 5 seconds)
-	for {
-		select {
-		case evt := <-session.eventCh:
-			if evt.Type == "system" && evt.Subtype == "init" {
-				session.SessionID = evt.SessionID
-				goto done
-			}
-			// Skip other events until we get init
-		case <-time.After(5 * time.Second):
-			// Generate a fallback ID if none received
-			session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
-			goto done
-		}
+	// Wait for session_id from system init event
+	if err := waitForInit(session, 5*time.Second); err != nil {
+		log.Printf("[session] Warning: %v, using fallback ID", err)
+		session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
 	}
-	done:
 
 	p.mu.Lock()
 	p.sessions[session.SessionID] = session
@@ -254,9 +274,11 @@ func (s *InteractiveSession) readEvents() {
 			var msg Message
 			if err := json.Unmarshal(rawEvent.Message, &msg); err == nil {
 				event.Message = &msg
+				// Extract text content for backwards compatibility
 				for _, block := range msg.Content {
 					if block.Type == "text" && block.Text != "" {
 						event.Content = block.Text
+						break
 					}
 				}
 			}

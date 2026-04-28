@@ -74,11 +74,25 @@ export default function DocDetail() {
       if (e.key !== 'o' || !document?.sourceUrl) return
       if (document.sourceType !== 'web' && document.sourceType !== 'rss') return
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
+      e.preventDefault()
       window.open(document.sourceUrl, '_blank')
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [document])
+
+  // Keyboard shortcut: 'd' to delete current document
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'd' || !document) return
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
+      e.preventDefault()
+      if (!confirm(t('docDetail.deleteConfirm'))) return
+      deleteDocument(document.id).then(() => navigate('/'))
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [document, navigate, t])
 
   // Load document and content
   useEffect(() => {
@@ -284,7 +298,7 @@ export default function DocDetail() {
     try {
       await translatePDF(document.id, (event: SSEEvent) => {
         if (event.type === 'progress') {
-          setPdfTranslationProgress(event.message || 'Processing...')
+          setPdfTranslationProgress(typeof event.message === 'string' ? event.message : 'Processing...')
         } else if (event.type === 'error') {
           setError(event.error || 'Translation failed')
           setPdfTranslating(false)

@@ -34,6 +34,7 @@ type DocumentTag struct {
 type Conversation struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	Title     string    `json:"title"`
+	SessionID string    `json:"sessionId"` // Claude session ID for --resume
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }

@@ -2,6 +2,58 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import type { ContentBlock } from '../types'
+
+// Format a tool_use content block into a human-readable description
+function formatToolBlock(block: ContentBlock): string {
+  const name = block.name || 'Tool'
+  try {
+    switch (name) {
+      case 'Read':
+        return `Reading ${(block.input as Record<string, string>)?.file_path || (block.input as Record<string, string>)?.path || 'file'}`
+      case 'Glob':
+        return `Searching ${(block.input as Record<string, string>)?.pattern || 'files'}`
+      case 'Grep':
+        return `Searching for "${(block.input as Record<string, string>)?.pattern || ''}" in ${(block.input as Record<string, string>)?.path || 'files'}`
+      case 'LS':
+        return `Listing ${(block.input as Record<string, string>)?.path || 'directory'}`
+      default:
+        return `Using ${name}`
+    }
+  } catch {
+    return `Using ${name}`
+  }
+}
+
+// Extract display info from message content blocks (handles different model outputs)
+function extractFromContentBlocks(blocks: ContentBlock[]): {
+  text: string
+  hasThinking: boolean
+  hasToolUse: boolean
+  toolDesc?: string
+} {
+  let text = ''
+  let hasThinking = false
+  let hasToolUse = false
+  let toolDesc: string | undefined
+
+  for (const block of blocks) {
+    switch (block.type) {
+      case 'text':
+        if (block.text) text += block.text
+        break
+      case 'thinking':
+        hasThinking = true
+        break
+      case 'tool_use':
+        hasToolUse = true
+        toolDesc = formatToolBlock(block)
+        break
+    }
+  }
+
+  return { text, hasThinking, hasToolUse, toolDesc }
+}
 
 interface DocumentChatPanelProps {
   docId: number
@@ -15,6 +67,8 @@ interface ChatMessage {
   timestamp: Date
   isStreaming?: boolean
   isThinking?: boolean
+  isToolUse?: boolean
+  toolDesc?: string
 }
 
 export default function DocumentChatPanel({ docId, active }: DocumentChatPanelProps) {
@@ -50,45 +104,53 @@ export default function DocumentChatPanel({ docId, active }: DocumentChatPanelPr
         setSessionId(event.sessionId)
         setLoading(false)
       } else if (event.type === 'assistant') {
-        // Append to last assistant message or create new one
-        setMessages(prev => {
-          const lastMsg = prev[prev.length - 1]
-          if (lastMsg?.role === 'assistant' && lastMsg.isStreaming) {
-            return prev.map((m, i) =>
-              i === prev.length - 1
-                ? { ...m, content: m.content + (event.content || '') }
-                : m
-            )
-          } else {
-            return [...prev, {
-              id: Date.now().toString(),
-              role: 'assistant',
-              content: event.content || '',
-              timestamp: new Date(),
-              isStreaming: true
-            }]
-          }
-        })
-      } else if (event.type === 'tool_use') {
-        // Show tool usage indicator
-        setMessages(prev => {
-          const lastAssistant = prev.findIndex(m => m.role === 'assistant' && m.isStreaming)
-          if (lastAssistant >= 0) {
-            return prev.map((m, i) =>
-              i === lastAssistant
-                ? { ...m, content: m.content || '', isStreaming: true, isThinking: true }
-                : m
-            )
-          }
-          return [...prev, {
-            id: Date.now().toString(),
-            role: 'assistant',
-            content: '',
-            timestamp: new Date(),
-            isStreaming: true,
-            isThinking: true
-          }]
-        })
+        // Parse content blocks from the message (works across different models)
+        const msg = event.message
+        const blocks = typeof msg === 'object' ? msg?.content : undefined
+        if (blocks && blocks.length > 0) {
+          const { text, hasThinking, hasToolUse, toolDesc } = extractFromContentBlocks(blocks)
+          setMessages(prev => {
+            const lastMsg = prev[prev.length - 1]
+            if (lastMsg?.role === 'assistant' && lastMsg.isStreaming) {
+              return prev.map((m, i) =>
+                i === prev.length - 1
+                  ? { ...m, content: m.content + text, isThinking: hasThinking && !text, isToolUse: hasToolUse && !text, toolDesc }
+                  : m
+              )
+            } else {
+              return [...prev, {
+                id: Date.now().toString(),
+                role: 'assistant',
+                content: text,
+                timestamp: new Date(),
+                isStreaming: true,
+                isThinking: hasThinking && !text,
+                isToolUse: hasToolUse && !text,
+                toolDesc,
+              }]
+            }
+          })
+        } else if (event.content) {
+          // Fallback: models without content blocks
+          setMessages(prev => {
+            const lastMsg = prev[prev.length - 1]
+            if (lastMsg?.role === 'assistant' && lastMsg.isStreaming) {
+              return prev.map((m, i) =>
+                i === prev.length - 1
+                  ? { ...m, content: m.content + event.content }
+                  : m
+              )
+            } else {
+              return [...prev, {
+                id: Date.now().toString(),
+                role: 'assistant',
+                content: event.content || '',
+                timestamp: new Date(),
+                isStreaming: true
+              }]
+            }
+          })
+        }
       } else if (event.type === 'result') {
         // Mark streaming complete
         setMessages(prev => prev.map(m =>
@@ -208,10 +270,15 @@ export default function DocumentChatPanel({ docId, active }: DocumentChatPanelPr
             }`}>
               {msg.role === 'user' ? (
                 <div className="whitespace-pre-wrap break-words text-xs">{msg.content}</div>
-              ) : msg.isThinking || (msg.isStreaming && !msg.content) ? (
+              ) : msg.isThinking || (msg.isStreaming && !msg.content && !msg.isToolUse) ? (
                 <div className="flex items-center gap-1 text-xs text-gray-500">
                   <div className="animate-spin w-3 h-3 border border-gray-300 border-t-blue-500 rounded-full"></div>
                   <span>{t('chatView.thinking')}</span>
+                </div>
+              ) : msg.isToolUse && !msg.content ? (
+                <div className="flex items-center gap-1 text-xs text-gray-500">
+                  <div className="animate-spin w-3 h-3 border border-gray-300 border-t-blue-500 rounded-full"></div>
+                  <span>{msg.toolDesc || t('chatView.thinking')}</span>
                 </div>
               ) : (
                 <div className="prose prose-sm prose-slate max-w-none text-xs [&_p]:my-1 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0 [&_code]:text-xs [&_pre]:my-1 [&_table]:my-1 [&_table]:border [&_table]:border-collapse [&_table]:w-full [&_table]:overflow-x-auto [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-50 [&_th]:px-2 [&_th]:py-1 [&_th]:font-medium [&_th]:text-left [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1 [&_tr:nth-child(even)_td]:bg-gray-50">
