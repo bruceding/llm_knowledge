@@ -231,8 +231,15 @@ func (h *RSSHandler) syncFeedInternal(feed *db.RSSFeed) SyncResult {
 	total := len(items)
 
 	for _, item := range items {
+		normalizedURL := normalizeSourceURL(item.Link)
+		guid := item.GUID
+		if guid == "" {
+			guid = normalizedURL
+		}
+
+		// Check dedup including soft-deleted records to prevent re-fetching deleted articles
 		var existingDoc db.Document
-		if db.DB.Where("source_url = ?", item.Link).First(&existingDoc).Error == nil {
+		if db.DB.Unscoped().Where("source_url = ? OR (source_guid != '' AND source_guid = ?)", normalizedURL, guid).First(&existingDoc).Error == nil {
 			continue
 		}
 
@@ -275,7 +282,8 @@ func (h *RSSHandler) syncFeedInternal(feed *db.RSSFeed) SyncResult {
 			Title:      item.Title,
 			SourceType: "rss",
 			RawPath:    filepath.Join("raw", "rss", sanitizeFilename(feed.Name), title+".md"),
-			SourceURL:  item.Link,
+			SourceURL:  normalizedURL,
+			SourceGUID: guid,
 			RSSFeedID:  feed.ID,
 			Language:   "en",
 			Status:     "inbox",
@@ -387,6 +395,35 @@ func sanitizeFilename(name string) string {
 		name = name[:100]
 	}
 	return name
+}
+
+// normalizeSourceURL removes tracking parameters and fragments from a URL
+// so that the same article with different tracking params is recognized as the same
+func normalizeSourceURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+
+	trackingParams := []string{
+		"utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+		"fbclid", "gclid", "gclsrc",
+		"ref", "ref_src", "ref_url",
+		"ts", "_ts", "timestamp",
+		"share_token", "ncid", "icmp",
+		"spm",        // Alibaba tracking
+		"from",       // WeChat/QQ tracking
+		"isappinstalled",
+		"nsukey",
+	}
+	q := u.Query()
+	for _, param := range trackingParams {
+		q.Del(param)
+	}
+	u.RawQuery = q.Encode()
+	u.Fragment = ""
+
+	return u.String()
 }
 
 // discoverRSSFromHTML parses HTML and finds RSS/Atom feed links in <head>

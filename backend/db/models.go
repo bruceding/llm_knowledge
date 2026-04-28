@@ -1,6 +1,10 @@
 package db
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 type Document struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
@@ -12,11 +16,13 @@ type Document struct {
 	Language   string    `json:"language"`
 	Status     string    `gorm:"default:inbox" json:"status"` // inbox, published, archived
 	Metadata   string    `json:"metadata"`                    // JSON string
-	SourceURL  string    `json:"sourceUrl"`                   // NEW: Original URL for web/rss
-	RSSFeedID  uint      `json:"rssFeedId"`                   // NEW: Associated RSS feed
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
-	Tags       []Tag     `gorm:"many2many:document_tags;" json:"tags"`
+	SourceURL  string          `json:"sourceUrl"`                    // Original URL for web/rss
+	SourceGUID string          `json:"sourceGuid"`                   // RSS item GUID for dedup
+	RSSFeedID  uint            `json:"rssFeedId"`                    // Associated RSS feed
+	CreatedAt  time.Time       `json:"createdAt"`
+	UpdatedAt  time.Time       `json:"updatedAt"`
+	DeletedAt  gorm.DeletedAt  `gorm:"index" json:"deletedAt,omitempty"`
+	Tags       []Tag           `gorm:"many2many:document_tags;" json:"tags"`
 }
 
 type Tag struct {
