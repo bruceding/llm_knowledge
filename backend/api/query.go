@@ -71,19 +71,31 @@ func (h *QueryHandler) Ask(c echo.Context) error {
 	// Build system prompt (wiki paths only, Claude reads files itself)
 	systemPrompt := h.buildSystemPrompt(req.DocID)
 
-	// Get or create session
+	// Get or create session, preferring resume for existing conversations
 	ctx := c.Request().Context()
-	qs, err := h.Pool.GetOrCreate(ctx, convID, systemPrompt)
-	if err != nil {
-		// If session creation failed and we have a previous session_id, try resume
-		if conv.SessionID != "" {
-			log.Printf("[query] Session creation failed, trying resume with session %s: %v", conv.SessionID, err)
-			qs, err = h.Pool.ResumeSession(ctx, convID, conv.SessionID, systemPrompt)
+	var qs *claude.QuerySession
+	var err error
+
+	// 1. Check if there's an active session in the pool
+	qs = h.Pool.Get(convID)
+	if qs != nil {
+		// Active session exists, reuse it (has full context)
+	} else if conv.SessionID != "" {
+		// 2. No active session but conversation has a previous SessionID — resume to keep context
+		log.Printf("[query] No active session for conversation %d, resuming session %s", convID, conv.SessionID)
+		qs, err = h.Pool.ResumeSession(ctx, convID, conv.SessionID, systemPrompt)
+		if err != nil {
+			// Resume failed, fall back to creating a fresh session
+			log.Printf("[query] Resume failed (%v), creating fresh session", err)
+			qs, err = h.Pool.GetOrCreate(ctx, convID, systemPrompt)
 			if err != nil {
-				log.Printf("[query] Resume also failed: %v", err)
-				return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create or resume session"})
+				return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create session"})
 			}
-		} else {
+		}
+	} else {
+		// 3. No previous session at all, create a new one
+		qs, err = h.Pool.GetOrCreate(ctx, convID, systemPrompt)
+		if err != nil {
 			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create session"})
 		}
 	}
@@ -178,6 +190,27 @@ func (h *QueryHandler) buildSystemPrompt(docID uint) string {
 	}
 
 	return prompt.String()
+}
+
+// ListConversations returns all conversations ordered by most recent first
+// GET /api/conversations
+func (h *QueryHandler) ListConversations(c echo.Context) error {
+	var conversations []db.Conversation
+	if err := db.DB.Order("updated_at DESC").Find(&conversations).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to list conversations"})
+	}
+	return c.JSON(http.StatusOK, conversations)
+}
+
+// GetConversationMessages returns all messages for a specific conversation
+// GET /api/conversations/:id/messages
+func (h *QueryHandler) GetConversationMessages(c echo.Context) error {
+	id := c.Param("id")
+	var messages []db.ConversationMessage
+	if err := db.DB.Where("conversation_id = ?", id).Order("created_at ASC").Find(&messages).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to get messages"})
+	}
+	return c.JSON(http.StatusOK, messages)
 }
 
 // truncate shortens a string to maxLen characters

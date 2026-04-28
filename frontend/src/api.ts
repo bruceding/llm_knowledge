@@ -1,4 +1,4 @@
-import type { Document, UpdateDocRequest, AskRequest, SSEEvent, UserSettings } from './types'
+import type { Document, UpdateDocRequest, AskRequest, SSEEvent, UserSettings, Conversation, Message } from './types'
 
 const API_BASE = '/api'
 
@@ -118,6 +118,19 @@ export async function fetchWikiContent(path: string): Promise<string> {
   const res = await fetch(`/data/wiki/${path}.md`)
   if (!res.ok) throw new Error('Failed to fetch wiki content')
   return res.text()
+}
+
+// Conversation API
+export async function fetchConversations(): Promise<Conversation[]> {
+  const res = await fetch(`${API_BASE}/conversations`)
+  if (!res.ok) throw new Error('Failed to fetch conversations')
+  return res.json()
+}
+
+export async function fetchConversationMessages(conversationId: number): Promise<Message[]> {
+  const res = await fetch(`${API_BASE}/conversations/${conversationId}/messages`)
+  if (!res.ok) throw new Error('Failed to fetch conversation messages')
+  return res.json()
 }
 
 // Chat API - SSE streaming

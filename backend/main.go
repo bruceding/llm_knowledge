@@ -143,6 +143,8 @@ func main() {
 		Pool:      querySessionPool,
 	}
 	e.POST("/api/query/ask", queryH.Ask)
+	e.GET("/api/conversations", queryH.ListConversations)
+	e.GET("/api/conversations/:id/messages", queryH.GetConversationMessages)
 
 	// Translate API (SSE streaming)
 	translateH := &api.TranslateHandler{

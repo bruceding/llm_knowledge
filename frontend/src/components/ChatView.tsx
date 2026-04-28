@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { askQuestion } from '../api'
+import { askQuestion, fetchConversations, fetchConversationMessages } from '../api'
 import type { SSEEvent, ContentBlock } from '../types'
 
 // Format a tool_use content block into a human-readable description
@@ -80,7 +80,7 @@ export default function ChatView() {
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [currentConversationId, setCurrentConversationId] = useState<number | undefined>(conversationId)
-  const [conversations, _setConversations] = useState<Conversation[]>([])
+  const [conversations, setConversations] = useState<Conversation[]>([])
   const [showHistory, setShowHistory] = useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -90,6 +90,21 @@ export default function ChatView() {
   // to avoid resetting messages when navigate updates the URL
   const [locallyCreatedId, setLocallyCreatedId] = useState<number | undefined>(undefined)
 
+  // Load conversation list
+  const loadConversations = useCallback(async () => {
+    try {
+      const convs = await fetchConversations()
+      setConversations(convs)
+    } catch {
+      // Silently fail - sidebar will show empty state
+    }
+  }, [])
+
+  // Load conversation list on mount
+  useEffect(() => {
+    loadConversations()
+  }, [loadConversations])
+
   // Scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -98,15 +113,18 @@ export default function ChatView() {
   // Load conversation history on mount (only for conversations not created in current session)
   useEffect(() => {
     if (conversationId && conversationId !== locallyCreatedId) {
-      // TODO: load conversation messages from backend
-      setMessages([
-        {
-          id: 1,
-          role: 'system',
-          content: 'Welcome to the knowledge base chat. Ask questions about your documents.',
-          timestamp: new Date(),
-        },
-      ])
+      fetchConversationMessages(conversationId).then((dbMessages) => {
+        if (dbMessages.length > 0) {
+          setMessages(dbMessages.map((m) => ({
+            id: m.id,
+            role: m.role as 'user' | 'assistant' | 'system',
+            content: m.content,
+            timestamp: new Date(m.createdAt),
+          })))
+        }
+      }).catch(() => {
+        // Silently fail
+      })
     }
   }, [conversationId, locallyCreatedId])
 
@@ -205,6 +223,7 @@ export default function ChatView() {
     } finally {
       setStreaming(false)
       inputRef.current?.focus()
+      loadConversations()
     }
   }, [input, streaming, currentConversationId, messages.length, navigate])
 

@@ -134,6 +134,14 @@ func (p *QuerySessionPool) cleanupLoop() {
 	}
 }
 
+// Get returns an existing session from the pool without creating a new one.
+// Returns nil if no session exists for the given conversation ID.
+func (p *QuerySessionPool) Get(convID uint) *QuerySession {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.sessions[convID]
+}
+
 // GetOrCreate retrieves an existing session or creates a new one.
 func (p *QuerySessionPool) GetOrCreate(ctx context.Context, convID uint, systemPrompt string) (*QuerySession, error) {
 	p.mu.RLock()
