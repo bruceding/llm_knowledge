@@ -43,29 +43,50 @@ func (h *RSSHandler) AddFeed(c echo.Context) error {
 		return c.JSON(400, echo.Map{"error": "URL is required"})
 	}
 
-	// If name not provided, parse RSS feed to get title
+	inputURL := req.URL
+	feedURL := inputURL
+	var triedPaths []string
+
+	// Stage 1: Try direct RSS parse
+	rssFeed, err := tryParseAsRSS(inputURL)
+	if err != nil {
+		// Stage 2: Parse HTML to find RSS link
+		triedPaths = append(triedPaths, inputURL)
+		discoveredURL, err := discoverRSSFromHTML(inputURL)
+		if err != nil {
+			// Stage 3: Probe common paths
+			tried := []string{"/feed", "/rss", "/rss.xml", "/atom.xml", "/feed.xml"}
+			triedPaths = append(triedPaths, tried...)
+			discoveredURL, err = probeCommonRSSPaths(inputURL)
+			if err != nil {
+				return c.JSON(404, echo.Map{
+					"error": fmt.Sprintf("未找到 RSS feed。尝试路径：%s", strings.Join(triedPaths, ", ")),
+				})
+			}
+			feedURL = discoveredURL
+		} else {
+			feedURL = discoveredURL
+		}
+
+		// Verify discovered URL is valid RSS
+		rssFeed, err = tryParseAsRSS(feedURL)
+		if err != nil {
+			return c.JSON(404, echo.Map{
+				"error": fmt.Sprintf("发现的 feed URL 无效：%s", feedURL),
+			})
+		}
+	}
+
+	// Get feed name
 	feedName := req.Name
 	if feedName == "" {
-		fp := gofeed.NewParser()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		rssFeed, err := fp.ParseURLWithContext(req.URL, ctx)
-		if err != nil {
-			// Fallback: extract domain name from URL
-			u, parseErr := url.Parse(req.URL)
-			if parseErr != nil {
-				feedName = "RSS Feed"
-			} else {
-				feedName = u.Host
-				// Remove common prefixes like www.
-				feedName = strings.TrimPrefix(feedName, "www.")
-			}
-		} else {
-			feedName = rssFeed.Title
-			if feedName == "" {
-				u, _ := url.Parse(req.URL)
+		feedName = rssFeed.Title
+		if feedName == "" {
+			u, err := url.Parse(feedURL)
+			if err == nil {
 				feedName = strings.TrimPrefix(u.Host, "www.")
+			} else {
+				feedName = "RSS Feed"
 			}
 		}
 	}
@@ -73,7 +94,7 @@ func (h *RSSHandler) AddFeed(c echo.Context) error {
 
 	feed := db.RSSFeed{
 		Name:      feedName,
-		URL:       req.URL,
+		URL:       feedURL,
 		AutoSync:  req.AutoSync,
 		CreatedAt: time.Now(),
 	}
