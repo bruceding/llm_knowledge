@@ -238,8 +238,9 @@ func (h *RSSHandler) syncFeedInternal(feed *db.RSSFeed) SyncResult {
 		}
 
 		// Check dedup including soft-deleted records to prevent re-fetching deleted articles
+		// Match both normalized URL and original URL (legacy records may have fragment)
 		var existingDoc db.Document
-		if db.DB.Unscoped().Where("source_url = ? OR (source_guid != '' AND source_guid = ?)", normalizedURL, guid).First(&existingDoc).Error == nil {
+		if db.DB.Unscoped().Where("source_url = ? OR source_url = ? OR (source_guid != '' AND source_guid = ?)", normalizedURL, item.Link, guid).First(&existingDoc).Error == nil {
 			continue
 		}
 
