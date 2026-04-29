@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { uploadPDF, clipWeb, addRSSFeed, listRSSFeeds, deleteRSSFeed, syncRSSFeed } from '../api'
+import { uploadPDF, uploadPDFUrl, clipWeb, addRSSFeed, listRSSFeeds, deleteRSSFeed, syncRSSFeed } from '../api'
 
 export default function ImportView() {
   const { t } = useTranslation()
@@ -13,6 +13,10 @@ export default function ImportView() {
   // URL clipping state
   const [urlInput, setUrlInput] = useState('')
   const [clippingUrl, setClippingUrl] = useState(false)
+
+  // PDF URL state
+  const [pdfUrl, setPdfUrl] = useState('')
+  const [uploadingFromUrl, setUploadingFromUrl] = useState(false)
 
   // RSS state
   const [rssUrl, setRssUrl] = useState('')
@@ -91,6 +95,28 @@ export default function ImportView() {
     if (files && files.length > 0) {
       const file = files[0]
       handleUpload(file)
+    }
+  }
+
+  // Handle PDF upload from URL
+  const handleUploadFromUrl = async () => {
+    if (!pdfUrl.trim()) return
+
+    setUploadingFromUrl(true)
+    setError(null)
+    setUploadResult(null)
+    setUploadProgress(`Downloading PDF from URL...`)
+
+    try {
+      const result = await uploadPDFUrl(pdfUrl)
+      setUploadResult(result)
+      setUploadProgress(`Successfully processed PDF (${result.pages} pages)`)
+      setPdfUrl('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to upload PDF from URL')
+      setUploadProgress(null)
+    } finally {
+      setUploadingFromUrl(false)
     }
   }
 
@@ -255,6 +281,28 @@ export default function ImportView() {
                 />
               </>
             )}
+          </div>
+
+          {/* PDF URL input */}
+          <div className="border border-gray-200 rounded-lg p-4">
+            <p className="text-gray-600 mb-3 text-sm">{t('import.pdfUrlHint')}</p>
+            <div className="flex gap-2">
+              <input
+                type="url"
+                value={pdfUrl}
+                onChange={(e) => setPdfUrl(e.target.value)}
+                placeholder="https://arxiv.org/pdf/xxxx.pdf"
+                disabled={uploadingFromUrl}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+              />
+              <button
+                onClick={handleUploadFromUrl}
+                disabled={uploadingFromUrl || !pdfUrl.trim()}
+                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500"
+              >
+                {uploadingFromUrl ? t('import.uploading') : t('import.importFromUrl')}
+              </button>
+            </div>
           </div>
         </div>
 

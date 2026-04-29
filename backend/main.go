@@ -104,6 +104,7 @@ func main() {
 		ClaudeBin: cfg.ClaudeBin,
 	}
 	e.POST("/api/raw/pdf", rawH.UploadPDF, middleware.BodyLimit("50M"))
+	e.POST("/api/raw/pdf-url", rawH.UploadPDFFromURL)
 
 	// Web clipping API
 	webH := &api.WebHandler{

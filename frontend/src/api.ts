@@ -64,6 +64,19 @@ export async function uploadPDF(file: File): Promise<{ id: number; path: string;
   return res.json()
 }
 
+export async function uploadPDFUrl(url: string): Promise<{ id: number; path: string; message: string; pages: number }> {
+  const res = await fetch(`${API_BASE}/raw/pdf-url`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  })
+  if (!res.ok) {
+    const err = await res.json()
+    throw new Error(err.error || 'Failed to upload PDF from URL')
+  }
+  return res.json()
+}
+
 export async function clipWeb(url: string): Promise<{ id: number; title: string; path: string; images: number; message: string }> {
   const res = await fetch(`${API_BASE}/raw/web`, {
     method: 'POST',
