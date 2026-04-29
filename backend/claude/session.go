@@ -204,6 +204,24 @@ func (s *InteractiveSession) SendUserMessage(content string) error {
 	return nil
 }
 
+// SendInterrupt sends a control_request interrupt to stdin to stop the current turn.
+// The session remains alive and can continue accepting new messages.
+func (s *InteractiveSession) SendInterrupt() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msg := fmt.Sprintf("{\"type\":\"control_request\",\"request_id\":\"%d\",\"request\":{\"subtype\":\"interrupt\"}}\n", time.Now().UnixNano())
+
+	_, err := s.stdin.Write([]byte(msg))
+	if err != nil {
+		log.Printf("[session] Failed to send interrupt: %v", err)
+		return err
+	}
+
+	log.Printf("[session] Sent interrupt to session %s", s.SessionID)
+	return nil
+}
+
 // SSEConnect increments SSE connection count
 func (s *InteractiveSession) SSEConnect() {
 	s.mu.Lock()

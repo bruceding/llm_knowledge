@@ -143,9 +143,13 @@ func main() {
 		ClaudeBin: cfg.ClaudeBin,
 		Pool:      querySessionPool,
 	}
-	e.POST("/api/query/ask", queryH.Ask)
+	e.POST("/api/query/conversation", queryH.CreateConversation)
+	e.GET("/api/query/stream", queryH.Stream)
+	e.POST("/api/query/message", queryH.Message)
+	e.POST("/api/query/interrupt", queryH.Interrupt)
 	e.GET("/api/conversations", queryH.ListConversations)
 	e.GET("/api/conversations/:id/messages", queryH.GetConversationMessages)
+	e.DELETE("/api/conversations/:id", queryH.DeleteConversation)
 
 	// Translate API (SSE streaming)
 	translateH := &api.TranslateHandler{

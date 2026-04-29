@@ -72,7 +72,8 @@ export interface SSEMessage {
 }
 
 export interface SSEEvent {
-  type: 'conversation' | 'document' | 'assistant' | 'result' | 'error' | 'complete' | 'progress'
+  type: 'conversation' | 'document' | 'assistant' | 'result' | 'error' | 'complete' | 'progress' | 'session_expired' | 'system' | 'user'
+  subtype?: string
   conversationId?: number
   docId?: number
   title?: string
@@ -80,7 +81,10 @@ export interface SSEEvent {
   content?: string
   error?: string
   filePath?: string
-  message?: SSEMessage | string  // SSEMessage for chat events, string for progress events
+  message?: SSEMessage | string
+  sessionId?: string
+  resultMessageId?: number
+  resultFullContent?: string
   // PDF translation progress
   translatedPdf?: string
   dualPdf?: string

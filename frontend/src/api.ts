@@ -1,4 +1,4 @@
-import type { Document, UpdateDocRequest, AskRequest, SSEEvent, UserSettings, Conversation, Message } from './types'
+import type { Document, UpdateDocRequest, SSEEvent, UserSettings, Conversation, Message } from './types'
 
 const API_BASE = '/api'
 
@@ -146,44 +146,52 @@ export async function fetchConversationMessages(conversationId: number): Promise
   return res.json()
 }
 
-// Chat API - SSE streaming
-export async function askQuestion(
-  request: AskRequest,
-  onEvent: (event: SSEEvent) => void
-): Promise<void> {
-  const res = await fetch(`${API_BASE}/query/ask`, {
+// Chat API - New architecture with separate SSE stream and message sending
+
+// Create a new conversation
+export async function createConversation(title?: string, docId?: number): Promise<{ conversationId: number; title: string }> {
+  const res = await fetch(`${API_BASE}/query/conversation`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
+    body: JSON.stringify({ title, docId }),
   })
+  if (!res.ok) throw new Error('Failed to create conversation')
+  return res.json()
+}
 
-  if (!res.ok) throw new Error('Failed to start chat')
+// Send a message to an existing conversation
+export async function sendQueryMessage(
+  conversationId: number,
+  message: string,
+  docId?: number
+): Promise<{ status: string; messageId: number; sessionId: string }> {
+  const res = await fetch(`${API_BASE}/query/message`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ conversationId, message, docId }),
+  })
+  if (!res.ok) throw new Error('Failed to send message')
+  return res.json()
+}
 
-  const reader = res.body?.getReader()
-  if (!reader) throw new Error('No response body')
+// Interrupt the current turn
+export async function interruptQuery(conversationId: number): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/query/interrupt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ conversationId }),
+  })
+  if (!res.ok) throw new Error('Failed to interrupt')
+  return res.json()
+}
 
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-
-    for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        try {
-          const data = JSON.parse(line.slice(6))
-          onEvent(data)
-        } catch {
-          // Ignore parse errors
-        }
-      }
-    }
-  }
+// Delete a conversation
+export async function deleteConversation(conversationId: number): Promise<{ status: string; conversationId: number }> {
+  const res = await fetch(`${API_BASE}/conversations/${conversationId}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error('Failed to delete conversation')
+  return res.json()
 }
 
 // Translate API - SSE streaming

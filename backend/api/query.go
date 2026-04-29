@@ -20,81 +20,112 @@ type QueryHandler struct {
 	Pool      *claude.QuerySessionPool
 }
 
-// AskRequest represents the request body for the Ask endpoint
-type AskRequest struct {
-	ConversationID uint   `json:"conversationId"`
-	Question       string `json:"question"`
-	DocID          uint   `json:"docId,omitempty"` // Optional: focus on specific document
+// CreateConversationRequest represents the request for creating a new conversation
+type CreateConversationRequest struct {
+	Title string `json:"title"`
+	DocID uint   `json:"docId,omitempty"`
 }
 
-// Ask handles SSE streaming query responses
-func (h *QueryHandler) Ask(c echo.Context) error {
-	var req AskRequest
+// CreateConversation creates a new conversation and returns its ID
+// POST /api/query/conversation
+func (h *QueryHandler) CreateConversation(c echo.Context) error {
+	var req CreateConversationRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid request body"})
 	}
 
-	if req.Question == "" {
-		return c.JSON(http.StatusBadRequest, echo.Map{"error": "question is required"})
+	title := req.Title
+	if title == "" {
+		title = "New Chat"
 	}
 
-	// Create or get conversation
-	convID := req.ConversationID
+	conv := db.Conversation{
+		Title:     truncate(title, 100),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.DB.Create(&conv).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create conversation"})
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{
+		"conversationId": conv.ID,
+		"title":          conv.Title,
+	})
+}
+
+// QueryMessageRequest represents a user message request for query chat
+type QueryMessageRequest struct {
+	ConversationID uint   `json:"conversationId"`
+	Message        string `json:"message"`
+	DocID          uint   `json:"docId,omitempty"`
+}
+
+// Message sends a user message to the session and saves it to DB
+// POST /api/query/message
+func (h *QueryHandler) Message(c echo.Context) error {
+	var req QueryMessageRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid request body"})
+	}
+
+	if req.Message == "" {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "message is required"})
+	}
+
+	if req.ConversationID == 0 {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "conversationId is required"})
+	}
+
+	// Get conversation
 	var conv db.Conversation
-	if convID == 0 {
-		conv = db.Conversation{
-			Title:     truncate(req.Question, 50),
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-		}
-		if err := db.DB.Create(&conv).Error; err != nil {
-			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create conversation"})
-		}
-		convID = conv.ID
-	} else {
-		if err := db.DB.First(&conv, convID).Error; err != nil {
-			return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
-		}
+	if err := db.DB.First(&conv, req.ConversationID).Error; err != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
 	}
 
 	// Save user message
 	userMsg := db.ConversationMessage{
-		ConversationID: convID,
+		ConversationID: req.ConversationID,
 		Role:           "user",
-		Content:        req.Question,
+		Content:        req.Message,
 		CreatedAt:      time.Now(),
 	}
 	if err := db.DB.Create(&userMsg).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to save user message"})
 	}
 
-	// Build system prompt (wiki paths only, Claude reads files itself)
+	// Update conversation timestamp and title if first message
+	db.DB.Model(&db.Conversation{}).Where("id = ?", req.ConversationID).Update("updated_at", time.Now())
+	if conv.Title == "New Chat" {
+		newTitle := truncate(req.Message, 50)
+		db.DB.Model(&db.Conversation{}).Where("id = ?", req.ConversationID).Update("title", newTitle)
+	}
+
+	// Build system prompt
 	systemPrompt := h.buildSystemPrompt(req.DocID)
 
-	// Get or create session, preferring resume for existing conversations
+	// Get or create session
 	ctx := c.Request().Context()
 	var qs *claude.QuerySession
 	var err error
 
-	// 1. Check if there's an active session in the pool
-	qs = h.Pool.Get(convID)
+	qs = h.Pool.Get(req.ConversationID)
 	if qs != nil {
-		// Active session exists, reuse it (has full context)
+		// Active session exists, reuse it
 	} else if conv.SessionID != "" {
-		// 2. No active session but conversation has a previous SessionID — resume to keep context
-		log.Printf("[query] No active session for conversation %d, resuming session %s", convID, conv.SessionID)
-		qs, err = h.Pool.ResumeSession(ctx, convID, conv.SessionID, systemPrompt)
+		// Resume previous session
+		log.Printf("[query] No active session for conversation %d, resuming session %s", req.ConversationID, conv.SessionID)
+		qs, err = h.Pool.ResumeSession(ctx, req.ConversationID, conv.SessionID, systemPrompt)
 		if err != nil {
-			// Resume failed, fall back to creating a fresh session
 			log.Printf("[query] Resume failed (%v), creating fresh session", err)
-			qs, err = h.Pool.GetOrCreate(ctx, convID, systemPrompt)
+			qs, err = h.Pool.GetOrCreate(ctx, req.ConversationID, systemPrompt)
 			if err != nil {
 				return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create session"})
 			}
 		}
 	} else {
-		// 3. No previous session at all, create a new one
-		qs, err = h.Pool.GetOrCreate(ctx, convID, systemPrompt)
+		// Create new session
+		qs, err = h.Pool.GetOrCreate(ctx, req.ConversationID, systemPrompt)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create session"})
 		}
@@ -103,93 +134,160 @@ func (h *QueryHandler) Ask(c echo.Context) error {
 	// Update session_id in conversation if changed
 	newSessionID := qs.SessionID()
 	if newSessionID != conv.SessionID {
-		db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSessionID)
+		db.DB.Model(&db.Conversation{}).Where("id = ?", req.ConversationID).Update("session_id", newSessionID)
 	}
 
-	// Set SSE headers
-	c.Response().Header().Set("Content-Type", "text/event-stream")
-	c.Response().Header().Set("Cache-Control", "no-cache")
-	c.Response().Header().Set("Connection", "keep-alive")
-
-	flusher, ok := c.Response().Writer.(http.Flusher)
-	if !ok {
-		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "streaming not supported"})
-	}
-
-	// Send conversation ID to client first
-	convData, _ := json.Marshal(echo.Map{"type": "conversation", "conversationId": convID})
-	fmt.Fprintf(c.Response(), "data: %s\n\n", convData)
-	flusher.Flush()
-
-	// Send question to session and get turn channel
-	turnCh, err := qs.Ask(req.Question)
+	// Send question to session with message ID for saving assistant reply
+	_, err = qs.Ask(req.Message, userMsg.ID)
 	if err != nil {
 		log.Printf("[query] Failed to ask question: %v", err)
 		// Session might be dead, try to recreate
-		h.Pool.Remove(convID)
-		qs, err = h.Pool.GetOrCreate(ctx, convID, systemPrompt)
+		h.Pool.Remove(req.ConversationID)
+		qs, err = h.Pool.GetOrCreate(ctx, req.ConversationID, systemPrompt)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to recreate session"})
 		}
 		// Update session_id
 		if sid := qs.SessionID(); sid != newSessionID {
-			db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", sid)
+			db.DB.Model(&db.Conversation{}).Where("id = ?", req.ConversationID).Update("session_id", sid)
 		}
-		turnCh, err = qs.Ask(req.Question)
+		_, err = qs.Ask(req.Message, userMsg.ID)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to ask question"})
 		}
 	}
 
-	// Stream events to client
-	var fullContent strings.Builder
-	for evt := range turnCh {
-		// Skip system events
-		if evt.Type == "system" {
+	return c.JSON(http.StatusOK, echo.Map{
+		"status":       "sent",
+		"messageId":    userMsg.ID,
+		"sessionId":    qs.SessionID(),
+	})
+}
+
+// Stream handles SSE streaming for query chat - continuous connection
+// GET /api/query/stream?conversationId=xxx
+func (h *QueryHandler) Stream(c echo.Context) error {
+	convIDStr := c.QueryParam("conversationId")
+	if convIDStr == "" {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "conversationId is required"})
+	}
+
+	convID := parseUint(convIDStr)
+	if convID == 0 {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid conversationId"})
+	}
+
+	// Set SSE headers first
+	c.Response().Header().Set("Content-Type", "text/event-stream")
+	c.Response().Header().Set("Cache-Control", "no-cache")
+	c.Response().Header().Set("Connection", "keep-alive")
+	c.Response().WriteHeader(http.StatusOK)
+
+	flusher, ok := c.Response().Writer.(http.Flusher)
+	if !ok {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "streaming not supported"})
+	}
+	flusher.Flush() // Flush headers immediately so EventSource onopen fires
+
+	// Get or create session (creates Claude process if first connection)
+	ctx := c.Request().Context()
+	systemPrompt := h.buildSystemPrompt(0)
+	qs, err := h.Pool.GetOrCreate(ctx, convID, systemPrompt)
+	if err != nil {
+		data, _ := json.Marshal(echo.Map{
+			"type":           "error",
+			"conversationId": convID,
+			"error":          "failed to create session",
+		})
+		fmt.Fprintf(c.Response(), "data: %s\n\n", data)
+		flusher.Flush()
+		return nil
+	}
+
+	// Subscribe to session events
+	eventCh := qs.Subscribe()
+	defer qs.Unsubscribe(eventCh)
+
+	// Mark SSE connection
+	qs.SSEConnect()
+
+	// Stream events
+	for evt := range eventCh {
+		// Skip system hook events
+		if evt.Type == "system" && (evt.Subtype == "hook_started" || evt.Subtype == "hook_response") {
 			continue
 		}
 
+		// Send event to SSE
 		data, _ := json.Marshal(evt)
 		fmt.Fprintf(c.Response(), "data: %s\n\n", data)
 		flusher.Flush()
 
-		if evt.Type == "assistant" {
-			fullContent.WriteString(evt.Content)
+		// On result, save assistant message to DB (only if has content)
+		if evt.Type == "result" && evt.Subtype != "error_during_execution" && evt.ResultMessageID > 0 && evt.ResultFullContent != "" {
+			assistantMsg := db.ConversationMessage{
+				ConversationID: convID,
+				Role:           "assistant",
+				Content:        evt.ResultFullContent,
+				CreatedAt:      time.Now(),
+			}
+			if err := db.DB.Create(&assistantMsg).Error; err != nil {
+				log.Printf("[query] Failed to save assistant message: %v", err)
+			}
+			// Update conversation timestamp
+			db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("updated_at", time.Now())
+		}
+
+		// On interrupt (error_during_execution), don't save empty content
+		// Frontend will handle showing "[Stopped]"
+
+		// Stop on error (but not error_during_execution which is from interrupt)
+		if evt.Type == "error" && evt.Subtype != "error_during_execution" {
+			break
+		}
+
+		// Check if client disconnected
+		select {
+		case <-ctx.Done():
+			qs.SSEDisconnect()
+			return nil
+		default:
 		}
 	}
 
-	// Save assistant message
-	assistantMsg := db.ConversationMessage{
-		ConversationID: convID,
-		Role:           "assistant",
-		Content:        fullContent.String(),
-		CreatedAt:      time.Now(),
-	}
-	if err := db.DB.Create(&assistantMsg).Error; err != nil {
-		log.Printf("failed to save assistant message: %v", err)
-	}
-
-	// Update conversation timestamp
-	db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("updated_at", time.Now())
-
+	qs.SSEDisconnect()
 	return nil
 }
 
-// buildSystemPrompt constructs the system prompt pointing to wiki file paths.
-// Claude uses Read/Glob/Grep tools to find and read files itself.
-func (h *QueryHandler) buildSystemPrompt(docID uint) string {
-	var prompt strings.Builder
+// InterruptRequest represents an interrupt request
+type InterruptRequest struct {
+	ConversationID uint `json:"conversationId"`
+}
 
-	prompt.WriteString("你是一个知识库助手。知识库文件在 wiki/ 目录下，wiki/index.md 是索引。请使用 Read、Glob、Grep 等工具读取相关文件回答用户问题。如果文件内容不足以回答，可以使用你自己的知识补充。")
-
-	if docID > 0 {
-		var doc db.Document
-		if err := db.DB.First(&doc, docID).Error; err == nil && doc.WikiPath != "" {
-			prompt.WriteString(fmt.Sprintf(" 重点关注: %s", doc.WikiPath))
-		}
+// Interrupt sends an interrupt signal to stop the current turn
+// POST /api/query/interrupt
+func (h *QueryHandler) Interrupt(c echo.Context) error {
+	var req InterruptRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid request body"})
 	}
 
-	return prompt.String()
+	if req.ConversationID == 0 {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "conversationId is required"})
+	}
+
+	// Get session
+	qs := h.Pool.Get(req.ConversationID)
+	if qs == nil {
+		return c.JSON(http.StatusOK, echo.Map{"status": "no_active_session"})
+	}
+
+	// Send interrupt
+	if err := qs.Interrupt(); err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to send interrupt"})
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{"status": "interrupted"})
 }
 
 // ListConversations returns all conversations ordered by most recent first
@@ -213,10 +311,64 @@ func (h *QueryHandler) GetConversationMessages(c echo.Context) error {
 	return c.JSON(http.StatusOK, messages)
 }
 
+// DeleteConversation deletes a conversation and its messages
+// DELETE /api/conversations/:id
+func (h *QueryHandler) DeleteConversation(c echo.Context) error {
+	id := c.Param("id")
+	convID := parseUint(id)
+	if convID == 0 {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid conversation id"})
+	}
+
+	// Remove session from pool if exists
+	h.Pool.Remove(convID)
+
+	// Delete messages
+	if err := db.DB.Where("conversation_id = ?", convID).Delete(&db.ConversationMessage{}).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to delete messages"})
+	}
+
+	// Delete conversation
+	if err := db.DB.Delete(&db.Conversation{}, convID).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to delete conversation"})
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{"status": "deleted", "conversationId": convID})
+}
+
+// buildSystemPrompt constructs the system prompt pointing to wiki file paths.
+func (h *QueryHandler) buildSystemPrompt(docID uint) string {
+	var prompt strings.Builder
+
+	prompt.WriteString("你是一个知识库助手。知识库文件在 wiki/ 目录下，wiki/index.md 是索引。请使用 Read、Glob、Grep 等工具读取相关文件回答用户问题。如果文件内容不足以回答，可以使用你自己的知识补充。")
+
+	if docID > 0 {
+		var doc db.Document
+		if err := db.DB.First(&doc, docID).Error; err == nil && doc.WikiPath != "" {
+			prompt.WriteString(fmt.Sprintf(" 重点关注: %s", doc.WikiPath))
+		}
+	}
+
+	return prompt.String()
+}
+
 // truncate shortens a string to maxLen characters
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// parseUint parses a string to uint
+func parseUint(s string) uint {
+	var result uint
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			result = result*10 + uint(c-'0')
+		} else {
+			return 0
+		}
+	}
+	return result
 }

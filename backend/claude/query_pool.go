@@ -4,19 +4,23 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
 
 // QuerySession wraps an InteractiveSession with turn-based event routing.
 // It continuously consumes events from the underlying session and routes
-// them to per-question channels, allowing per-request SSE streaming.
+// them to per-question channels and any stream subscribers.
 type QuerySession struct {
-	session *InteractiveSession
-	convID  uint
-	turnCh  chan StreamEvent // active turn's event channel (nil when idle)
-	mu      sync.Mutex       // protects turnCh
-	lastAsk time.Time        // last time a question was asked
+	session          *InteractiveSession
+	convID           uint
+	turnCh           chan StreamEvent // active turn's event channel (nil when idle)
+	currentMessageID uint             // user message ID for current turn (for saving assistant reply)
+	currentContent   strings.Builder  // accumulated assistant content for current turn
+	mu               sync.Mutex       // protects turnCh, currentMessageID, currentContent, streamChs
+	streamChs        []chan StreamEvent
+	lastAsk          time.Time // last time a question was asked
 }
 
 // newQuerySession creates a QuerySession that routes events from the
@@ -31,16 +35,39 @@ func newQuerySession(session *InteractiveSession, convID uint) *QuerySession {
 }
 
 // routeEvents continuously reads from the underlying session's event channel
-// and routes events to the active turn channel. When no turn is active,
-// events are discarded.
+// and routes events to the active turn channel and stream subscribers. When no
+// turn is active and no stream subscribers exist, events are discarded.
 func (qs *QuerySession) routeEvents() {
 	for evt := range qs.session.Events() {
 		qs.mu.Lock()
+		// Accumulate assistant content
+		if evt.Type == "assistant" {
+			qs.currentContent.WriteString(evt.Content)
+		}
+
+		// On result/error, add message save info
+		if evt.Type == "result" || evt.Type == "error" {
+			evt.ResultMessageID = qs.currentMessageID
+			evt.ResultFullContent = qs.currentContent.String()
+		}
+
+		// Route to active turn
 		if qs.turnCh != nil {
 			qs.turnCh <- evt
 			if evt.Type == "result" || evt.Type == "error" {
 				close(qs.turnCh)
 				qs.turnCh = nil
+				qs.currentMessageID = 0
+				qs.currentContent.Reset()
+			}
+		}
+
+		// Fan-out to stream subscribers
+		for _, ch := range qs.streamChs {
+			select {
+			case ch <- evt:
+			default:
+				// Skip slow subscriber
 			}
 		}
 		qs.mu.Unlock()
@@ -49,7 +76,8 @@ func (qs *QuerySession) routeEvents() {
 
 // Ask sends a question to the session and returns a channel that receives
 // events for this specific question. Only one question can be active at a time.
-func (qs *QuerySession) Ask(content string) (<-chan StreamEvent, error) {
+// messageID is the user message ID for saving the assistant reply later.
+func (qs *QuerySession) Ask(content string, messageID uint) (<-chan StreamEvent, error) {
 	qs.mu.Lock()
 	if qs.turnCh != nil {
 		qs.mu.Unlock()
@@ -57,12 +85,15 @@ func (qs *QuerySession) Ask(content string) (<-chan StreamEvent, error) {
 	}
 	ch := make(chan StreamEvent, 100)
 	qs.turnCh = ch
+	qs.currentMessageID = messageID
+	qs.currentContent.Reset()
 	qs.lastAsk = time.Now()
 	qs.mu.Unlock()
 
 	if err := qs.session.SendUserMessage(content); err != nil {
 		qs.mu.Lock()
 		qs.turnCh = nil
+		qs.currentMessageID = 0
 		qs.mu.Unlock()
 		return nil, err
 	}
@@ -73,6 +104,39 @@ func (qs *QuerySession) Ask(content string) (<-chan StreamEvent, error) {
 // Close terminates the underlying session.
 func (qs *QuerySession) Close() {
 	qs.session.Close()
+}
+
+// Interrupt sends an interrupt signal to stop the current turn.
+// The session remains alive for future messages.
+func (qs *QuerySession) Interrupt() error {
+	return qs.session.SendInterrupt()
+}
+
+// Subscribe returns a channel that receives a copy of all session events.
+// The channel has a buffer of 100 events. Call Unsubscribe when done.
+func (qs *QuerySession) Subscribe() chan StreamEvent {
+	ch := make(chan StreamEvent, 100)
+	qs.mu.Lock()
+	qs.streamChs = append(qs.streamChs, ch)
+	qs.mu.Unlock()
+	return ch
+}
+
+// Unsubscribe removes a subscriber channel.
+func (qs *QuerySession) Unsubscribe(ch chan StreamEvent) {
+	qs.mu.Lock()
+	for i, c := range qs.streamChs {
+		if c == ch {
+			qs.streamChs = append(qs.streamChs[:i], qs.streamChs[i+1:]...)
+			break
+		}
+	}
+	qs.mu.Unlock()
+}
+
+// Events returns the underlying session's event channel for continuous SSE streaming.
+func (qs *QuerySession) Events() <-chan StreamEvent {
+	return qs.session.Events()
 }
 
 // LastAsk returns the time of the last question.
