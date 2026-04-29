@@ -106,7 +106,7 @@ func (h *ImagesHandler) Upload(c echo.Context) error {
 	log.Printf("[images] Saved image %s (%d bytes)", filename, len(decoded))
 
 	return c.JSON(http.StatusOK, ImageUploadResponse{
-		Path:     "/data/images/" + filename,
+		Path:     "/data/cache/images/" + filename,
 		Filename: filename,
 	})
 }
