@@ -6,6 +6,7 @@ import rehypeHighlight from 'rehype-highlight'
 import 'highlight.js/styles/github.css'
 import { useTranslation } from 'react-i18next'
 import { fetchDocument, updateDocument, publishDocument, deleteDocument, regenerateSummary, getPagesStatus, fetchSettings, checkPDFTranslationStatus, translatePDF, checkMarkdownTranslationStatus, translateMarkdown } from '../api'
+import { useConfirm } from '../hooks/useConfirm'
 import type { Document, SSEEvent, UserSettings } from '../types'
 import PDFViewer from './PDFViewer'
 import PDFTranslationView from './PDFTranslationView'
@@ -22,6 +23,7 @@ export default function DocDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { t, i18n } = useTranslation()
+  const { confirm, dialog: confirmDialog } = useConfirm()
   const [document, setDocument] = useState<Document | null>(null)
   const [wikiContent, setWikiContent] = useState<string>('')
   const [rawContent, setRawContent] = useState<string>('') // For RSS/web markdown content
@@ -88,16 +90,20 @@ export default function DocDetail() {
 
   // Keyboard shortcut: 'd' to delete current document
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleKeyDown = async (e: KeyboardEvent) => {
       if (e.key !== 'd' || !document) return
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
       e.preventDefault()
-      if (!confirm(t('docDetail.deleteConfirm'))) return
+      const confirmed = await confirm({
+        title: t('common.delete'),
+        message: t('docDetail.deleteConfirm'),
+      })
+      if (!confirmed) return
       deleteDocument(document.id).then(() => navigate('/'))
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [document, navigate, t])
+  }, [document, navigate, t, confirm])
 
   // Load document and content
   useEffect(() => {
@@ -288,7 +294,11 @@ export default function DocDetail() {
 
   const handleDelete = async () => {
     if (!document) return
-    if (!confirm(t('docDetail.deleteConfirm'))) return
+    const confirmed = await confirm({
+      title: t('common.delete'),
+      message: t('docDetail.deleteConfirm'),
+    })
+    if (!confirmed) return
     try {
       await deleteDocument(document.id)
       navigate('/')
@@ -440,6 +450,7 @@ export default function DocDetail() {
   const isPDF = document.sourceType === 'pdf'
 
   return (
+    <>
     <div className="flex h-full">
       {/* Left: Markdown content */}
       <div className="flex-1 flex flex-col overflow-hidden">
@@ -847,6 +858,8 @@ export default function DocDetail() {
         </div>
       </div>
       )}
+      {confirmDialog}
     </div>
+    </>
   )
 }

@@ -3,7 +3,8 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { askQuestion, fetchConversations, fetchConversationMessages } from '../api'
+import { createConversation, sendQueryMessage, interruptQuery, fetchConversations, fetchConversationMessages, deleteConversation } from '../api'
+import { useConfirm } from '../hooks/useConfirm'
 import type { SSEEvent, ContentBlock } from '../types'
 
 // Format a tool_use content block into a human-readable description
@@ -27,7 +28,7 @@ function formatToolBlock(block: ContentBlock): string {
   }
 }
 
-// Extract display info from message content blocks (handles different model outputs)
+// Extract display info from message content blocks
 function extractFromContentBlocks(blocks: ContentBlock[]): {
   text: string
   isThinking: boolean
@@ -74,21 +75,20 @@ export default function ChatView() {
   const params = useParams<{ id?: string }>()
   const navigate = useNavigate()
   const { t, i18n } = useTranslation()
-  const conversationId = params.id ? parseInt(params.id) : undefined
+  const urlConversationId = params.id ? parseInt(params.id) : undefined
 
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
-  const [streaming, setStreaming] = useState(false)
-  const [currentConversationId, setCurrentConversationId] = useState<number | undefined>(conversationId)
+  const [isStreaming, setIsStreaming] = useState(false)
+  const [currentConversationId, setCurrentConversationId] = useState<number | undefined>(urlConversationId)
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [showHistory, setShowHistory] = useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-
-  // Track whether the current conversation was just created locally
-  // to avoid resetting messages when navigate updates the URL
-  const [locallyCreatedId, setLocallyCreatedId] = useState<number | undefined>(undefined)
+  const eventSourceRef = useRef<EventSource | null>(null)
+  const isStreamingRef = useRef(false)
+  const sseReadyRef = useRef(false)
 
   // Load conversation list
   const loadConversations = useCallback(async () => {
@@ -96,11 +96,10 @@ export default function ChatView() {
       const convs = await fetchConversations()
       setConversations(convs)
     } catch {
-      // Silently fail - sidebar will show empty state
+      // Silently fail
     }
   }, [])
 
-  // Load conversation list on mount
   useEffect(() => {
     loadConversations()
   }, [loadConversations])
@@ -110,10 +109,10 @@ export default function ChatView() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Load conversation history on mount (only for conversations not created in current session)
+  // Load conversation history when switching
   useEffect(() => {
-    if (conversationId && conversationId !== locallyCreatedId) {
-      fetchConversationMessages(conversationId).then((dbMessages) => {
+    if (urlConversationId && urlConversationId !== currentConversationId) {
+      fetchConversationMessages(urlConversationId).then((dbMessages) => {
         if (dbMessages.length > 0) {
           setMessages(dbMessages.map((m) => ({
             id: m.id,
@@ -121,31 +120,165 @@ export default function ChatView() {
             content: m.content,
             timestamp: new Date(m.createdAt),
           })))
+        } else {
+          setMessages([])
         }
       }).catch(() => {
-        // Silently fail
+        setMessages([])
       })
+      setCurrentConversationId(urlConversationId)
+      setIsStreaming(false)
     }
-  }, [conversationId, locallyCreatedId])
+  }, [urlConversationId, currentConversationId])
+
+  // Connect SSE stream when conversationId changes
+  useEffect(() => {
+    if (!currentConversationId) return
+
+    // Close existing connection
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close()
+      sseReadyRef.current = false
+    }
+
+    sseReadyRef.current = false
+
+    // Open new SSE connection
+    const es = new EventSource(`/api/query/stream?conversationId=${currentConversationId}`)
+    eventSourceRef.current = es
+
+    es.onopen = () => {
+      sseReadyRef.current = true
+    }
+
+    es.onmessage = (e) => {
+      try {
+        const event: SSEEvent = JSON.parse(e.data)
+        handleSSEEvent(event)
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
+    es.onerror = () => {
+      // Connection closed or error
+      sseReadyRef.current = false
+      isStreamingRef.current = false
+      setIsStreaming(false)
+    }
+
+    return () => {
+      es.close()
+      sseReadyRef.current = false
+    }
+  }, [currentConversationId])
+
+  // Handle SSE events
+  const handleSSEEvent = useCallback((event: SSEEvent) => {
+    if (event.type === 'session_expired') {
+      // Session expired, need to reconnect
+      isStreamingRef.current = false
+      setIsStreaming(false)
+      return
+    }
+
+    if (event.type === 'assistant') {
+      const msg = event.message
+      const blocks = typeof msg === 'object' ? msg?.content : undefined
+      if (blocks && blocks.length > 0) {
+        const { text, isThinking, toolUse } = extractFromContentBlocks(blocks)
+        setMessages((prev) => {
+          const last = prev[prev.length - 1]
+          if (last.role === 'assistant' && last.isStreaming) {
+            return [...prev.slice(0, -1), {
+              ...last,
+              content: last.content + text,
+              isThinking: isThinking && !text,
+              toolUse: toolUse && !text ? toolUse : undefined,
+            }]
+          }
+          return prev
+        })
+      } else if (event.content) {
+        setMessages((prev) => {
+          const last = prev[prev.length - 1]
+          if (last.role === 'assistant' && last.isStreaming) {
+            return [...prev.slice(0, -1), { ...last, content: last.content + event.content, isThinking: false, toolUse: undefined }]
+          }
+          return prev
+        })
+      }
+    } else if (event.type === 'result') {
+      if (!isStreamingRef.current) return
+      setMessages((prev) => {
+        const updated = prev.map(m =>
+          m.isStreaming ? { ...m, isStreaming: false, isThinking: false, toolUse: undefined } : m
+        )
+        // If interrupted (error_during_execution) and no content, show "[Stopped]"
+        if (event.subtype === 'error_during_execution') {
+          const last = updated[updated.length - 1]
+          if (last.role === 'assistant' && !last.content) {
+            return [...updated.slice(0, -1), { ...last, content: '[已停止]' }]
+          }
+        }
+        return updated
+      })
+      isStreamingRef.current = false
+      setIsStreaming(false)
+      loadConversations()
+    } else if (event.type === 'error') {
+      if (!isStreamingRef.current) return
+      setMessages((prev) => {
+        const last = prev[prev.length - 1]
+        if (last.role === 'assistant' && last.isStreaming) {
+          return [...prev.slice(0, -1), { ...last, content: last.content + '\n\nError: ' + (event.error || 'Unknown error'), isStreaming: false, isThinking: false }]
+        }
+        return prev
+      })
+      isStreamingRef.current = false
+      setIsStreaming(false)
+    }
+  }, [loadConversations])
 
   // Handle sending a message
   const handleSend = useCallback(async () => {
-    if (!input.trim() || streaming) return
+    if (!input.trim() || isStreamingRef.current) return
 
-    const userMessage: Message = {
-      id: messages.length + 1,
-      role: 'user',
-      content: input.trim(),
-      timestamp: new Date(),
+    const userContent = input.trim()
+    setInput('')
+
+    // Lock immediately so stop button appears and re-entry is blocked
+    isStreamingRef.current = true
+    setIsStreaming(true)
+
+    // Create conversation if needed
+    let convId = currentConversationId
+    if (!convId) {
+      try {
+        const result = await createConversation(userContent)
+        convId = result.conversationId
+        setCurrentConversationId(convId)
+        navigate(`/chat/${convId}`, { replace: true })
+        loadConversations()
+      } catch {
+        isStreamingRef.current = false
+        setIsStreaming(false)
+        return
+      }
     }
 
+    // Add user message to UI
+    const userMessage: Message = {
+      id: Date.now(),
+      role: 'user',
+      content: userContent,
+      timestamp: new Date(),
+    }
     setMessages((prev) => [...prev, userMessage])
-    setInput('')
-    setStreaming(true)
 
     // Add placeholder assistant message
     const assistantMessage: Message = {
-      id: messages.length + 2,
+      id: Date.now() + 1,
       role: 'assistant',
       content: '',
       timestamp: new Date(),
@@ -154,78 +287,50 @@ export default function ChatView() {
     }
     setMessages((prev) => [...prev, assistantMessage])
 
+    // Send message to backend
     try {
-      await askQuestion(
-        {
-          conversationId: currentConversationId,
-          question: userMessage.content,
-        },
-        (event: SSEEvent) => {
-          if (event.type === 'conversation') {
-            setCurrentConversationId(event.conversationId)
-            // Mark this as locally created so useEffect won't reset messages
-            if (!currentConversationId && event.conversationId) {
-              setLocallyCreatedId(event.conversationId)
-              navigate(`/chat/${event.conversationId}`, { replace: true })
+      // Wait for SSE connection to be ready before sending
+      if (!sseReadyRef.current) {
+        await new Promise<void>((resolve) => {
+          const check = () => {
+            if (sseReadyRef.current) {
+              resolve()
+            } else {
+              setTimeout(check, 50)
             }
-          } else if (event.type === 'assistant') {
-            // Parse content blocks from the message (works across different models)
-            const msg = event.message
-            const blocks = typeof msg === 'object' ? msg?.content : undefined
-            if (blocks && blocks.length > 0) {
-              const { text, isThinking, toolUse } = extractFromContentBlocks(blocks)
-              setMessages((prev) => {
-                const last = prev[prev.length - 1]
-                if (last.role === 'assistant') {
-                  return [...prev.slice(0, -1), {
-                    ...last,
-                    content: last.content + text,
-                    isThinking: isThinking && !text,
-                    toolUse: toolUse && !text ? toolUse : undefined,
-                  }]
-                }
-                return prev
-              })
-            } else if (event.content) {
-              // Fallback: models without content blocks (just plain text)
-              setMessages((prev) => {
-                const last = prev[prev.length - 1]
-                if (last.role === 'assistant') {
-                  return [...prev.slice(0, -1), { ...last, content: last.content + event.content, isThinking: false, toolUse: undefined }]
-                }
-                return prev
-              })
-            }
-          } else if (event.type === 'result') {
-            // Mark streaming complete
-            setMessages((prev) => prev.map(m =>
-              m.isStreaming ? { ...m, isStreaming: false, isThinking: false, toolUse: undefined } : m
-            ))
-          } else if (event.type === 'error') {
-            setMessages((prev) => {
-              const last = prev[prev.length - 1]
-              if (last.role === 'assistant') {
-                return [...prev.slice(0, -1), { ...last, content: last.content + '\n\nError: ' + (event.error || 'Unknown error') }]
-              }
-              return prev
-            })
           }
-        }
-      )
+          check()
+        })
+      }
+      await sendQueryMessage(convId, userContent)
     } catch (err) {
       setMessages((prev) => {
         const last = prev[prev.length - 1]
         if (last.role === 'assistant') {
-          return [...prev.slice(0, -1), { ...last, content: t('chatView.connectionError') }]
+          return [...prev.slice(0, -1), { ...last, content: t('chatView.connectionError'), isStreaming: false, isThinking: false }]
         }
         return prev
       })
-    } finally {
-      setStreaming(false)
-      inputRef.current?.focus()
-      loadConversations()
+      isStreamingRef.current = false
+      setIsStreaming(false)
     }
-  }, [input, streaming, currentConversationId, messages.length, navigate])
+  }, [input, currentConversationId, navigate, t])
+
+  // Handle stopping the stream
+  const handleStop = useCallback(async () => {
+    if (currentConversationId && isStreamingRef.current) {
+      isStreamingRef.current = false
+      setIsStreaming(false)
+      setMessages((prev) => prev.map(m =>
+        m.isStreaming ? { ...m, isStreaming: false, isThinking: false, toolUse: undefined, content: m.content || '[已停止]' } : m
+      ))
+      try {
+        await interruptQuery(currentConversationId)
+      } catch {
+        // Ignore errors
+      }
+    }
+  }, [currentConversationId])
 
   // Handle Enter key
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -238,12 +343,42 @@ export default function ChatView() {
   // Start new conversation
   const handleNewChat = () => {
     setCurrentConversationId(undefined)
-    setLocallyCreatedId(undefined)
     setMessages([])
+    isStreamingRef.current = false
+    setIsStreaming(false)
+    setShowHistory(false)
     navigate('/chat')
   }
 
+  // Switch to a different conversation
+  const handleSwitchConversation = (convId: number) => {
+    navigate(`/chat/${convId}`)
+  }
+
+  // Delete a conversation
+  const { confirm, dialog: confirmDialog } = useConfirm()
+
+  const handleDeleteConversation = async (convId: number, e: React.MouseEvent) => {
+    e.stopPropagation()
+    const confirmed = await confirm({
+      title: t('chatView.delete'),
+      message: t('chatView.deleteConfirm'),
+    })
+    if (!confirmed) return
+
+    try {
+      await deleteConversation(convId)
+      loadConversations()
+      if (currentConversationId === convId) {
+        handleNewChat()
+      }
+    } catch {
+      // Ignore errors
+    }
+  }
+
   return (
+    <>
     <div className="flex h-full">
       {/* Conversation history sidebar */}
       {showHistory && (
@@ -259,7 +394,7 @@ export default function ChatView() {
               {t('chatView.newConversation')}
             </button>
           </div>
-          <div className="flex-1 overflow-auto p-2">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden p-2">
             {conversations.length === 0 ? (
               <div className="text-center text-gray-500 text-sm p-4">
                 {t('chatView.noPreviousConversations')}
@@ -267,10 +402,10 @@ export default function ChatView() {
             ) : (
               <ul className="space-y-1">
                 {conversations.map((conv) => (
-                  <li key={conv.id}>
+                  <li key={conv.id} className="flex items-center gap-1 min-w-0">
                     <button
-                      onClick={() => navigate(`/chat/${conv.id}`)}
-                      className={`w-full px-3 py-2 text-left rounded-lg text-sm ${
+                      onClick={() => handleSwitchConversation(conv.id)}
+                      className={`flex-1 min-w-0 px-3 py-2 text-left rounded-lg text-sm ${
                         currentConversationId === conv.id
                           ? 'bg-blue-100 text-blue-700'
                           : 'text-gray-700 hover:bg-gray-200'
@@ -280,6 +415,15 @@ export default function ChatView() {
                       <div className="text-xs text-gray-500 mt-1">
                         {new Date(conv.createdAt).toLocaleDateString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}
                       </div>
+                    </button>
+                    <button
+                      onClick={(e) => handleDeleteConversation(conv.id, e)}
+                      className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded"
+                      title={t('chatView.delete')}
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
                     </button>
                   </li>
                 ))}
@@ -398,28 +542,37 @@ export default function ChatView() {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={t('chatView.placeholder')}
-              disabled={streaming}
+              disabled={isStreaming}
               className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
             />
-            <button
-              onClick={handleSend}
-              disabled={streaming || !input.trim()}
-              className="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-              {streaming ? (
-                <div className="animate-spin w-5 h-5 border-2 border-white border-t-transparent rounded-full"></div>
-              ) : (
+            {isStreaming ? (
+              <button
+                onClick={handleStop}
+                className="px-6 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <rect x="6" y="6" width="12" height="12" strokeWidth={2} />
+                </svg>
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!input.trim()}
+                className="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed flex items-center gap-2"
+              >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                 </svg>
-              )}
-            </button>
+              </button>
+            )}
           </div>
           <div className="mt-2 text-center text-xs text-gray-400">
             {t('chatView.sendHint')}
           </div>
         </div>
       </div>
+      {confirmDialog}
     </div>
+    </>
   )
 }

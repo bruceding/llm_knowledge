@@ -49,7 +49,8 @@
     "viewDocument": "查看文档",
     "errorOnlyPdf": "拖拽上传仅支持 PDF 文件",
     "errorWebClipNotImplemented": "网页裁剪功能尚未实现，请使用 PDF 上传。",
-    "errorRssNotImplemented": "RSS 订阅管理功能尚未实现，这是一个占位符。"
+    "errorRssNotImplemented": "RSS 订阅管理功能尚未实现，这是一个占位符。",
+    "deleteFeedConfirm": "确定要删除此 RSS 订阅源吗？"
   },
   "settings": {
     "title": "设置",
@@ -154,7 +155,9 @@
     "system": "系统",
     "lookingUp": "查询中：",
     "sendHint": "按 Enter 发送，Shift+Enter 换行",
-    "connectionError": "无法连接服务器，请重试。"
+    "connectionError": "无法连接服务器，请重试。",
+    "delete": "删除",
+    "deleteConfirm": "确定要删除此对话吗？"
   },
   "tagsView": {
     "title": "标签",

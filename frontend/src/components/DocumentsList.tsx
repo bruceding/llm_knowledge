@@ -2,10 +2,12 @@ import { useState, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { fetchDocuments, deleteDocument } from '../api'
+import { useConfirm } from '../hooks/useConfirm'
 import type { Document } from '../types'
 
 export default function DocumentsList() {
   const { t, i18n } = useTranslation()
+  const { confirm, dialog: confirmDialog } = useConfirm()
   const [searchParams] = useSearchParams()
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
@@ -26,16 +28,20 @@ export default function DocumentsList() {
 
   // Keyboard shortcut: 'd' to delete hovered document
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleKeyDown = async (e: KeyboardEvent) => {
       if (e.key !== 'd' || hoveredDocId === null) return
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
       e.preventDefault()
-      if (!confirm(t('docDetail.deleteConfirm'))) return
+      const confirmed = await confirm({
+        title: t('common.delete'),
+        message: t('docDetail.deleteConfirm'),
+      })
+      if (!confirmed) return
       deleteDocument(hoveredDocId).then(() => loadDocuments(statusFilter))
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [hoveredDocId, t, statusFilter])
+  }, [hoveredDocId, t, statusFilter, confirm])
 
   const loadDocuments = async (status: string) => {
     setLoading(true)
@@ -145,6 +151,7 @@ export default function DocumentsList() {
   }
 
   return (
+    <>
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-bold text-gray-800">{t('documentsList.title')}</h2>
@@ -268,5 +275,7 @@ export default function DocumentsList() {
         </div>
       )}
     </div>
+    {confirmDialog}
+    </>
   )
 }

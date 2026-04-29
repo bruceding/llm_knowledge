@@ -1,9 +1,11 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { uploadPDF, uploadPDFUrl, clipWeb, addRSSFeed, listRSSFeeds, deleteRSSFeed, syncRSSFeed } from '../api'
+import { useConfirm } from '../hooks/useConfirm'
 
 export default function ImportView() {
   const { t } = useTranslation()
+  const { confirm, dialog: confirmDialog } = useConfirm()
   const [dragActive, setDragActive] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<string | null>(null)
@@ -190,6 +192,11 @@ export default function ImportView() {
 
   // Handle deleting RSS feed
   const handleDeleteFeed = async (feedId: number) => {
+    const confirmed = await confirm({
+      title: t('common.delete'),
+      message: t('import.deleteFeedConfirm'),
+    })
+    if (!confirmed) return
     try {
       await deleteRSSFeed(feedId)
       await loadRSSFeeds()
@@ -199,6 +206,7 @@ export default function ImportView() {
   }
 
   return (
+    <>
     <div className="p-6">
       <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('import.title')}</h2>
       <p className="text-gray-600 mb-6">{t('import.description')}</p>
@@ -427,5 +435,7 @@ export default function ImportView() {
         </div>
       </div>
     </div>
+    {confirmDialog}
+    </>
   )
 }

@@ -2,11 +2,13 @@ import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { fetchInbox, deleteDocument } from '../api'
+import { useConfirm } from '../hooks/useConfirm'
 import type { Document } from '../types'
 
 export default function Inbox() {
   const location = useLocation()
   const { t, i18n } = useTranslation()
+  const { confirm, dialog: confirmDialog } = useConfirm()
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -18,16 +20,20 @@ export default function Inbox() {
 
   // Keyboard shortcut: 'd' to delete hovered document
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleKeyDown = async (e: KeyboardEvent) => {
       if (e.key !== 'd' || hoveredDocId === null) return
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
       e.preventDefault()
-      if (!confirm(t('docDetail.deleteConfirm'))) return
+      const confirmed = await confirm({
+        title: t('common.delete'),
+        message: t('docDetail.deleteConfirm'),
+      })
+      if (!confirmed) return
       deleteDocument(hoveredDocId).then(() => loadDocuments())
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [hoveredDocId, t])
+  }, [hoveredDocId, t, confirm])
 
   const loadDocuments = async () => {
     setLoading(true)
@@ -133,6 +139,7 @@ export default function Inbox() {
   }
 
   return (
+    <>
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-bold text-gray-800">{t('inbox.title')}</h2>
@@ -239,5 +246,7 @@ export default function Inbox() {
         </div>
       )}
     </div>
+    {confirmDialog}
+    </>
   )
 }

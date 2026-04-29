@@ -49,7 +49,8 @@
     "viewDocument": "View Document",
     "errorOnlyPdf": "Only PDF files are supported for drag and drop upload",
     "errorWebClipNotImplemented": "Web clipping is not yet implemented. Please use PDF upload.",
-    "errorRssNotImplemented": "RSS feed management is not yet implemented. This is a placeholder."
+    "errorRssNotImplemented": "RSS feed management is not yet implemented. This is a placeholder.",
+    "deleteFeedConfirm": "Are you sure you want to delete this RSS feed?"
   },
   "settings": {
     "title": "Settings",
@@ -154,7 +155,9 @@
     "system": "System",
     "lookingUp": "Looking up:",
     "sendHint": "Press Enter to send, Shift+Enter for new line",
-    "connectionError": "Failed to connect to server. Please try again."
+    "connectionError": "Failed to connect to server. Please try again.",
+    "delete": "Delete",
+    "deleteConfirm": "Are you sure you want to delete this conversation?"
   },
   "tagsView": {
     "title": "Tags",
