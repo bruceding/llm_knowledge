@@ -179,6 +179,12 @@ func main() {
 	e.POST("/api/markdown-translate", markdownTranslateH.TranslateMarkdown)
 	e.GET("/api/documents/:id/markdown-translation-status", markdownTranslateH.CheckMarkdownTranslationStatus)
 
+	// Image Upload API
+	imagesH := &api.ImagesHandler{
+		DataDir: cfg.DataDir,
+	}
+	e.POST("/api/images/upload", imagesH.Upload, middleware.BodyLimit("15M"))
+
 	// Document Chat API (SSE streaming with session pool)
 	sessionPool := claude.NewSessionPool(cfg.DataDir, cfg.ClaudeBin)
 	docChatH := &api.DocChatHandler{
