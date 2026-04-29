@@ -115,7 +115,7 @@ func main() {
 	// Document CRUD API
 	docH := &api.DocHandler{
 		DataDir:   cfg.DataDir,
-			ClaudeBin: cfg.ClaudeBin,
+		ClaudeBin: cfg.ClaudeBin,
 	}
 	e.GET("/api/documents/inbox", docH.ListInbox)
 	e.GET("/api/documents", docH.ListAll)
@@ -168,6 +168,13 @@ func main() {
 	}
 	e.GET("/api/documents/:id/translation-status", pdfTranslateH.CheckTranslationStatus)
 	e.POST("/api/pdf-translate", pdfTranslateH.TranslatePDF)
+
+	// Markdown Translation API (SSE streaming)
+	markdownTranslateH := &api.MarkdownTranslateHandler{
+		DataDir: cfg.DataDir,
+	}
+	e.POST("/api/markdown-translate", markdownTranslateH.TranslateMarkdown)
+	e.GET("/api/documents/:id/markdown-translation-status", markdownTranslateH.CheckMarkdownTranslationStatus)
 
 	// Document Chat API (SSE streaming with session pool)
 	sessionPool := claude.NewSessionPool(cfg.DataDir, cfg.ClaudeBin)
