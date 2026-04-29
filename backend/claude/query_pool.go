@@ -47,9 +47,9 @@ func (qs *QuerySession) routeEvents() {
 	}
 }
 
-// Ask sends a question to the session and returns a channel that receives
-// events for this specific question. Only one question can be active at a time.
-func (qs *QuerySession) Ask(content string) (<-chan StreamEvent, error) {
+// Ask sends a question with optional images to the session and returns a channel
+// that receives events for this specific question.
+func (qs *QuerySession) Ask(content string, images []ImageData) (<-chan StreamEvent, error) {
 	qs.mu.Lock()
 	if qs.turnCh != nil {
 		qs.mu.Unlock()
@@ -60,11 +60,20 @@ func (qs *QuerySession) Ask(content string) (<-chan StreamEvent, error) {
 	qs.lastAsk = time.Now()
 	qs.mu.Unlock()
 
-	if err := qs.session.SendUserMessage(content); err != nil {
-		qs.mu.Lock()
-		qs.turnCh = nil
-		qs.mu.Unlock()
-		return nil, err
+	if len(images) > 0 {
+		if err := qs.session.SendUserMessageWithImages(content, images); err != nil {
+			qs.mu.Lock()
+			qs.turnCh = nil
+			qs.mu.Unlock()
+			return nil, err
+		}
+	} else {
+		if err := qs.session.SendUserMessage(content); err != nil {
+			qs.mu.Lock()
+			qs.turnCh = nil
+			qs.mu.Unlock()
+			return nil, err
+		}
 	}
 
 	return ch, nil
