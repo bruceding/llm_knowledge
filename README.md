@@ -8,9 +8,10 @@ LLM Knowledge is a personal knowledge base that helps you collect, understand, a
 
 ## Features
 
-- **Multi-source ingestion** — Upload PDFs, clip web pages, or subscribe to RSS feeds
+- **Multi-source ingestion** — Upload PDFs (drag & drop or URL), clip web pages, or subscribe to RSS feeds with auto-sync
 - **LLM-powered extraction** — Claude CLI extracts structured content, generates summaries, and translates between Chinese and English
-- **Document chat** — Multi-turn SSE streaming Q&A with session management, powered by Claude
+- **Document chat** — Multi-turn SSE streaming Q&A with session management, powered by Claude CLI
+- **Query chat** — Free-form conversational AI with stop/interrupt support, conversation history, and multimodal image input
 - **PDF translation** — Layout-preserving PDF translation via pdf2zh (OpenAI-compatible API)
 - **Dual PDF viewer** — Scroll/scale-synced side-by-side comparison of original and translated PDFs
 - **Bilingual UI** — Full i18n support for English and Chinese
