@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { fetchDocuments, deleteDocument } from '../api'
@@ -12,19 +12,42 @@ export default function DocumentsList() {
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [statusFilter, setStatusFilter] = useState<string>('')
+  const [statusFilter, setStatusFilter] = useState<string>(() => searchParams.get('status') || '')
   const [searchQuery, setSearchQuery] = useState('')
   const [hoveredDocId, setHoveredDocId] = useState<number | null>(null)
 
-  // Sync status filter with URL params on mount and when URL changes
+  // Sync status filter with URL params when URL changes
   useEffect(() => {
     const status = searchParams.get('status') || ''
     setStatusFilter(status)
   }, [searchParams])
 
+  const fetchIdRef = useRef(0)
+
+  const loadDocuments = useCallback(async (status: string) => {
+    const fetchId = ++fetchIdRef.current
+    setLoading(true)
+    setError(null)
+    try {
+      const docs = await fetchDocuments(status)
+      // Only apply results if this is still the latest request
+      if (fetchId === fetchIdRef.current) {
+        setDocuments(docs)
+      }
+    } catch (err) {
+      if (fetchId === fetchIdRef.current) {
+        setError(err instanceof Error ? err.message : 'Failed to load documents')
+      }
+    } finally {
+      if (fetchId === fetchIdRef.current) {
+        setLoading(false)
+      }
+    }
+  }, [])
+
   useEffect(() => {
     loadDocuments(statusFilter)
-  }, [statusFilter])
+  }, [statusFilter, loadDocuments])
 
   // Keyboard shortcut: 'd' to delete hovered document
   useEffect(() => {
@@ -42,19 +65,6 @@ export default function DocumentsList() {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [hoveredDocId, t, statusFilter, confirm])
-
-  const loadDocuments = async (status: string) => {
-    setLoading(true)
-    setError(null)
-    try {
-      const docs = await fetchDocuments(status)
-      setDocuments(docs)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load documents')
-    } finally {
-      setLoading(false)
-    }
-  }
 
   const getSourceIcon = (sourceType: string) => {
     switch (sourceType) {

@@ -80,7 +80,7 @@ export default function ConfirmDialog({
         <div className="flex border-t border-gray-100">
           <button
             onClick={onCancel}
-            className="flex-1 px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+            className="flex-1 px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors focus:outline-none"
           >
             {btnCancel}
           </button>
@@ -88,7 +88,7 @@ export default function ConfirmDialog({
           <button
             ref={confirmRef}
             onClick={onConfirm}
-            className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
+            className={`flex-1 px-4 py-3 text-sm font-medium transition-colors focus:outline-none ${
               variant === 'danger'
                 ? 'text-red-600 hover:bg-red-50'
                 : 'text-amber-600 hover:bg-amber-50'
