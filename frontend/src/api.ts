@@ -163,12 +163,13 @@ export async function createConversation(title?: string, docId?: number): Promis
 export async function sendQueryMessage(
   conversationId: number,
   message: string,
+  images?: string[],
   docId?: number
 ): Promise<{ status: string; messageId: number; sessionId: string }> {
   const res = await fetch(`${API_BASE}/query/message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ conversationId, message, docId }),
+    body: JSON.stringify({ conversationId, message, images, docId }),
   })
   if (!res.ok) throw new Error('Failed to send message')
   return res.json()
@@ -364,5 +365,19 @@ export async function generatePages(docId: number): Promise<{ id: number; total_
 export async function getPagesStatus(docId: number): Promise<{ exists: boolean; page_count: number }> {
   const res = await fetch(`${API_BASE}/documents/${docId}/pages-status`)
   if (!res.ok) throw new Error('Failed to get pages status')
+  return res.json()
+}
+
+// Image Upload API
+export async function uploadImage(data: string, type: string): Promise<{ path: string; filename: string }> {
+  const res = await fetch(`${API_BASE}/images/upload`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data, type }),
+  })
+  if (!res.ok) {
+    const err = await res.json()
+    throw new Error(err.error || 'Failed to upload image')
+  }
   return res.json()
 }

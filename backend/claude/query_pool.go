@@ -77,7 +77,8 @@ func (qs *QuerySession) routeEvents() {
 // Ask sends a question to the session and returns a channel that receives
 // events for this specific question. Only one question can be active at a time.
 // messageID is the user message ID for saving the assistant reply later.
-func (qs *QuerySession) Ask(content string, messageID uint) (<-chan StreamEvent, error) {
+// images is optional image data to send with the message.
+func (qs *QuerySession) Ask(content string, messageID uint, images []ImageData) (<-chan StreamEvent, error) {
 	qs.mu.Lock()
 	if qs.turnCh != nil {
 		qs.mu.Unlock()
@@ -90,12 +91,22 @@ func (qs *QuerySession) Ask(content string, messageID uint) (<-chan StreamEvent,
 	qs.lastAsk = time.Now()
 	qs.mu.Unlock()
 
-	if err := qs.session.SendUserMessage(content); err != nil {
-		qs.mu.Lock()
-		qs.turnCh = nil
-		qs.currentMessageID = 0
-		qs.mu.Unlock()
-		return nil, err
+	if len(images) > 0 {
+		if err := qs.session.SendUserMessageWithImages(content, images); err != nil {
+			qs.mu.Lock()
+			qs.turnCh = nil
+			qs.currentMessageID = 0
+			qs.mu.Unlock()
+			return nil, err
+		}
+	} else {
+		if err := qs.session.SendUserMessage(content); err != nil {
+			qs.mu.Lock()
+			qs.turnCh = nil
+			qs.currentMessageID = 0
+			qs.mu.Unlock()
+			return nil, err
+		}
 	}
 
 	return ch, nil

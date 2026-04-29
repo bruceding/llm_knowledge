@@ -157,7 +157,11 @@
     "sendHint": "Press Enter to send, Shift+Enter for new line",
     "connectionError": "Failed to connect to server. Please try again.",
     "delete": "Delete",
-    "deleteConfirm": "Are you sure you want to delete this conversation?"
+    "deleteConfirm": "Are you sure you want to delete this conversation?",
+    "imageTypeError": "Unsupported image type. Allowed: PNG, JPEG, GIF, WebP",
+    "imageSizeError": "Image too large. Maximum size: 10MB",
+    "imageUploadError": "Failed to upload image",
+    "uploadImage": "Upload image"
   },
   "tagsView": {
     "title": "Tags",

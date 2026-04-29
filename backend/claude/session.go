@@ -13,6 +13,12 @@ import (
 	"time"
 )
 
+// ImageData represents an image to send to Claude
+type ImageData struct {
+	MediaType  string // e.g., "image/png"
+	Base64Data string // base64 encoded image data (without prefix)
+}
+
 // InteractiveSession manages a bidirectional stream-json session with Claude CLI
 type InteractiveSession struct {
 	SessionID      string
@@ -201,6 +207,60 @@ func (s *InteractiveSession) SendUserMessage(content string) error {
 	}
 
 	log.Printf("[session] Sent user message to session %s", s.SessionID)
+	return nil
+}
+
+// SendUserMessageWithImages sends a message with images to stdin
+// Format: {"type":"user","message":{"role":"user","content":[...]}}
+func (s *InteractiveSession) SendUserMessageWithImages(content string, images []ImageData) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Build content array
+	msgContent := []map[string]interface{}{}
+
+	// Add images first
+	for _, img := range images {
+		msgContent = append(msgContent, map[string]interface{}{
+			"type": "image",
+			"source": map[string]interface{}{
+				"type":       "base64",
+				"media_type": img.MediaType,
+				"data":       img.Base64Data,
+			},
+		})
+	}
+
+	// Add text
+	if content != "" {
+		msgContent = append(msgContent, map[string]interface{}{
+			"type": "text",
+			"text": content,
+		})
+	}
+
+	msg := map[string]interface{}{
+		"type": "user",
+		"message": map[string]interface{}{
+			"role":    "user",
+			"content": msgContent,
+		},
+	}
+
+	jsonData, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("[session] Failed to marshal message: %v", err)
+		return err
+	}
+
+	_, err = s.stdin.Write(jsonData)
+	if err != nil {
+		log.Printf("[session] Failed to send message: %v", err)
+		return err
+	}
+	s.stdin.Write([]byte("\n"))
+
+	log.Printf("[session] Sent user message with %d images to session %s", len(images), s.SessionID)
 	return nil
 }
 

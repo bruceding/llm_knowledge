@@ -157,7 +157,11 @@
     "sendHint": "按 Enter 发送，Shift+Enter 换行",
     "connectionError": "无法连接服务器，请重试。",
     "delete": "删除",
-    "deleteConfirm": "确定要删除此对话吗？"
+    "deleteConfirm": "确定要删除此对话吗？",
+    "imageTypeError": "不支持的图片格式。允许: PNG, JPEG, GIF, WebP",
+    "imageSizeError": "图片过大。最大限制: 10MB",
+    "imageUploadError": "图片上传失败",
+    "uploadImage": "上传图片"
   },
   "tagsView": {
     "title": "标签",

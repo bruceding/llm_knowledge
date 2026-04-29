@@ -1,12 +1,15 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"llm-knowledge/claude"
 	"llm-knowledge/db"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -56,9 +59,10 @@ func (h *QueryHandler) CreateConversation(c echo.Context) error {
 
 // QueryMessageRequest represents a user message request for query chat
 type QueryMessageRequest struct {
-	ConversationID uint   `json:"conversationId"`
-	Message        string `json:"message"`
-	DocID          uint   `json:"docId,omitempty"`
+	ConversationID uint     `json:"conversationId"`
+	Message        string   `json:"message"`
+	DocID          uint     `json:"docId,omitempty"`
+	Images         []string `json:"images,omitempty"`
 }
 
 // Message sends a user message to the session and saves it to DB
@@ -83,11 +87,17 @@ func (h *QueryHandler) Message(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
 	}
 
-	// Save user message
+	// Save user message with images
+	imagesJSON := "[]"
+	if len(req.Images) > 0 {
+		imagesBytes, _ := json.Marshal(req.Images)
+		imagesJSON = string(imagesBytes)
+	}
 	userMsg := db.ConversationMessage{
 		ConversationID: req.ConversationID,
 		Role:           "user",
 		Content:        req.Message,
+		Images:         imagesJSON,
 		CreatedAt:      time.Now(),
 	}
 	if err := db.DB.Create(&userMsg).Error; err != nil {
@@ -137,8 +147,19 @@ func (h *QueryHandler) Message(c echo.Context) error {
 		db.DB.Model(&db.Conversation{}).Where("id = ?", req.ConversationID).Update("session_id", newSessionID)
 	}
 
+	// Load images if provided
+	var imageData []claude.ImageData
+	for _, imgPath := range req.Images {
+		img, err := loadImageData(h.DataDir, imgPath)
+		if err != nil {
+			log.Printf("[query] Failed to load image %s: %v", imgPath, err)
+			continue
+		}
+		imageData = append(imageData, img)
+	}
+
 	// Send question to session with message ID for saving assistant reply
-	_, err = qs.Ask(req.Message, userMsg.ID)
+	_, err = qs.Ask(req.Message, userMsg.ID, imageData)
 	if err != nil {
 		log.Printf("[query] Failed to ask question: %v", err)
 		// Session might be dead, try to recreate
@@ -151,7 +172,7 @@ func (h *QueryHandler) Message(c echo.Context) error {
 		if sid := qs.SessionID(); sid != newSessionID {
 			db.DB.Model(&db.Conversation{}).Where("id = ?", req.ConversationID).Update("session_id", sid)
 		}
-		_, err = qs.Ask(req.Message, userMsg.ID)
+		_, err = qs.Ask(req.Message, userMsg.ID, imageData)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to ask question"})
 		}
@@ -350,6 +371,40 @@ func (h *QueryHandler) buildSystemPrompt(docID uint) string {
 	}
 
 	return prompt.String()
+}
+
+// loadImageData loads image file and converts to ImageData for Claude
+func loadImageData(dataDir string, imagePath string) (claude.ImageData, error) {
+	// imagePath is like "/data/cache/images/xxx.png"
+	// Convert to actual file path
+	if !strings.HasPrefix(imagePath, "/data/") {
+		return claude.ImageData{}, fmt.Errorf("invalid image path: %s", imagePath)
+	}
+	relPath := strings.TrimPrefix(imagePath, "/data/")
+	fullPath := filepath.Join(dataDir, relPath)
+
+	// Read file
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return claude.ImageData{}, fmt.Errorf("failed to read image: %w", err)
+	}
+
+	// Detect media type from extension
+	ext := strings.ToLower(filepath.Ext(fullPath))
+	mediaType := "image/png" // default
+	switch ext {
+	case ".jpg", ".jpeg":
+		mediaType = "image/jpeg"
+	case ".gif":
+		mediaType = "image/gif"
+	case ".webp":
+		mediaType = "image/webp"
+	}
+
+	return claude.ImageData{
+		MediaType:  mediaType,
+		Base64Data: base64.StdEncoding.EncodeToString(data),
+	}, nil
 }
 
 // truncate shortens a string to maxLen characters
