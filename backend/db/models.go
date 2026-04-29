@@ -51,6 +51,7 @@ type ConversationMessage struct {
 	Role           string    `json:"role"` // user, assistant, system
 	Content        string    `json:"content"`
 	ContextDocIDs  string    `json:"contextDocIds"` // JSON array
+	Images         string    `gorm:"default:''" json:"images"` // JSON array of image paths
 	CreatedAt      time.Time `json:"createdAt"`
 }
 
