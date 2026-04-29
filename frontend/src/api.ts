@@ -358,3 +358,17 @@ export async function getPagesStatus(docId: number): Promise<{ exists: boolean; 
   if (!res.ok) throw new Error('Failed to get pages status')
   return res.json()
 }
+
+// Image Upload API
+export async function uploadImage(data: string, type: string): Promise<{ path: string; filename: string }> {
+  const res = await fetch(`${API_BASE}/images/upload`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data, type }),
+  })
+  if (!res.ok) {
+    const err = await res.json()
+    throw new Error(err.error || 'Failed to upload image')
+  }
+  return res.json()
+}

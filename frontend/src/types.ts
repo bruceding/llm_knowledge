@@ -35,6 +35,7 @@ export interface Message {
   conversationId: number
   role: 'user' | 'assistant' | 'system'
   content: string
+  images?: string[]
   contextDocIds: string
   createdAt: string
 }
@@ -50,6 +51,12 @@ export interface AskRequest {
   conversationId?: number
   question: string
   docId?: number
+  images?: string[]
+}
+
+export interface ImageUploadResponse {
+  path: string
+  filename: string
 }
 
 export interface TranslateRequest {

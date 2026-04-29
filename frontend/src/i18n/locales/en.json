@@ -154,7 +154,11 @@
     "system": "System",
     "lookingUp": "Looking up:",
     "sendHint": "Press Enter to send, Shift+Enter for new line",
-    "connectionError": "Failed to connect to server. Please try again."
+    "connectionError": "Failed to connect to server. Please try again.",
+    "imageTypeError": "Unsupported image type. Allowed: PNG, JPEG, GIF, WebP",
+    "imageSizeError": "Image too large. Maximum size: 10MB",
+    "imageUploadError": "Failed to upload image",
+    "uploadImage": "Upload image"
   },
   "tagsView": {
     "title": "Tags",

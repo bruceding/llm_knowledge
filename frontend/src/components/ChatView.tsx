@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { askQuestion, fetchConversations, fetchConversationMessages } from '../api'
+import { askQuestion, fetchConversations, fetchConversationMessages, uploadImage } from '../api'
 import type { SSEEvent, ContentBlock } from '../types'
 
 // Format a tool_use content block into a human-readable description
@@ -58,6 +58,7 @@ interface Message {
   id: number
   role: 'user' | 'assistant' | 'system'
   content: string
+  images?: string[]
   timestamp: Date
   isStreaming?: boolean
   isThinking?: boolean
@@ -82,6 +83,9 @@ export default function ChatView() {
   const [currentConversationId, setCurrentConversationId] = useState<number | undefined>(conversationId)
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [showHistory, setShowHistory] = useState(false)
+
+  const [pendingImages, setPendingImages] = useState<string[]>([])
+  const [enlargedImage, setEnlargedImage] = useState<string | null>(null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -119,6 +123,7 @@ export default function ChatView() {
             id: m.id,
             role: m.role as 'user' | 'assistant' | 'system',
             content: m.content,
+            images: m.images ? JSON.parse(m.images) : undefined,
             timestamp: new Date(m.createdAt),
           })))
         }
@@ -130,18 +135,21 @@ export default function ChatView() {
 
   // Handle sending a message
   const handleSend = useCallback(async () => {
-    if (!input.trim() || streaming) return
+    if ((!input.trim() && pendingImages.length === 0) || streaming) return
 
     const userMessage: Message = {
       id: messages.length + 1,
       role: 'user',
       content: input.trim(),
       timestamp: new Date(),
+      images: pendingImages.length > 0 ? pendingImages : undefined,
     }
 
     setMessages((prev) => [...prev, userMessage])
     setInput('')
     setStreaming(true)
+    const imagesToSend = pendingImages
+    setPendingImages([])
 
     // Add placeholder assistant message
     const assistantMessage: Message = {
@@ -159,6 +167,7 @@ export default function ChatView() {
         {
           conversationId: currentConversationId,
           question: userMessage.content,
+          images: imagesToSend.length > 0 ? imagesToSend : undefined,
         },
         (event: SSEEvent) => {
           if (event.type === 'conversation') {
@@ -225,7 +234,54 @@ export default function ChatView() {
       inputRef.current?.focus()
       loadConversations()
     }
-  }, [input, streaming, currentConversationId, messages.length, navigate])
+  }, [input, streaming, currentConversationId, messages.length, navigate, pendingImages, t])
+
+  const handleImageUpload = useCallback(async (file: File) => {
+    const allowedTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+    if (!allowedTypes.includes(file.type)) {
+      alert(t('chatView.imageTypeError'))
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      alert(t('chatView.imageSizeError'))
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = async (e) => {
+      const base64 = e.target?.result as string
+      try {
+        const type = file.type.split('/')[1]
+        const result = await uploadImage(base64, type)
+        setPendingImages(prev => [...prev, result.path])
+      } catch (err) {
+        console.error('Failed to upload image:', err)
+        alert(t('chatView.imageUploadError'))
+      }
+    }
+    reader.readAsDataURL(file)
+  }, [t])
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile()
+        if (file) handleImageUpload(file)
+      }
+    }
+  }, [handleImageUpload])
+
+  const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (files) {
+      for (const file of files) handleImageUpload(file)
+    }
+    e.target.value = ''
+  }, [handleImageUpload])
+
+  const handleRemoveImage = useCallback((index: number) => {
+    setPendingImages(prev => prev.filter((_, i) => i !== index))
+  }, [])
 
   // Handle Enter key
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -350,6 +406,19 @@ export default function ChatView() {
                     {msg.role === 'system' && (
                       <div className="text-xs font-medium mb-1">{t('chatView.system')}</div>
                     )}
+                    {msg.role === 'user' && msg.images && msg.images.length > 0 && (
+                      <div className="flex gap-2 mb-2">
+                        {msg.images.map((imgPath: string, idx: number) => (
+                          <img
+                            key={idx}
+                            src={imgPath}
+                            alt={`image-${idx}`}
+                            className="w-20 h-20 object-cover rounded cursor-pointer hover:opacity-80"
+                            onClick={() => setEnlargedImage(imgPath)}
+                          />
+                        ))}
+                      </div>
+                    )}
                     {msg.role === 'assistant' && (msg.isThinking || (msg.isStreaming && !msg.content && !msg.toolUse)) ? (
                       <div className="flex items-center gap-2">
                         <div className="animate-spin w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full"></div>
@@ -390,35 +459,91 @@ export default function ChatView() {
 
         {/* Input */}
         <div className="p-4 border-t border-gray-200">
-          <div className="max-w-3xl mx-auto flex gap-2">
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={t('chatView.placeholder')}
-              disabled={streaming}
-              className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
-            />
-            <button
-              onClick={handleSend}
-              disabled={streaming || !input.trim()}
-              className="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-              {streaming ? (
-                <div className="animate-spin w-5 h-5 border-2 border-white border-t-transparent rounded-full"></div>
-              ) : (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                </svg>
-              )}
-            </button>
+          <div className="max-w-3xl mx-auto">
+            {pendingImages.length > 0 && (
+              <div className="flex gap-2 p-2 bg-gray-50 rounded-lg mb-2">
+                {pendingImages.map((path, index) => (
+                  <div key={path} className="relative">
+                    <img
+                      src={path}
+                      alt={`pending-${index}`}
+                      className="w-16 h-16 object-cover rounded cursor-pointer hover:opacity-80"
+                      onClick={() => setEnlargedImage(path)}
+                    />
+                    <button
+                      onClick={() => handleRemoveImage(index)}
+                      className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full text-xs hover:bg-red-600"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                onChange={handleFileInputChange}
+                className="hidden"
+                id="image-upload-input"
+              />
+              <input
+                ref={inputRef}
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                placeholder={t('chatView.placeholder')}
+                disabled={streaming}
+                className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
+              />
+              <button
+                onClick={() => document.getElementById('image-upload-input')?.click()}
+                disabled={streaming}
+                className="px-4 py-3 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition-colors disabled:bg-gray-300 disabled:text-gray-500"
+                title={t('chatView.uploadImage')}
+              >
+                +
+              </button>
+              <button
+                onClick={handleSend}
+                disabled={streaming || (!input.trim() && pendingImages.length === 0)}
+                className="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {streaming ? (
+                  <div className="animate-spin w-5 h-5 border-2 border-white border-t-transparent rounded-full"></div>
+                ) : (
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                  </svg>
+                )}
+              </button>
+            </div>
           </div>
           <div className="mt-2 text-center text-xs text-gray-400">
             {t('chatView.sendHint')}
           </div>
         </div>
+        {enlargedImage && (
+          <div
+            className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50"
+            onClick={() => setEnlargedImage(null)}
+          >
+            <button
+              className="absolute top-4 right-4 w-8 h-8 bg-white text-black rounded-full text-lg hover:bg-gray-200"
+              onClick={() => setEnlargedImage(null)}
+            >
+              ×
+            </button>
+            <img
+              src={enlargedImage}
+              alt="enlarged"
+              className="max-w-[90%] max-h-[90%] object-contain"
+            />
+          </div>
+        )}
       </div>
     </div>
   )
