@@ -109,6 +109,8 @@
     "translateToChinese": "Translate to Chinese",
     "translateToEnglish": "Translate to English",
     "translation": "Translation",
+    "translate": "Translate",
+    "bilingual": "Bilingual",
     "inbox": "Inbox",
     "archivedStatus": "Archived",
     "metadataTab": "Metadata",

@@ -84,6 +84,8 @@ export interface SSEEvent {
   // PDF translation progress
   translatedPdf?: string
   dualPdf?: string
+  // Markdown translation result
+  path?: string
 }
 
 // User settings types

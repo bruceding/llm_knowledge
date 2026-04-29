@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import 'highlight.js/styles/github.css'
 import { useTranslation } from 'react-i18next'
-import { fetchDocument, updateDocument, publishDocument, deleteDocument, regenerateSummary, getPagesStatus, fetchSettings, checkPDFTranslationStatus, translatePDF } from '../api'
+import { fetchDocument, updateDocument, publishDocument, deleteDocument, regenerateSummary, getPagesStatus, fetchSettings, checkPDFTranslationStatus, translatePDF, checkMarkdownTranslationStatus, translateMarkdown } from '../api'
 import type { Document, SSEEvent, UserSettings } from '../types'
 import PDFViewer from './PDFViewer'
 import PDFTranslationView from './PDFTranslationView'
@@ -45,6 +45,11 @@ export default function DocDetail() {
   const [pdfTranslating, setPdfTranslating] = useState(false)
   const [pdfTranslationProgress, setPdfTranslationProgress] = useState('')
   const [translatedPdfPath, setTranslatedPdfPath] = useState<string | null>(null)
+
+  // Markdown translation state (for Web/RSS documents)
+  const [markdownTranslationStatus, setMarkdownTranslationStatus] = useState<{ exists: boolean; path?: string; targetLang?: string } | null>(null)
+  const [markdownTranslating, setMarkdownTranslating] = useState(false)
+  const [bilingualContent, setBilingualContent] = useState('')
 
   // View mode - default set based on sourceType after document loads
   const [viewMode, setViewMode] = useState<'wiki' | 'translation' | 'bilingual' | 'pdf' | 'dual-pdf' | 'raw'>('raw')
@@ -153,6 +158,23 @@ export default function DocDetail() {
               }
             }
             setRawContent(content)
+          }
+        }
+
+        // Check markdown translation status for Web/RSS documents
+        if (doc.sourceType === 'rss' || doc.sourceType === 'web') {
+          try {
+            const mdStatus = await checkMarkdownTranslationStatus(doc.id)
+            setMarkdownTranslationStatus(mdStatus)
+            if (mdStatus.exists && mdStatus.path) {
+              // Load bilingual content
+              const bilingualRes = await fetch(mdStatus.path)
+              if (bilingualRes.ok) {
+                setBilingualContent(await bilingualRes.text())
+              }
+            }
+          } catch (err) {
+            console.error('Failed to check markdown translation status:', err)
           }
         }
       }
@@ -317,6 +339,34 @@ export default function DocDetail() {
     }
   }, [document, settings, t])
 
+  // Markdown Translation handler (for Web/RSS)
+  const handleMarkdownTranslate = useCallback(async (targetLang?: string) => {
+    if (!document || !settings?.translationEnabled) return
+
+    const lang = targetLang || (document.language === 'en' ? 'zh' : 'en')
+    setMarkdownTranslating(true)
+
+    try {
+      await translateMarkdown(document.id, lang, (event: SSEEvent) => {
+        if (event.type === 'error') {
+          setError(event.error || 'Translation failed')
+          setMarkdownTranslating(false)
+        } else if (event.type === 'complete') {
+          setMarkdownTranslating(false)
+          if (event.path) {
+            setMarkdownTranslationStatus({ exists: true, path: event.path, targetLang: lang })
+            setViewMode('bilingual')
+            // Load bilingual content
+            fetch(event.path).then(res => res.text()).then(text => setBilingualContent(text))
+          }
+        }
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to translate markdown')
+      setMarkdownTranslating(false)
+    }
+  }, [document, settings])
+
   const getDisplayContent = () => {
     switch (viewMode) {
       case 'wiki':
@@ -324,7 +374,7 @@ export default function DocDetail() {
       case 'translation':
         return translationContent
       case 'bilingual':
-        return null // Bilingual view renders separately
+        return bilingualContent || rawContent
       case 'pdf':
         return null // PDF is rendered in iframe
       case 'dual-pdf':
@@ -459,8 +509,9 @@ export default function DocDetail() {
             )}
           </div>
 
-          {/* Translate buttons - only for PDF */}
+          {/* Translate buttons */}
           <div className="flex items-center gap-2">
+            {/* PDF translate buttons */}
             {isPDF && settings?.translationEnabled && !pdfTranslationStatus?.exists && !pdfTranslating && (
               <button
                 onClick={() => handlePDFTranslate()}
@@ -475,6 +526,35 @@ export default function DocDetail() {
                 <span className="text-sm text-purple-700">{pdfTranslationProgress}</span>
               </div>
             )}
+            {/* Markdown translate buttons - only for Web/RSS */}
+            {!isPDF && (document.sourceType === 'rss' || document.sourceType === 'web') && settings?.translationEnabled && (
+              <>
+                {!markdownTranslationStatus?.exists && !markdownTranslating && (
+                  <button
+                    onClick={() => handleMarkdownTranslate()}
+                    className="px-3 py-1.5 text-sm bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200"
+                  >
+                    {t('docDetail.translate')}
+                  </button>
+                )}
+                {markdownTranslating && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-50 rounded-lg">
+                    <div className="animate-spin h-4 w-4 border-2 border-purple-500 rounded-full border-t-transparent"></div>
+                    <span className="text-sm text-purple-700">{t('docDetail.translating')}</span>
+                  </div>
+                )}
+                {markdownTranslationStatus?.exists && (
+                  <button
+                    onClick={() => setViewMode('bilingual')}
+                    className={`px-3 py-1.5 rounded-lg text-sm ${
+                      viewMode === 'bilingual' ? 'bg-purple-100 text-purple-700' : 'text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    {t('docDetail.bilingual')} ({markdownTranslationStatus.targetLang?.toUpperCase()})
+                  </button>
+                )}
+              </>
+            )}
           </div>
         </div>
 
@@ -486,7 +566,7 @@ export default function DocDetail() {
             </div>
           ) : viewMode === 'dual-pdf' && pdfUrl && translatedPdfPath ? (
             <DualPDFViewer originalUrl={pdfUrl} translatedUrl={translatedPdfPath} />
-          ) : viewMode === 'bilingual' && document?.rawPath ? (
+          ) : viewMode === 'bilingual' && isPDF && document?.rawPath ? (
             <PDFTranslationView
               rawPath={document.rawPath}
               translatedContent={translationContent}
