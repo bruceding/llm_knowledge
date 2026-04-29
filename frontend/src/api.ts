@@ -269,6 +269,57 @@ export async function translatePDF(
   }
 }
 
+// Markdown Translation API
+export async function checkMarkdownTranslationStatus(docId: number): Promise<{
+  exists: boolean
+  path: string
+  targetLang: string
+}> {
+  const res = await fetch(`${API_BASE}/documents/${docId}/markdown-translation-status`)
+  if (!res.ok) throw new Error('Failed to check markdown translation status')
+  return res.json()
+}
+
+export async function translateMarkdown(
+  docId: number,
+  targetLang: string,
+  onEvent: (event: SSEEvent) => void
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/markdown-translate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ docId, targetLang }),
+  })
+
+  if (!res.ok) throw new Error('Failed to start markdown translation')
+
+  const reader = res.body?.getReader()
+  if (!reader) throw new Error('No response body')
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6))
+          onEvent(data)
+        } catch {
+          // Ignore parse errors
+        }
+      }
+    }
+  }
+}
+
 // Pages API - generate page images for bilingual view
 export async function generatePages(docId: number): Promise<{ id: number; total_pages: number; message: string }> {
   const res = await fetch(`${API_BASE}/documents/${docId}/generate-pages`, { method: 'POST' })
