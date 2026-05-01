@@ -1,48 +1,41 @@
 package api
 
 import (
-	"errors"
 	"llm-knowledge/db"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
-	"gorm.io/gorm"
 )
 
 type SettingsHandler struct{}
 
 func (h *SettingsHandler) GetSettings(c echo.Context) error {
+	userId := GetCurrentUserId(c)
 	var settings db.UserSettings
-	result := db.DB.First(&settings)
+	result := db.DB.Where("user_id = ?", userId).FirstOrCreate(&settings, db.UserSettings{
+		UserID:             userId,
+		Language:           "en",
+		TranslationEnabled: false,
+		TranslationApiBase: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+		TranslationModel:   "deepseek-v4-flash",
+	})
 	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			// Create default settings if not exists
-			settings = db.UserSettings{
-				Language:           "en",
-				TranslationEnabled: false,
-				TranslationApiBase: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-				TranslationModel:   "deepseek-v4-flash",
-			}
-			if err := db.DB.Create(&settings).Error; err != nil {
-				return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create default settings"})
-			}
-		} else {
-			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to get settings"})
-		}
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to get settings"})
 	}
 	return c.JSON(http.StatusOK, settings)
 }
 
 func (h *SettingsHandler) UpdateSettings(c echo.Context) error {
+	userId := GetCurrentUserId(c)
 	var settings db.UserSettings
-	result := db.DB.First(&settings)
+	result := db.DB.Where("user_id = ?", userId).FirstOrCreate(&settings, db.UserSettings{
+		UserID:             userId,
+		Language:           "en",
+		TranslationApiBase: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+		TranslationModel:   "deepseek-v4-flash",
+	})
 	if result.Error != nil {
-		// Create if not exists
-		settings = db.UserSettings{
-			Language:           "en",
-			TranslationApiBase: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-			TranslationModel:   "deepseek-v4-flash",
-		}
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to get settings"})
 	}
 
 	var input struct {
@@ -65,6 +58,7 @@ func (h *SettingsHandler) UpdateSettings(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "API key required when translation is enabled"})
 	}
 
+	settings.UserID = userId
 	settings.Language = input.Language
 	settings.TranslationEnabled = input.TranslationEnabled
 	settings.TranslationApiBase = input.TranslationApiBase
