@@ -18,7 +18,7 @@ type Document struct {
 	Metadata   string    `json:"metadata"`                    // JSON string
 	SourceURL  string          `json:"sourceUrl"`                    // Original URL for web/rss
 	SourceGUID string          `json:"sourceGuid"`                   // RSS item GUID for dedup
-	UserID     uint            `gorm:"index;not null" json:"userId"`
+	UserID     uint            `gorm:"index;not null;default:1" json:"userId"`
 	RSSFeedID  uint            `json:"rssFeedId"`                    // Associated RSS feed
 	CreatedAt  time.Time       `json:"createdAt"`
 	UpdatedAt  time.Time       `json:"updatedAt"`
@@ -42,7 +42,7 @@ type Conversation struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	Title     string    `json:"title"`
 	SessionID string    `json:"sessionId"` // Claude session ID for --resume
-	UserID    uint      `gorm:"index;not null" json:"userId"`
+	UserID    uint      `gorm:"index;not null;default:1" json:"userId"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
@@ -59,7 +59,7 @@ type ConversationMessage struct {
 
 type UserSettings struct {
 	ID                 uint      `gorm:"primaryKey" json:"id"`
-	UserID             uint      `gorm:"index;not null" json:"userId"`
+	UserID             uint      `gorm:"index;not null;default:1" json:"userId"`
 	Language           string    `gorm:"default:en" json:"language"` // 'en' or 'zh'
 	TranslationEnabled bool      `gorm:"default:false" json:"translationEnabled"`
 	TranslationApiBase string    `gorm:"default:https://dashscope.aliyuncs.com/compatible-mode/v1" json:"translationApiBase"`
@@ -71,7 +71,7 @@ type UserSettings struct {
 
 type RSSFeed struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
-	UserID     uint      `gorm:"index;not null" json:"userId"`
+	UserID     uint      `gorm:"index;not null;default:1" json:"userId"`
 	Name       string    `json:"name"`
 	URL        string    `gorm:"unique" json:"url"`
 	AutoSync   bool      `gorm:"default:false" json:"autoSync"`
@@ -81,7 +81,7 @@ type RSSFeed struct {
 
 type DocNote struct {
 	ID           uint      `gorm:"primaryKey" json:"id"`
-	UserID       uint      `gorm:"index;not null" json:"userId"`
+	UserID       uint      `gorm:"index;not null;default:1" json:"userId"`
 	DocumentID   uint      `gorm:"index" json:"documentId"`
 	Content      string    `json:"content"`
 	SourceMsgID  string    `json:"sourceMsgId"` // frontend message ID for dedup
@@ -103,7 +103,7 @@ type User struct {
 
 type Session struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
-	UserID     uint      `gorm:"index;not null" json:"userId"`
+	UserID     uint      `gorm:"index;not null;default:1" json:"userId"`
 	Token      string    `gorm:"unique;not null" json:"token"`
 	ExpiresAt  time.Time `gorm:"not null" json:"expiresAt"`
 	LastAccess time.Time `json:"lastAccess"`
