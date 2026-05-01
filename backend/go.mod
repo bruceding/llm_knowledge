@@ -4,8 +4,10 @@ go 1.25.0
 
 require (
 	github.com/PuerkitoBio/goquery v1.12.0
+	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.15.1
 	github.com/mmcdole/gofeed v1.3.0
+	github.com/mojocn/base64Captcha v1.3.8
 	github.com/sashabaranov/go-openai v1.41.2
 	golang.org/x/crypto v0.50.0
 	golang.org/x/net v0.52.0
@@ -15,6 +17,7 @@ require (
 
 require (
 	github.com/andybalholm/cascadia v1.3.3 // indirect
+	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -27,6 +30,7 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
+	golang.org/x/image v0.23.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
