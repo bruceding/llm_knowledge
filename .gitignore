@@ -7,3 +7,4 @@ llm-knowledge
 .vscode/
 logs/
 memory/
+.qwen/
