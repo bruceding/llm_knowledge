@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"io/fs"
 	"llm-knowledge/api"
@@ -13,8 +14,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -199,6 +202,16 @@ func main() {
 	e.POST("/api/doc-chat/message", docChatH.Message)
 	e.GET("/api/doc-chat/reconnect", docChatH.Reconnect)
 
+	// Doc Notes API (CRUD + wiki push)
+	docNotesH := &api.DocNoteHandler{
+		DataDir: cfg.DataDir,
+	}
+	e.GET("/api/documents/:id/notes", docNotesH.ListNotes)
+	e.POST("/api/documents/:id/notes", docNotesH.CreateNote)
+	e.PUT("/api/documents/:id/notes/:noteId", docNotesH.UpdateNote)
+	e.DELETE("/api/documents/:id/notes/:noteId", docNotesH.DeleteNote)
+	e.POST("/api/documents/:id/notes/:noteId/wiki-push", docNotesH.PushToWiki)
+
 	// RSS API
 	rssH := &api.RSSHandler{
 		DataDir:   cfg.DataDir,
@@ -250,5 +263,35 @@ func main() {
 		}
 	})
 
-	e.Logger.Fatal(e.Start(":" + cfg.Port))
+	// Graceful shutdown: listen for OS signals and clean up session pools
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start server in a goroutine
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := e.Start(":" + cfg.Port); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serverErr:
+		log.Fatalf("Server error: %v", err)
+	case sig := <-quit:
+		log.Printf("Received signal %v, shutting down gracefully...", sig)
+	}
+
+	// Give outstanding requests 10 seconds to complete
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := e.Shutdown(ctx); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
+	}
+
+	// Close all Claude session pools to kill child processes
+	querySessionPool.Close()
+	sessionPool.Close()
+
+	log.Println("Server exited cleanly")
 }

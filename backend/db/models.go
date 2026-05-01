@@ -74,3 +74,14 @@ type RSSFeed struct {
 	LastSyncAt time.Time `json:"lastSyncAt"`
 	CreatedAt  time.Time `json:"createdAt"`
 }
+
+type DocNote struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	DocumentID   uint      `gorm:"index" json:"documentId"`
+	Content      string    `json:"content"`
+	SourceMsgID  string    `json:"sourceMsgId"` // frontend message ID for dedup
+	WikiPushed   bool      `gorm:"default:false" json:"wikiPushed"`
+	WikiPushedAt time.Time `json:"wikiPushedAt,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}

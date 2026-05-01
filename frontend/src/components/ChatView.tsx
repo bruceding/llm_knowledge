@@ -426,12 +426,13 @@ export default function ChatView() {
 
     try {
       await deleteConversation(convId)
-      loadConversations()
       if (currentConversationId === convId) {
         handleNewChat()
       }
+      await loadConversations()
     } catch {
-      // Ignore errors
+      // Still try to refresh the list even if delete may have partially succeeded
+      loadConversations()
     }
   }
 

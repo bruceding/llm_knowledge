@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { createDocNote } from '../api'
 import type { ContentBlock } from '../types'
 
 // Format a tool_use content block into a human-readable description
@@ -58,6 +59,7 @@ function extractFromContentBlocks(blocks: ContentBlock[]): {
 interface DocumentChatPanelProps {
   docId: number
   active: boolean // Only connect SSE when active (chat tab is visible)
+  onNoteSaved?: () => void // Notify parent when a note is saved
 }
 
 interface ChatMessage {
@@ -71,13 +73,20 @@ interface ChatMessage {
   toolDesc?: string
 }
 
-export default function DocumentChatPanel({ docId, active }: DocumentChatPanelProps) {
+export default function DocumentChatPanel({ docId, active, onNoteSaved }: DocumentChatPanelProps) {
   const { t } = useTranslation()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sessionId, setSessionId] = useState<string>('')
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Note saving state
+  const [savedMsgIds, setSavedMsgIds] = useState<Set<string>>(new Set())
+  const [noteModalOpen, setNoteModalOpen] = useState(false)
+  const [noteModalMsg, setNoteModalMsg] = useState<ChatMessage | null>(null)
+  const [noteContent, setNoteContent] = useState('')
+  const [savingNote, setSavingNote] = useState(false)
 
   const eventSourceRef = useRef<EventSource | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -246,6 +255,30 @@ export default function DocumentChatPanel({ docId, active }: DocumentChatPanelPr
     startSSE()
   }
 
+  // Open note save modal
+  const handleOpenSaveNote = (msg: ChatMessage) => {
+    setNoteModalMsg(msg)
+    setNoteContent(msg.content)
+    setNoteModalOpen(true)
+  }
+
+  // Save note
+  const handleSaveNote = async () => {
+    if (!noteModalMsg || !noteContent.trim()) return
+    setSavingNote(true)
+    try {
+      await createDocNote(docId, noteContent.trim(), noteModalMsg.id)
+      setSavedMsgIds(prev => new Set(prev).add(noteModalMsg.id))
+      setNoteModalOpen(false)
+      setNoteModalMsg(null)
+      onNoteSaved?.()
+    } catch {
+      // Show error but don't crash
+    } finally {
+      setSavingNote(false)
+    }
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Messages area */}
@@ -259,7 +292,7 @@ export default function DocumentChatPanel({ docId, active }: DocumentChatPanelPr
         {messages.map((msg) => (
           <div key={msg.id} className={`flex gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             {msg.role === 'assistant' && (
-              <div className="w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center text-white text-xs">
+              <div className="w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center text-white text-xs shrink-0">
                 AI
               </div>
             )}
@@ -281,10 +314,35 @@ export default function DocumentChatPanel({ docId, active }: DocumentChatPanelPr
                   <span>{msg.toolDesc || t('chatView.thinking')}</span>
                 </div>
               ) : (
-                <div className="prose prose-sm prose-slate max-w-none text-xs [&_p]:my-1 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0 [&_code]:text-xs [&_pre]:my-1 [&_table]:my-1 [&_table]:border [&_table]:border-collapse [&_table]:w-full [&_table]:overflow-x-auto [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-50 [&_th]:px-2 [&_th]:py-1 [&_th]:font-medium [&_th]:text-left [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1 [&_tr:nth-child(even)_td]:bg-gray-50">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {msg.content}
-                  </ReactMarkdown>
+                <div>
+                  <div className="prose prose-sm prose-slate max-w-none text-xs [&_p]:my-1 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0 [&_code]:text-xs [&_pre]:my-1 [&_table]:my-1 [&_table]:border [&_table]:border-collapse [&_table]:w-full [&_table]:overflow-x-auto [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-50 [&_th]:px-2 [&_th]:py-1 [&_th]:font-medium [&_th]:text-left [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1 [&_tr:nth-child(even)_td]:bg-gray-50">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {msg.content}
+                    </ReactMarkdown>
+                  </div>
+                  {!msg.isStreaming && (
+                    <div className="mt-1 flex items-center gap-1">
+                      {savedMsgIds.has(msg.id) ? (
+                        <span className="text-[10px] text-green-600 flex items-center gap-0.5">
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                          Saved
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => handleOpenSaveNote(msg)}
+                          className="text-[10px] text-gray-400 hover:text-blue-500 flex items-center gap-0.5"
+                          title="Save as note"
+                        >
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                          </svg>
+                          Save
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -338,6 +396,48 @@ export default function DocumentChatPanel({ docId, active }: DocumentChatPanelPr
           </button>
         </div>
       </div>
+
+      {/* Note save modal */}
+      {noteModalOpen && noteModalMsg && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-[500px] max-w-[90vw] max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-gray-200">
+              <h3 className="text-sm font-semibold text-gray-800">Save as Note</h3>
+              <button
+                onClick={() => setNoteModalOpen(false)}
+                className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-4">
+              <p className="text-xs text-gray-500 mb-2">Edit the content before saving:</p>
+              <textarea
+                value={noteContent}
+                onChange={(e) => setNoteContent(e.target.value)}
+                className="w-full h-48 px-3 py-2 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+              />
+            </div>
+            <div className="flex justify-end gap-2 p-4 border-t border-gray-200">
+              <button
+                onClick={() => setNoteModalOpen(false)}
+                className="px-4 py-1.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveNote}
+                disabled={savingNote || !noteContent.trim()}
+                className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+              >
+                {savingNote ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

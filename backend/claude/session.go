@@ -39,6 +39,7 @@ type SessionPool struct {
 	mu        sync.RWMutex
 	dataDir   string
 	claudeBin string
+	done      chan struct{}
 }
 
 // NewSessionPool creates a new session pool
@@ -47,15 +48,32 @@ func NewSessionPool(dataDir, claudeBin string) *SessionPool {
 		sessions:  make(map[string]*InteractiveSession),
 		dataDir:   dataDir,
 		claudeBin: claudeBin,
+		done:      make(chan struct{}),
 	}
 	go p.cleanupLoop()
 	return p
 }
 
+// Close terminates all sessions and stops the cleanup loop.
+func (p *SessionPool) Close() {
+	close(p.done)
+	p.mu.Lock()
+	for sid, session := range p.sessions {
+		session.Close()
+		delete(p.sessions, sid)
+	}
+	p.mu.Unlock()
+	log.Printf("[session] SessionPool closed, all sessions terminated")
+}
+
 // cleanupLoop closes sessions after 30 seconds of no active SSE connections
 func (p *SessionPool) cleanupLoop() {
 	for {
-		time.Sleep(10 * time.Second)
+		select {
+		case <-p.done:
+			return
+		case <-time.After(10 * time.Second):
+		}
 		p.mu.Lock()
 		for sid, session := range p.sessions {
 			session.mu.Lock()
@@ -300,6 +318,13 @@ func (s *InteractiveSession) SSEDisconnect() {
 	}
 	s.mu.Unlock()
 	log.Printf("[session] SSE disconnected, count=%d", s.sseCount)
+}
+
+// SSEState returns the current SSE connection count and last disconnect time.
+func (s *InteractiveSession) SSEState() (sseCount int, lastDisconnect time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sseCount, s.lastDisconnect
 }
 
 // Events returns the event channel

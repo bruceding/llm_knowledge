@@ -172,35 +172,59 @@ func (qs *QuerySession) SSEDisconnect() {
 	qs.session.SSEDisconnect()
 }
 
+// SSEState returns the current SSE connection count and last disconnect time.
+func (qs *QuerySession) SSEState() (int, time.Time) {
+	return qs.session.SSEState()
+}
+
 // QuerySessionPool manages interactive sessions for the Query system,
-// keyed by conversation ID. Sessions expire after 90 seconds of inactivity.
+// keyed by conversation ID. Sessions expire after 30 seconds of SSE disconnect.
 type QuerySessionPool struct {
 	sessions  map[uint]*QuerySession
 	mu        sync.RWMutex
 	dataDir   string
 	claudeBin string
+	done      chan struct{}
 }
 
-// NewQuerySessionPool creates a new pool with 90s cleanup timeout.
+// NewQuerySessionPool creates a new pool with 30s SSE-disconnect cleanup timeout.
 func NewQuerySessionPool(dataDir, claudeBin string) *QuerySessionPool {
 	p := &QuerySessionPool{
 		sessions:  make(map[uint]*QuerySession),
 		dataDir:   dataDir,
 		claudeBin: claudeBin,
+		done:      make(chan struct{}),
 	}
 	go p.cleanupLoop()
 	return p
 }
 
-// cleanupLoop closes sessions after 90 seconds of inactivity.
+// Close terminates all sessions and stops the cleanup loop.
+func (p *QuerySessionPool) Close() {
+	close(p.done)
+	p.mu.Lock()
+	for convID, qs := range p.sessions {
+		qs.Close()
+		delete(p.sessions, convID)
+	}
+	p.mu.Unlock()
+	log.Printf("[query-pool] QuerySessionPool closed, all sessions terminated")
+}
+
+// cleanupLoop closes sessions after 30 seconds of no active SSE connections.
 func (p *QuerySessionPool) cleanupLoop() {
 	for {
-		time.Sleep(10 * time.Second)
+		select {
+		case <-p.done:
+			return
+		case <-time.After(10 * time.Second):
+		}
 		p.mu.Lock()
 		for convID, qs := range p.sessions {
-			lastAsk := qs.LastAsk()
-			if !lastAsk.IsZero() && lastAsk.Add(90*time.Second).Before(time.Now()) {
-				log.Printf("[query-pool] Closing session for conversation %d after 90s inactivity", convID)
+			sseCount, lastDisconnect := qs.SSEState()
+			if sseCount == 0 && !lastDisconnect.IsZero() &&
+				lastDisconnect.Add(30*time.Second).Before(time.Now()) {
+				log.Printf("[query-pool] Closing session for conversation %d after 30s SSE disconnect", convID)
 				qs.Close()
 				delete(p.sessions, convID)
 			}

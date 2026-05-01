@@ -381,3 +381,58 @@ export async function uploadImage(data: string, type: string): Promise<{ path: s
   }
   return res.json()
 }
+
+// Doc Notes API
+export interface DocNote {
+  id: number
+  documentId: number
+  content: string
+  sourceMsgId: string
+  wikiPushed: boolean
+  wikiPushedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export async function fetchDocNotes(docId: number): Promise<DocNote[]> {
+  const res = await fetch(`${API_BASE}/documents/${docId}/notes`)
+  if (!res.ok) throw new Error('Failed to fetch notes')
+  return res.json()
+}
+
+export async function createDocNote(docId: number, content: string, sourceMsgId?: string): Promise<DocNote> {
+  const res = await fetch(`${API_BASE}/documents/${docId}/notes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, sourceMsgId }),
+  })
+  if (!res.ok) {
+    const err = await res.json()
+    throw new Error(err.error || 'Failed to create note')
+  }
+  return res.json()
+}
+
+export async function updateDocNote(docId: number, noteId: number, content: string): Promise<DocNote> {
+  const res = await fetch(`${API_BASE}/documents/${docId}/notes/${noteId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  })
+  if (!res.ok) throw new Error('Failed to update note')
+  return res.json()
+}
+
+export async function deleteDocNote(docId: number, noteId: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/documents/${docId}/notes/${noteId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Failed to delete note')
+}
+
+export async function pushNoteToWiki(docId: number, noteId: number): Promise<{ message: string; wikiPath: string }> {
+  const res = await fetch(`${API_BASE}/documents/${docId}/notes/${noteId}/wiki-push`, { method: 'POST' })
+  if (!res.ok) {
+    const err = await res.json()
+    throw new Error(err.error || 'Failed to push to wiki')
+  }
+  return res.json()
+}

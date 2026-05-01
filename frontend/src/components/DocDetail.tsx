@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import 'highlight.js/styles/github.css'
 import { useTranslation } from 'react-i18next'
-import { fetchDocument, updateDocument, publishDocument, deleteDocument, regenerateSummary, getPagesStatus, fetchSettings, checkPDFTranslationStatus, translatePDF, checkMarkdownTranslationStatus, translateMarkdown } from '../api'
+import { fetchDocument, updateDocument, publishDocument, deleteDocument, regenerateSummary, getPagesStatus, fetchSettings, checkPDFTranslationStatus, translatePDF, checkMarkdownTranslationStatus, translateMarkdown, fetchDocNotes, deleteDocNote, pushNoteToWiki, type DocNote } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
 import type { Document, SSEEvent, UserSettings } from '../types'
 import PDFViewer from './PDFViewer'
@@ -60,7 +60,11 @@ export default function DocDetail() {
   const [regeneratingSummary, setRegeneratingSummary] = useState(false)
 
   // Metadata panel tab state
-  const [metadataTab, setMetadataTab] = useState<'metadata' | 'chat'>('metadata')
+  const [metadataTab, setMetadataTab] = useState<'metadata' | 'chat' | 'notes'>('metadata')
+
+  // Notes state
+  const [notes, setNotes] = useState<DocNote[]>([])
+  const [notesLoading, setNotesLoading] = useState(false)
 
   // Panel width state - responsive default based on screen size
   const [panelWidth, setPanelWidth] = useState(() => {
@@ -234,6 +238,43 @@ export default function DocDetail() {
       setError(err instanceof Error ? err.message : 'Failed to load document')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadNotes = async () => {
+    if (!document) return
+    setNotesLoading(true)
+    try {
+      const n = await fetchDocNotes(document.id)
+      setNotes(n)
+    } catch {
+      // Silently fail
+    } finally {
+      setNotesLoading(false)
+    }
+  }
+
+  const handleNoteSaved = () => {
+    loadNotes()
+  }
+
+  const handleDeleteNote = async (noteId: number) => {
+    try {
+      await deleteDocNote(document!.id, noteId)
+      setNotes(prev => prev.filter(n => n.id !== noteId))
+    } catch {
+      // Silently fail
+    }
+  }
+
+  const handlePushToWiki = async (noteId: number) => {
+    try {
+      await pushNoteToWiki(document!.id, noteId)
+      setNotes(prev => prev.map(n =>
+        n.id === noteId ? { ...n, wikiPushed: true, wikiPushedAt: new Date().toISOString() } : n
+      ))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to push to wiki')
     }
   }
 
@@ -673,6 +714,19 @@ export default function DocDetail() {
             {t('docDetail.chatTab')}
           </button>
           <button
+            onClick={() => {
+              setMetadataTab('notes')
+              loadNotes()
+            }}
+            className={`flex-1 px-3 py-1.5 text-xs font-medium ${
+              metadataTab === 'notes'
+                ? 'text-blue-600 border-b-2 border-blue-600'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            Notes
+          </button>
+          <button
             onClick={() => setPanelHidden(true)}
             className="p-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded"
             title="Hide panel"
@@ -815,7 +869,57 @@ export default function DocDetail() {
 
         {/* Chat tab content - CSS hidden/show */}
         <div className={`flex-1 overflow-hidden ${metadataTab === 'chat' ? '' : 'hidden'}`}>
-          <DocumentChatPanel docId={document.id} active={metadataTab === 'chat'} />
+          <DocumentChatPanel docId={document.id} active={metadataTab === 'chat'} onNoteSaved={handleNoteSaved} />
+        </div>
+
+        {/* Notes tab content - CSS hidden/show */}
+        <div className={`flex-1 overflow-auto ${metadataTab === 'notes' ? '' : 'hidden'}`}>
+          <div className="p-2 space-y-2">
+            {notesLoading && (
+              <div className="text-center text-gray-400 text-xs py-8">
+                <div className="animate-spin inline-block w-4 h-4 border border-gray-300 border-t-blue-500 rounded-full"></div>
+              </div>
+            )}
+            {!notesLoading && notes.length === 0 && (
+              <div className="text-center text-gray-400 text-xs py-8">
+                No notes saved yet. Save notes from the chat tab.
+              </div>
+            )}
+            {notes.map((note) => (
+              <div key={note.id} className="bg-white border border-gray-200 rounded p-2 space-y-1">
+                <div className="prose prose-sm prose-slate max-w-none text-xs [&_p]:my-1 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0 [&_code]:text-xs [&_pre]:my-1 [&_pre]:bg-gray-800 [&_pre]:text-gray-100 [&_pre]:rounded [&_pre]:p-2 [&_blockquote]:border-l-3 [&_blockquote]:border-blue-400 [&_blockquote]:pl-3 [&_blockquote]:text-gray-600 [&_strong]:text-gray-900 [&_a]:text-blue-500 [&_a]:underline">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {note.content}
+                  </ReactMarkdown>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="text-[10px] text-gray-400">
+                    {new Date(note.createdAt).toLocaleDateString(i18n.language === 'zh' ? 'zh-CN' : 'en-US')}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {note.wikiPushed ? (
+                      <span className="text-[10px] text-green-600">In Wiki</span>
+                    ) : (
+                      <button
+                        onClick={() => handlePushToWiki(note.id)}
+                        className="text-[10px] text-blue-500 hover:text-blue-700"
+                      >
+                        → Wiki
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleDeleteNote(note.id)}
+                      className="text-[10px] text-gray-400 hover:text-red-500"
+                    >
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* Action buttons - only show in metadata tab */}
