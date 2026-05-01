@@ -275,7 +275,10 @@ type ChangePasswordRequest struct {
 
 func (h *AuthHandler) ChangePassword(c echo.Context) error {
 	// Get user ID from context (set by auth middleware)
-	userId := c.Get("userId").(uint)
+	userId := GetCurrentUserId(c)
+	if userId == 0 {
+		return c.JSON(401, echo.Map{"error": "未登录"})
+	}
 
 	var req ChangePasswordRequest
 	if err := c.Bind(&req); err != nil {
