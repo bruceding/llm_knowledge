@@ -51,3 +51,53 @@ func (h *AuthHandler) GetCaptcha(c echo.Context) error {
 		"captchaImage": b64s,
 	})
 }
+
+func validatePassword(password string) error {
+	if len(password) < 6 || len(password) > 32 {
+		return errors.New("密码长度必须在6-32字符之间")
+	}
+
+	hasLetter := false
+	hasDigit := false
+	for _, c := range password {
+		if unicode.IsLetter(c) {
+			hasLetter = true
+		}
+		if unicode.IsDigit(c) {
+			hasDigit = true
+		}
+	}
+
+	if !hasLetter {
+		return errors.New("密码必须包含至少一个字母")
+	}
+	if !hasDigit {
+		return errors.New("密码必须包含至少一个数字")
+	}
+
+	return nil
+}
+
+func validateUsername(username string) error {
+	if len(username) < 3 || len(username) > 20 {
+		return errors.New("用户名长度需在3-20字符之间")
+	}
+	return nil
+}
+
+func verifyCaptcha(key string, answer string) bool {
+	var captcha db.Captcha
+	result := db.DB.Where("key = ? AND expires_at > ?", key, time.Now()).First(&captcha)
+	if result.Error != nil {
+		return false
+	}
+
+	if captcha.Answer != strings.ToLower(answer) {
+		return false
+	}
+
+	// Delete captcha after successful verification (prevent reuse)
+	db.DB.Delete(&captcha)
+
+	return true
+}
