@@ -18,6 +18,7 @@ type Document struct {
 	Metadata   string    `json:"metadata"`                    // JSON string
 	SourceURL  string          `json:"sourceUrl"`                    // Original URL for web/rss
 	SourceGUID string          `json:"sourceGuid"`                   // RSS item GUID for dedup
+	UserID     uint            `gorm:"index;not null" json:"userId"`
 	RSSFeedID  uint            `json:"rssFeedId"`                    // Associated RSS feed
 	CreatedAt  time.Time       `json:"createdAt"`
 	UpdatedAt  time.Time       `json:"updatedAt"`
@@ -41,6 +42,7 @@ type Conversation struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	Title     string    `json:"title"`
 	SessionID string    `json:"sessionId"` // Claude session ID for --resume
+	UserID    uint      `gorm:"index;not null" json:"userId"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
@@ -57,6 +59,7 @@ type ConversationMessage struct {
 
 type UserSettings struct {
 	ID                 uint      `gorm:"primaryKey" json:"id"`
+	UserID             uint      `gorm:"index;not null" json:"userId"`
 	Language           string    `gorm:"default:en" json:"language"` // 'en' or 'zh'
 	TranslationEnabled bool      `gorm:"default:false" json:"translationEnabled"`
 	TranslationApiBase string    `gorm:"default:https://dashscope.aliyuncs.com/compatible-mode/v1" json:"translationApiBase"`
@@ -68,6 +71,7 @@ type UserSettings struct {
 
 type RSSFeed struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
+	UserID     uint      `gorm:"index;not null" json:"userId"`
 	Name       string    `json:"name"`
 	URL        string    `gorm:"unique" json:"url"`
 	AutoSync   bool      `gorm:"default:false" json:"autoSync"`
@@ -77,6 +81,7 @@ type RSSFeed struct {
 
 type DocNote struct {
 	ID           uint      `gorm:"primaryKey" json:"id"`
+	UserID       uint      `gorm:"index;not null" json:"userId"`
 	DocumentID   uint      `gorm:"index" json:"documentId"`
 	Content      string    `json:"content"`
 	SourceMsgID  string    `json:"sourceMsgId"` // frontend message ID for dedup
@@ -84,4 +89,31 @@ type DocNote struct {
 	WikiPushedAt time.Time `json:"wikiPushedAt,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
+type User struct {
+	ID                uint      `gorm:"primaryKey" json:"id"`
+	Username          string    `gorm:"unique;not null" json:"username"`
+	PasswordHash      string    `gorm:"not null" json:"-"`
+	Email             string    `gorm:"unique;not null" json:"email"`
+	MustChangePassword bool     `gorm:"default:false" json:"mustChangePassword"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+}
+
+type Session struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	UserID     uint      `gorm:"index;not null" json:"userId"`
+	Token      string    `gorm:"unique;not null" json:"token"`
+	ExpiresAt  time.Time `gorm:"not null" json:"expiresAt"`
+	LastAccess time.Time `json:"lastAccess"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
+
+type Captcha struct {
+	ID        uint      `gorm:"primaryKey"`
+	Key       string    `gorm:"unique;not null"`
+	Answer    string    `gorm:"not null"`
+	ExpiresAt time.Time `gorm:"not null"`
+	CreatedAt time.Time
 }

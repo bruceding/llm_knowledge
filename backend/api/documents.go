@@ -26,8 +26,9 @@ type DocHandler struct {
 
 // ListInbox returns all documents with status "inbox"
 func (h *DocHandler) ListInbox(c echo.Context) error {
+	userId := GetCurrentUserId(c)
 	var docs []db.Document
-	result := db.DB.Where("status = ?", "inbox").Order("created_at desc").Find(&docs)
+	result := db.DB.Where("status = ? AND user_id = ?", "inbox", userId).Order("created_at desc").Find(&docs)
 	if result.Error != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": result.Error.Error()})
 	}
@@ -37,10 +38,11 @@ func (h *DocHandler) ListInbox(c echo.Context) error {
 // GetDoc returns a single document by ID with its tags
 func (h *DocHandler) GetDoc(c echo.Context) error {
 	id := c.Param("id")
+	userId := GetCurrentUserId(c)
 	var doc db.Document
-	result := db.DB.Preload("Tags").First(&doc, id)
+	result := db.DB.Preload("Tags").Where("id = ? AND user_id = ?", id, userId).First(&doc)
 	if result.Error != nil {
-		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "文档不存在或无权访问"})
 	}
 	return c.JSON(http.StatusOK, doc)
 }
@@ -55,12 +57,13 @@ type UpdateDocRequest struct {
 // UpdateDoc updates a document's title, status, and tags
 func (h *DocHandler) UpdateDoc(c echo.Context) error {
 	id := c.Param("id")
+	userId := GetCurrentUserId(c)
 
-	// Check if document exists
+	// Check if document exists and belongs to user
 	var doc db.Document
-	result := db.DB.First(&doc, id)
+	result := db.DB.Where("id = ? AND user_id = ?", id, userId).First(&doc)
 	if result.Error != nil {
-		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "文档不存在或无权访问"})
 	}
 
 	// Parse request body
@@ -140,12 +143,13 @@ func (h *DocHandler) UpdateDoc(c echo.Context) error {
 // Publish sets a document's status to "published" and triggers wiki ingest
 func (h *DocHandler) Publish(c echo.Context) error {
 	id := c.Param("id")
+	userId := GetCurrentUserId(c)
 
-	// Check if document exists
+	// Check if document exists and belongs to user
 	var doc db.Document
-	result := db.DB.First(&doc, id)
+	result := db.DB.Where("id = ? AND user_id = ?", id, userId).First(&doc)
 	if result.Error != nil {
-		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "文档不存在或无权访问"})
 	}
 
 	// Update status to published
@@ -191,12 +195,13 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid document id"})
 	}
+	userId := GetCurrentUserId(c)
 
-	// Check if document exists
+	// Check if document exists and belongs to user
 	var doc db.Document
-	result := db.DB.First(&doc, id)
+	result := db.DB.Where("id = ? AND user_id = ?", id, userId).First(&doc)
 	if result.Error != nil {
-		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "文档不存在或无权访问"})
 	}
 
 	// Delete associated raw files if RawPath is set
@@ -251,11 +256,12 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 // ReExtract re-extracts text from a PDF document and overwrites the raw markdown file
 func (h *DocHandler) ReExtract(c echo.Context) error {
 	id := c.Param("id")
+	userId := GetCurrentUserId(c)
 
 	var doc db.Document
-	result := db.DB.First(&doc, id)
+	result := db.DB.Where("id = ? AND user_id = ?", id, userId).First(&doc)
 	if result.Error != nil {
-		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "文档不存在或无权访问"})
 	}
 
 	if doc.SourceType != "pdf" {
@@ -287,11 +293,12 @@ func (h *DocHandler) ReExtract(c echo.Context) error {
 // LLMExtract extracts PDF to markdown using Claude CLI with vision capabilities
 func (h *DocHandler) LLMExtract(c echo.Context) error {
 	id := c.Param("id")
+	userId := GetCurrentUserId(c)
 
 	var doc db.Document
-	result := db.DB.First(&doc, id)
+	result := db.DB.Where("id = ? AND user_id = ?", id, userId).First(&doc)
 	if result.Error != nil {
-		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "文档不存在或无权访问"})
 	}
 
 	if doc.SourceType != "pdf" {
@@ -409,11 +416,12 @@ func (h *DocHandler) LLMExtract(c echo.Context) error {
 // HTMLExtract converts PDF to HTML using pdftohtml, preserving original layout
 func (h *DocHandler) HTMLExtract(c echo.Context) error {
 	id := c.Param("id")
+	userId := GetCurrentUserId(c)
 
 	var doc db.Document
-	result := db.DB.First(&doc, id)
+	result := db.DB.Where("id = ? AND user_id = ?", id, userId).First(&doc)
 	if result.Error != nil {
-		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "文档不存在或无权访问"})
 	}
 
 	if doc.SourceType != "pdf" {
@@ -460,10 +468,11 @@ func (h *DocHandler) HTMLExtract(c echo.Context) error {
 
 // ListAll returns all documents (optionally filtered by status)
 func (h *DocHandler) ListAll(c echo.Context) error {
+	userId := GetCurrentUserId(c)
 	status := c.QueryParam("status")
 	var docs []db.Document
 
-	query := db.DB.Preload("Tags")
+	query := db.DB.Preload("Tags").Where("user_id = ?", userId)
 	if status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -483,6 +492,7 @@ func (h *DocHandler) RegenerateSummary(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid document id"})
 	}
+	userId := GetCurrentUserId(c)
 
 	// Get Claude bin path from environment or default
 	claudeBin := os.Getenv("CLAUDE_BIN")
@@ -490,11 +500,11 @@ func (h *DocHandler) RegenerateSummary(c echo.Context) error {
 		claudeBin = "claude"
 	}
 
-	// Check if document exists
+	// Check if document exists and belongs to user
 	var doc db.Document
-	result := db.DB.First(&doc, idUint)
+	result := db.DB.Where("id = ? AND user_id = ?", idUint, userId).First(&doc)
 	if result.Error != nil {
-		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "文档不存在或无权访问"})
 	}
 
 	if doc.RawPath == "" {

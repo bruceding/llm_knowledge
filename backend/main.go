@@ -71,6 +71,26 @@ func main() {
 		return c.JSON(200, map[string]string{"status": "ok"})
 	})
 
+	// Auth API (public routes - no middleware)
+	authH := &api.AuthHandler{}
+	e.GET("/api/auth/captcha", authH.GetCaptcha)
+	e.POST("/api/auth/register", authH.Register)
+	e.POST("/api/auth/login", authH.Login)
+	e.GET("/api/auth/status", authH.Status)
+
+	// Dependencies API (public routes - for setup/initial checks)
+	depsH := &api.DependenciesHandler{}
+	e.GET("/api/dependencies/status", depsH.GetStatus)
+	e.POST("/api/dependencies/check", depsH.Check)
+
+	// Protected routes (require auth)
+	apiGroup := e.Group("/api")
+	apiGroup.Use(api.AuthMiddleware)
+
+	// Auth routes requiring authentication
+	apiGroup.POST("/auth/logout", authH.Logout)
+	apiGroup.PUT("/auth/password", authH.ChangePassword)
+
 	// Serve data directory files (wiki, raw, etc.)
 	e.GET("/data/*", func(c echo.Context) error {
 		// Remove /data prefix and serve from cfg.DataDir
@@ -101,126 +121,121 @@ func main() {
 		return c.File(absFullPath)
 	})
 
-	// Raw file storage API
+	// Raw file storage API (protected)
 	rawH := &api.RawHandler{
 		DataDir:   cfg.DataDir,
 		ClaudeBin: cfg.ClaudeBin,
 	}
-	e.POST("/api/raw/pdf", rawH.UploadPDF, middleware.BodyLimit("50M"))
-	e.POST("/api/raw/pdf-url", rawH.UploadPDFFromURL)
+	apiGroup.POST("/raw/pdf", rawH.UploadPDF, middleware.BodyLimit("50M"))
+	apiGroup.POST("/raw/pdf-url", rawH.UploadPDFFromURL)
 
-	// Web clipping API
+	// Web clipping API (protected)
 	webH := &api.WebHandler{
 		DataDir:   cfg.DataDir,
 		ClaudeBin: cfg.ClaudeBin,
 	}
-	e.POST("/api/raw/web", webH.UploadWeb)
+	apiGroup.POST("/raw/web", webH.UploadWeb)
 
-	// Document CRUD API
+	// Document CRUD API (protected)
 	docH := &api.DocHandler{
 		DataDir:   cfg.DataDir,
 		ClaudeBin: cfg.ClaudeBin,
 	}
-	e.GET("/api/documents/inbox", docH.ListInbox)
-	e.GET("/api/documents", docH.ListAll)
-	e.GET("/api/documents/:id", docH.GetDoc)
-	e.PUT("/api/documents/:id", docH.UpdateDoc)
-	e.POST("/api/documents/:id/publish", docH.Publish)
-	e.POST("/api/documents/:id/re-extract", docH.ReExtract)
-	e.POST("/api/documents/:id/llm-extract", docH.LLMExtract)
-	e.POST("/api/documents/:id/html-extract", docH.HTMLExtract)
-	e.POST("/api/documents/:id/regenerate-summary", docH.RegenerateSummary)
-	e.DELETE("/api/documents/:id", docH.DeleteDoc)
+	apiGroup.GET("/documents/inbox", docH.ListInbox)
+	apiGroup.GET("/documents", docH.ListAll)
+	apiGroup.GET("/documents/:id", docH.GetDoc)
+	apiGroup.PUT("/documents/:id", docH.UpdateDoc)
+	apiGroup.POST("/documents/:id/publish", docH.Publish)
+	apiGroup.POST("/documents/:id/re-extract", docH.ReExtract)
+	apiGroup.POST("/documents/:id/llm-extract", docH.LLMExtract)
+	apiGroup.POST("/documents/:id/html-extract", docH.HTMLExtract)
+	apiGroup.POST("/documents/:id/regenerate-summary", docH.RegenerateSummary)
+	apiGroup.DELETE("/documents/:id", docH.DeleteDoc)
 
-	// Pages API (page image generation for bilingual view)
+	// Pages API (page image generation for bilingual view) (protected)
 	pagesH := &api.PagesHandler{
 		DataDir: cfg.DataDir,
 	}
-	e.POST("/api/documents/:id/generate-pages", pagesH.GeneratePages)
-	e.GET("/api/documents/:id/pages-status", pagesH.CheckPages)
+	apiGroup.POST("/documents/:id/generate-pages", pagesH.GeneratePages)
+	apiGroup.GET("/documents/:id/pages-status", pagesH.CheckPages)
 
-	// Query API (SSE streaming with session pool)
+	// Query API (SSE streaming with session pool) (protected)
 	querySessionPool := claude.NewQuerySessionPool(cfg.DataDir, cfg.ClaudeBin)
 	queryH := &api.QueryHandler{
 		DataDir:   cfg.DataDir,
 		ClaudeBin: cfg.ClaudeBin,
 		Pool:      querySessionPool,
 	}
-	e.POST("/api/query/conversation", queryH.CreateConversation)
-	e.GET("/api/query/stream", queryH.Stream)
-	e.POST("/api/query/message", queryH.Message)
-	e.POST("/api/query/interrupt", queryH.Interrupt)
-	e.GET("/api/conversations", queryH.ListConversations)
-	e.GET("/api/conversations/:id/messages", queryH.GetConversationMessages)
-	e.DELETE("/api/conversations/:id", queryH.DeleteConversation)
+	apiGroup.POST("/query/conversation", queryH.CreateConversation)
+	apiGroup.GET("/query/stream", queryH.Stream)
+	apiGroup.POST("/query/message", queryH.Message)
+	apiGroup.POST("/query/interrupt", queryH.Interrupt)
+	apiGroup.GET("/conversations", queryH.ListConversations)
+	apiGroup.GET("/conversations/:id/messages", queryH.GetConversationMessages)
+	apiGroup.DELETE("/conversations/:id", queryH.DeleteConversation)
 
-	// Translate API (SSE streaming)
+	// Translate API (SSE streaming) (protected)
 	translateH := &api.TranslateHandler{
 		DataDir:   cfg.DataDir,
 		ClaudeBin: cfg.ClaudeBin,
 	}
-	e.POST("/api/translate", translateH.Translate)
+	apiGroup.POST("/translate", translateH.Translate)
 
-	// Settings API
+	// Settings API (protected)
 	settingsH := &api.SettingsHandler{}
-	e.GET("/api/settings", settingsH.GetSettings)
-	e.PUT("/api/settings", settingsH.UpdateSettings)
+	apiGroup.GET("/settings", settingsH.GetSettings)
+	apiGroup.PUT("/settings", settingsH.UpdateSettings)
 
-	// Dependencies API
-	depsH := &api.DependenciesHandler{}
-	e.GET("/api/dependencies/status", depsH.GetStatus)
-	e.POST("/api/dependencies/check", depsH.Check)
-
-	// PDF Translation API
+	// PDF Translation API (protected)
 	pdfTranslateH := &api.PDFTranslateHandler{
 		DataDir:       cfg.DataDir,
 		PDF2ZhVenvDir: cfg.PDF2ZhVenvDir,
 	}
-	e.GET("/api/documents/:id/translation-status", pdfTranslateH.CheckTranslationStatus)
-	e.POST("/api/pdf-translate", pdfTranslateH.TranslatePDF)
+	apiGroup.GET("/documents/:id/translation-status", pdfTranslateH.CheckTranslationStatus)
+	apiGroup.POST("/pdf-translate", pdfTranslateH.TranslatePDF)
 
-	// Markdown Translation API (SSE streaming)
+	// Markdown Translation API (SSE streaming) (protected)
 	markdownTranslateH := &api.MarkdownTranslateHandler{
 		DataDir: cfg.DataDir,
 	}
-	e.POST("/api/markdown-translate", markdownTranslateH.TranslateMarkdown)
-	e.GET("/api/documents/:id/markdown-translation-status", markdownTranslateH.CheckMarkdownTranslationStatus)
+	apiGroup.POST("/markdown-translate", markdownTranslateH.TranslateMarkdown)
+	apiGroup.GET("/documents/:id/markdown-translation-status", markdownTranslateH.CheckMarkdownTranslationStatus)
 
-	// Image Upload API
+	// Image Upload API (protected)
 	imagesH := &api.ImagesHandler{
 		DataDir: cfg.DataDir,
 	}
-	e.POST("/api/images/upload", imagesH.Upload, middleware.BodyLimit("15M"))
+	apiGroup.POST("/images/upload", imagesH.Upload, middleware.BodyLimit("15M"))
 
-	// Document Chat API (SSE streaming with session pool)
+	// Document Chat API (SSE streaming with session pool) (protected)
 	sessionPool := claude.NewSessionPool(cfg.DataDir, cfg.ClaudeBin)
 	docChatH := &api.DocChatHandler{
 		Pool:    sessionPool,
 		DataDir: cfg.DataDir,
 	}
-	e.GET("/api/doc-chat/stream", docChatH.Stream)
-	e.POST("/api/doc-chat/message", docChatH.Message)
-	e.GET("/api/doc-chat/reconnect", docChatH.Reconnect)
+	apiGroup.GET("/doc-chat/stream", docChatH.Stream)
+	apiGroup.POST("/doc-chat/message", docChatH.Message)
+	apiGroup.GET("/doc-chat/reconnect", docChatH.Reconnect)
 
-	// Doc Notes API (CRUD + wiki push)
+	// Doc Notes API (CRUD + wiki push) (protected)
 	docNotesH := &api.DocNoteHandler{
 		DataDir: cfg.DataDir,
 	}
-	e.GET("/api/documents/:id/notes", docNotesH.ListNotes)
-	e.POST("/api/documents/:id/notes", docNotesH.CreateNote)
-	e.PUT("/api/documents/:id/notes/:noteId", docNotesH.UpdateNote)
-	e.DELETE("/api/documents/:id/notes/:noteId", docNotesH.DeleteNote)
-	e.POST("/api/documents/:id/notes/:noteId/wiki-push", docNotesH.PushToWiki)
+	apiGroup.GET("/documents/:id/notes", docNotesH.ListNotes)
+	apiGroup.POST("/documents/:id/notes", docNotesH.CreateNote)
+	apiGroup.PUT("/documents/:id/notes/:noteId", docNotesH.UpdateNote)
+	apiGroup.DELETE("/documents/:id/notes/:noteId", docNotesH.DeleteNote)
+	apiGroup.POST("/documents/:id/notes/:noteId/wiki-push", docNotesH.PushToWiki)
 
-	// RSS API
+	// RSS API (protected)
 	rssH := &api.RSSHandler{
 		DataDir:   cfg.DataDir,
 		ClaudeBin: cfg.ClaudeBin,
 	}
-	e.POST("/api/rss/feeds", rssH.AddFeed)
-	e.GET("/api/rss/feeds", rssH.ListFeeds)
-	e.DELETE("/api/rss/feeds/:id", rssH.DeleteFeed)
-	e.POST("/api/rss/feeds/:id/sync", rssH.SyncFeed)
+	apiGroup.POST("/rss/feeds", rssH.AddFeed)
+	apiGroup.GET("/rss/feeds", rssH.ListFeeds)
+	apiGroup.DELETE("/rss/feeds/:id", rssH.DeleteFeed)
+	apiGroup.POST("/rss/feeds/:id/sync", rssH.SyncFeed)
 
 	// Start RSS auto-sync scheduler
 	rssH.StartAutoSyncScheduler()
@@ -292,6 +307,9 @@ func main() {
 	// Close all Claude session pools to kill child processes
 	querySessionPool.Close()
 	sessionPool.Close()
+
+	// Close database connection (cleanup sessions)
+	db.Close()
 
 	log.Println("Server exited cleanly")
 }

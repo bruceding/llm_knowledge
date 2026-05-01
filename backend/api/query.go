@@ -32,6 +32,8 @@ type CreateConversationRequest struct {
 // CreateConversation creates a new conversation and returns its ID
 // POST /api/query/conversation
 func (h *QueryHandler) CreateConversation(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
 	var req CreateConversationRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid request body"})
@@ -44,6 +46,7 @@ func (h *QueryHandler) CreateConversation(c echo.Context) error {
 
 	conv := db.Conversation{
 		Title:     truncate(title, 100),
+		UserID:    userId,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -68,6 +71,8 @@ type QueryMessageRequest struct {
 // Message sends a user message to the session and saves it to DB
 // POST /api/query/message
 func (h *QueryHandler) Message(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
 	var req QueryMessageRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid request body"})
@@ -81,9 +86,9 @@ func (h *QueryHandler) Message(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "conversationId is required"})
 	}
 
-	// Get conversation
+	// Get conversation and verify ownership
 	var conv db.Conversation
-	if err := db.DB.First(&conv, req.ConversationID).Error; err != nil {
+	if err := db.DB.Where("id = ? AND user_id = ?", req.ConversationID, userId).First(&conv).Error; err != nil {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
 	}
 
@@ -188,6 +193,8 @@ func (h *QueryHandler) Message(c echo.Context) error {
 // Stream handles SSE streaming for query chat - continuous connection
 // GET /api/query/stream?conversationId=xxx
 func (h *QueryHandler) Stream(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
 	convIDStr := c.QueryParam("conversationId")
 	if convIDStr == "" {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "conversationId is required"})
@@ -196,6 +203,12 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 	convID := parseUint(convIDStr)
 	if convID == 0 {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid conversationId"})
+	}
+
+	// Verify conversation ownership
+	var conv db.Conversation
+	if err := db.DB.Where("id = ? AND user_id = ?", convID, userId).First(&conv).Error; err != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
 	}
 
 	// Set SSE headers first
@@ -288,6 +301,8 @@ type InterruptRequest struct {
 // Interrupt sends an interrupt signal to stop the current turn
 // POST /api/query/interrupt
 func (h *QueryHandler) Interrupt(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
 	var req InterruptRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid request body"})
@@ -295,6 +310,12 @@ func (h *QueryHandler) Interrupt(c echo.Context) error {
 
 	if req.ConversationID == 0 {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "conversationId is required"})
+	}
+
+	// Verify conversation ownership
+	var conv db.Conversation
+	if err := db.DB.Where("id = ? AND user_id = ?", req.ConversationID, userId).First(&conv).Error; err != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
 	}
 
 	// Get session
@@ -314,8 +335,10 @@ func (h *QueryHandler) Interrupt(c echo.Context) error {
 // ListConversations returns all conversations ordered by most recent first
 // GET /api/conversations
 func (h *QueryHandler) ListConversations(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
 	var conversations []db.Conversation
-	if err := db.DB.Order("updated_at DESC").Find(&conversations).Error; err != nil {
+	if err := db.DB.Where("user_id = ?", userId).Order("updated_at DESC").Find(&conversations).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to list conversations"})
 	}
 	return c.JSON(http.StatusOK, conversations)
@@ -324,7 +347,15 @@ func (h *QueryHandler) ListConversations(c echo.Context) error {
 // GetConversationMessages returns all messages for a specific conversation
 // GET /api/conversations/:id/messages
 func (h *QueryHandler) GetConversationMessages(c echo.Context) error {
+	userId := GetCurrentUserId(c)
 	id := c.Param("id")
+
+	// Verify conversation ownership
+	var conv db.Conversation
+	if err := db.DB.Where("id = ? AND user_id = ?", id, userId).First(&conv).Error; err != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
+	}
+
 	var messages []db.ConversationMessage
 	if err := db.DB.Where("conversation_id = ?", id).Order("created_at ASC").Find(&messages).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to get messages"})
@@ -335,10 +366,17 @@ func (h *QueryHandler) GetConversationMessages(c echo.Context) error {
 // DeleteConversation deletes a conversation and its messages
 // DELETE /api/conversations/:id
 func (h *QueryHandler) DeleteConversation(c echo.Context) error {
+	userId := GetCurrentUserId(c)
 	id := c.Param("id")
 	convID := parseUint(id)
 	if convID == 0 {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid conversation id"})
+	}
+
+	// Verify conversation ownership
+	var conv db.Conversation
+	if err := db.DB.Where("id = ? AND user_id = ?", convID, userId).First(&conv).Error; err != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
 	}
 
 	// Remove session from pool if exists

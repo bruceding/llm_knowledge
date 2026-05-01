@@ -47,6 +47,11 @@ var allowedImageTypes = map[string]struct {
 // Upload handles image upload from base64 data
 // POST /api/images/upload
 func (h *ImagesHandler) Upload(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+	if userId == 0 {
+		return c.JSON(http.StatusUnauthorized, echo.Map{"error": "未登录"})
+	}
+
 	var req ImageUploadRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid request body"})

@@ -1,4 +1,4 @@
-import type { Document, UpdateDocRequest, SSEEvent, UserSettings, Conversation, Message } from './types'
+import type { Document, UpdateDocRequest, SSEEvent, UserSettings, Conversation, Message, LoginResponse, RegisterResponse, CaptchaResponse } from './types'
 
 const API_BASE = '/api'
 
@@ -435,4 +435,87 @@ export async function pushNoteToWiki(docId: number, noteId: number): Promise<{ m
     throw new Error(err.error || 'Failed to push to wiki')
   }
   return res.json()
+}
+
+// Auth helper
+export function getAuthHeaders(): HeadersInit {
+  const token = localStorage.getItem('token')
+  const headers: HeadersInit = { 'Content-Type': 'application/json' }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  return headers
+}
+
+// Auth API
+export async function getCaptcha(): Promise<CaptchaResponse> {
+  const res = await fetch(`${API_BASE}/auth/captcha`)
+  if (!res.ok) throw new Error('Failed to get captcha')
+  return res.json()
+}
+
+export async function register(
+  username: string,
+  password: string,
+  email: string,
+  captchaKey: string,
+  captchaAnswer: string
+): Promise<RegisterResponse> {
+  const res = await fetch(`${API_BASE}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, email, captchaKey, captchaAnswer }),
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Registration failed')
+  return data
+}
+
+export async function login(
+  username: string,
+  password: string,
+  captchaKey: string,
+  captchaAnswer: string
+): Promise<LoginResponse> {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, captchaKey, captchaAnswer }),
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Login failed')
+  return data
+}
+
+export async function logout(): Promise<void> {
+  const token = localStorage.getItem('token')
+  const res = await fetch(`${API_BASE}/auth/logout`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error('Logout failed')
+}
+
+export async function checkAuthStatus(): Promise<{ loggedIn: boolean; userId?: number; username?: string }> {
+  const token = localStorage.getItem('token')
+  if (!token) return { loggedIn: false }
+
+  const res = await fetch(`${API_BASE}/auth/status`, {
+    headers: { 'Authorization': `Bearer ${token}` },
+  })
+  return res.json()
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const token = localStorage.getItem('token')
+  const res = await fetch(`${API_BASE}/auth/password`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ currentPassword, newPassword }),
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Password change failed')
 }

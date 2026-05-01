@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, useLocation, Outlet } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import Sidebar from './components/Sidebar'
 import Inbox from './components/Inbox'
@@ -10,6 +10,10 @@ import ChatView from './components/ChatView'
 import ImportView from './components/ImportView'
 import TagsView from './components/TagsView'
 import SettingsPage from './components/SettingsPage'
+import LoginPage from './components/LoginPage'
+import RegisterPage from './components/RegisterPage'
+import ChangePasswordPage from './components/ChangePasswordPage'
+import PrivateRoute from './components/PrivateRoute'
 import { fetchSettings } from './api'
 
 // Layout component that decides whether to show sidebar
@@ -23,16 +27,7 @@ function Layout() {
     <div className="flex h-screen bg-white">
       {!hideSidebar && <Sidebar />}
       <main className="flex-1 overflow-auto">
-        <Routes>
-          <Route path="/" element={<Inbox />} />
-          <Route path="/documents" element={<DocumentsList />} />
-          <Route path="/documents/:id" element={<DocDetail />} />
-          <Route path="/wiki/*" element={<WikiView />} />
-          <Route path="/chat/:id?" element={<ChatView />} />
-          <Route path="/import" element={<ImportView />} />
-          <Route path="/tags" element={<TagsView />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
+        <Outlet />
       </main>
     </div>
   )
@@ -49,7 +44,24 @@ function App() {
 
   return (
     <BrowserRouter>
-      <Layout />
+      <Routes>
+        {/* Public routes */}
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route path="/change-password" element={<ChangePasswordPage />} />
+
+        {/* Protected routes */}
+        <Route element={<PrivateRoute><Layout /></PrivateRoute>}>
+          <Route path="/" element={<Inbox />} />
+          <Route path="/documents" element={<DocumentsList />} />
+          <Route path="/documents/:id" element={<DocDetail />} />
+          <Route path="/wiki/*" element={<WikiView />} />
+          <Route path="/chat/:id?" element={<ChatView />} />
+          <Route path="/import" element={<ImportView />} />
+          <Route path="/tags" element={<TagsView />} />
+          <Route path="/settings" element={<SettingsPage />} />
+        </Route>
+      </Routes>
     </BrowserRouter>
   )
 }

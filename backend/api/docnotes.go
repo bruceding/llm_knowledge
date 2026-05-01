@@ -27,17 +27,32 @@ type UpdateNoteRequest struct {
 }
 
 func (h *DocNoteHandler) ListNotes(c echo.Context) error {
+	userId := GetCurrentUserId(c)
 	docID := c.Param("id")
+
+	// Verify document ownership
+	var doc db.Document
+	if err := db.DB.Where("id = ? AND user_id = ?", docID, userId).First(&doc).Error; err != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
+	}
+
 	var notes []db.DocNote
 	db.DB.Where("document_id = ?", docID).Order("created_at desc").Find(&notes)
 	return c.JSON(http.StatusOK, notes)
 }
 
 func (h *DocNoteHandler) CreateNote(c echo.Context) error {
+	userId := GetCurrentUserId(c)
 	docID := c.Param("id")
 	docIDUint, err := strconv.ParseUint(docID, 10, 64)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid document id"})
+	}
+
+	// Verify document ownership
+	var doc db.Document
+	if err := db.DB.Where("id = ? AND user_id = ?", docIDUint, userId).First(&doc).Error; err != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
 	}
 
 	var req CreateNoteRequest
@@ -57,6 +72,7 @@ func (h *DocNoteHandler) CreateNote(c echo.Context) error {
 	}
 
 	note := db.DocNote{
+		UserID:      userId,
 		DocumentID:  uint(docIDUint),
 		Content:     req.Content,
 		SourceMsgID: req.SourceMsgID,
@@ -68,9 +84,11 @@ func (h *DocNoteHandler) CreateNote(c echo.Context) error {
 }
 
 func (h *DocNoteHandler) UpdateNote(c echo.Context) error {
+	userId := GetCurrentUserId(c)
 	noteID := c.Param("noteId")
+
 	var note db.DocNote
-	if err := db.DB.First(&note, noteID).Error; err != nil {
+	if err := db.DB.Where("id = ? AND user_id = ?", noteID, userId).First(&note).Error; err != nil {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "note not found"})
 	}
 
@@ -91,17 +109,25 @@ func (h *DocNoteHandler) UpdateNote(c echo.Context) error {
 }
 
 func (h *DocNoteHandler) DeleteNote(c echo.Context) error {
+	userId := GetCurrentUserId(c)
 	noteID := c.Param("noteId")
-	if err := db.DB.Delete(&db.DocNote{}, noteID).Error; err != nil {
+
+	result := db.DB.Where("id = ? AND user_id = ?", noteID, userId).Delete(&db.DocNote{})
+	if result.Error != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to delete note"})
+	}
+	if result.RowsAffected == 0 {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "note not found"})
 	}
 	return c.JSON(http.StatusOK, echo.Map{"message": "note deleted"})
 }
 
 func (h *DocNoteHandler) PushToWiki(c echo.Context) error {
+	userId := GetCurrentUserId(c)
 	noteID := c.Param("noteId")
+
 	var note db.DocNote
-	if err := db.DB.First(&note, noteID).Error; err != nil {
+	if err := db.DB.Where("id = ? AND user_id = ?", noteID, userId).First(&note).Error; err != nil {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "note not found"})
 	}
 

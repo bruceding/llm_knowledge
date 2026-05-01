@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { fetchInbox, fetchDocuments } from '../api'
+import { fetchInbox, fetchDocuments, logout } from '../api'
+import { useAuthStore } from '../store/authStore'
 
 export default function Sidebar() {
   const { t } = useTranslation()
   const location = useLocation()
   const navigate = useNavigate()
+  const username = useAuthStore((s) => s.username)
+  const clearAuth = useAuthStore((s) => s.clearAuth)
   const [searchQuery, setSearchQuery] = useState('')
   const [inboxCount, setInboxCount] = useState(0)
   const [archivedCount, setArchivedCount] = useState(0)
@@ -15,6 +18,14 @@ export default function Sidebar() {
     wiki: true,
     conversations: true,
   })
+
+  async function handleLogout() {
+    try {
+      await logout()
+    } catch (e) {}
+    clearAuth()
+    navigate('/login')
+  }
 
   useEffect(() => {
     // Fetch inbox and archived count on mount and when location changes
@@ -303,6 +314,19 @@ export default function Sidebar() {
         <div className="flex items-center gap-2">
           <span className="w-2 h-2 bg-green-500 rounded-full"></span>
           <span>{t('sidebar.connected')}</span>
+        </div>
+      </div>
+
+      {/* User info and logout */}
+      <div className="mt-auto p-4 border-t border-gray-200">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-gray-600">{username}</span>
+          <button
+            onClick={handleLogout}
+            className="text-sm text-blue-600 hover:underline"
+          >
+            登出
+          </button>
         </div>
       </div>
     </aside>

@@ -34,6 +34,8 @@ type AddRSSFeedRequest struct {
 }
 
 func (h *RSSHandler) AddFeed(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
 	var req AddRSSFeedRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(400, echo.Map{"error": "invalid request"})
@@ -96,6 +98,7 @@ func (h *RSSHandler) AddFeed(c echo.Context) error {
 		Name:      feedName,
 		URL:       feedURL,
 		AutoSync:  req.AutoSync,
+		UserID:    userId,
 		CreatedAt: time.Now(),
 	}
 
@@ -107,8 +110,10 @@ func (h *RSSHandler) AddFeed(c echo.Context) error {
 }
 
 func (h *RSSHandler) ListFeeds(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
 	var feeds []db.RSSFeed
-	result := db.DB.Order("created_at desc").Find(&feeds)
+	result := db.DB.Where("user_id = ?", userId).Order("created_at desc").Find(&feeds)
 	if result.Error != nil {
 		return c.JSON(500, echo.Map{"error": result.Error.Error()})
 	}
@@ -132,11 +137,12 @@ func (h *RSSHandler) ListFeeds(c echo.Context) error {
 }
 
 func (h *RSSHandler) DeleteFeed(c echo.Context) error {
+	userId := GetCurrentUserId(c)
 	id := c.Param("id")
 
-	// Get feed to determine directory path
+	// Get feed to determine directory path, check ownership
 	var feed db.RSSFeed
-	if err := db.DB.First(&feed, id).Error; err != nil {
+	if err := db.DB.Where("id = ? AND user_id = ?", id, userId).First(&feed).Error; err != nil {
 		return c.JSON(404, echo.Map{"error": "feed not found"})
 	}
 
@@ -170,10 +176,11 @@ func (h *RSSHandler) DeleteFeed(c echo.Context) error {
 }
 
 func (h *RSSHandler) SyncFeed(c echo.Context) error {
+	userId := GetCurrentUserId(c)
 	id := c.Param("id")
 
 	var feed db.RSSFeed
-	if err := db.DB.First(&feed, id).Error; err != nil {
+	if err := db.DB.Where("id = ? AND user_id = ?", id, userId).First(&feed).Error; err != nil {
 		return c.JSON(404, echo.Map{"error": "feed not found"})
 	}
 
