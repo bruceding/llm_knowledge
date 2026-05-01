@@ -110,3 +110,31 @@ export interface UserSettings {
   createdAt: string
   updatedAt: string
 }
+
+// Auth types
+export interface AuthState {
+  isLoggedIn: boolean
+  userId: number | null
+  username: string | null
+  mustChangePassword: boolean
+  token: string | null
+}
+
+export interface LoginResponse {
+  success: boolean
+  token: string
+  userId: number
+  username: string
+  mustChangePassword: boolean
+  message?: string
+}
+
+export interface RegisterResponse {
+  success: boolean
+  userId: number
+}
+
+export interface CaptchaResponse {
+  captchaKey: string
+  captchaImage: string
+}
