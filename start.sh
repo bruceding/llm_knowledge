@@ -19,6 +19,35 @@ if ! command -v npm &> /dev/null; then
     exit 1
 fi
 
+# 检查 pdftotext 是否安装（PDF 文本提取工具）
+if ! command -v pdftotext &> /dev/null; then
+    echo "pdftotext 未安装，正在安装..."
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        if command -v brew &> /dev/null; then
+            brew install poppler
+        else
+            echo "错误: Homebrew 未安装，请先安装 Homebrew 或手动安装 poppler"
+            exit 1
+        fi
+    elif [[ "$OSTYPE" == "linux"* ]]; then
+        # Linux
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y poppler-utils
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y poppler-utils
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y poppler-utils
+        else
+            echo "错误: 无法识别的包管理器，请手动安装 poppler-utils"
+            exit 1
+        fi
+    else
+        echo "错误: 无法识别的系统类型，请手动安装 poppler-utils"
+        exit 1
+    fi
+fi
+
 # 检查前端依赖是否安装
 if [ ! -d "frontend/node_modules" ]; then
     echo "安装前端依赖..."
