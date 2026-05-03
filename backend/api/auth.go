@@ -19,13 +19,17 @@ type AuthHandler struct{}
 
 // GetCaptcha generates and returns a new captcha
 func (h *AuthHandler) GetCaptcha(c echo.Context) error {
-	// Configure captcha driver - simple and clear digits only
-	driver := base64Captcha.NewDriverDigit(
-		50,    // height
-		120,   // width
-		0,     // maxSkew - no distortion
-		0.0,   // dotCount - no noise dots (float64)
-		4,     // captcha length
+	// Configure captcha driver - large clear digits with white background
+	driver := base64Captcha.NewDriverString(
+		80,          // height
+		200,         // width
+		0,           // noiseCount - no noise
+		0,           // showLineOptions - no lines
+		4,           // captcha length
+		"0123456789", // source - digits only
+		nil,         // bgColor (nil = white)
+		nil,         // fontsStorage (nil = default embedded fonts)
+		nil,         // fonts (nil = default fonts)
 	)
 	store := base64Captcha.DefaultMemStore
 	captcha := base64Captcha.NewCaptcha(driver, store)
@@ -39,7 +43,7 @@ func (h *AuthHandler) GetCaptcha(c echo.Context) error {
 	// Store captcha in database
 	captchaRecord := db.Captcha{
 		Key:       idKey,
-		Answer:    answer, // digits only, case insensitive
+		Answer:    answer,
 		ExpiresAt: time.Now().Add(5 * time.Minute),
 	}
 	db.DB.Create(&captchaRecord)

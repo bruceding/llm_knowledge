@@ -2,22 +2,32 @@ import type { Document, UpdateDocRequest, SSEEvent, UserSettings, Conversation, 
 
 const API_BASE = '/api'
 
+// Auth helper - get headers with authorization token
+function getHeaders(): HeadersInit {
+  const token = localStorage.getItem('token')
+  const headers: HeadersInit = { 'Content-Type': 'application/json' }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  return headers
+}
+
 // Document API
 export async function fetchInbox(): Promise<Document[]> {
-  const res = await fetch(`${API_BASE}/documents/inbox`)
+  const res = await fetch(`${API_BASE}/documents/inbox`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch inbox')
   return res.json()
 }
 
 export async function fetchDocuments(status?: string): Promise<Document[]> {
   const url = status ? `${API_BASE}/documents?status=${status}` : `${API_BASE}/documents`
-  const res = await fetch(url)
+  const res = await fetch(url, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch documents')
   return res.json()
 }
 
 export async function fetchDocument(id: number): Promise<Document> {
-  const res = await fetch(`${API_BASE}/documents/${id}`)
+  const res = await fetch(`${API_BASE}/documents/${id}`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch document')
   return res.json()
 }
@@ -25,7 +35,7 @@ export async function fetchDocument(id: number): Promise<Document> {
 export async function updateDocument(id: number, data: UpdateDocRequest): Promise<Document> {
   const res = await fetch(`${API_BASE}/documents/${id}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error('Failed to update document')
@@ -33,28 +43,34 @@ export async function updateDocument(id: number, data: UpdateDocRequest): Promis
 }
 
 export async function publishDocument(id: number): Promise<{ id: number; status: string }> {
-  const res = await fetch(`${API_BASE}/documents/${id}/publish`, { method: 'POST' })
+  const res = await fetch(`${API_BASE}/documents/${id}/publish`, { method: 'POST', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to publish document')
   return res.json()
 }
 
 export async function deleteDocument(id: number): Promise<{ id: number; message: string }> {
-  const res = await fetch(`${API_BASE}/documents/${id}`, { method: 'DELETE' })
+  const res = await fetch(`${API_BASE}/documents/${id}`, { method: 'DELETE', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to delete document')
   return res.json()
 }
 
 export async function regenerateSummary(id: number): Promise<{ summary: string }> {
-  const res = await fetch(`${API_BASE}/documents/${id}/regenerate-summary`, { method: 'POST' })
+  const res = await fetch(`${API_BASE}/documents/${id}/regenerate-summary`, { method: 'POST', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to regenerate summary')
   return res.json()
 }
 
 export async function uploadPDF(file: File): Promise<{ id: number; path: string; message: string; pages: number }> {
+  const token = localStorage.getItem('token')
   const formData = new FormData()
   formData.append('file', file)
+  const headers: HeadersInit = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
   const res = await fetch(`${API_BASE}/raw/pdf`, {
     method: 'POST',
+    headers,
     body: formData,
   })
   if (!res.ok) {
@@ -67,7 +83,7 @@ export async function uploadPDF(file: File): Promise<{ id: number; path: string;
 export async function uploadPDFUrl(url: string): Promise<{ id: number; path: string; message: string; pages: number }> {
   const res = await fetch(`${API_BASE}/raw/pdf-url`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ url }),
   })
   if (!res.ok) {
@@ -80,7 +96,7 @@ export async function uploadPDFUrl(url: string): Promise<{ id: number; path: str
 export async function clipWeb(url: string): Promise<{ id: number; title: string; path: string; images: number; message: string }> {
   const res = await fetch(`${API_BASE}/raw/web`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ url }),
   })
   if (!res.ok) {
@@ -94,7 +110,7 @@ export async function clipWeb(url: string): Promise<{ id: number; title: string;
 export async function addRSSFeed(name: string, url: string, autoSync: boolean): Promise<RSSFeed> {
   const res = await fetch(`${API_BASE}/rss/feeds`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ name, url, autoSync }),
   })
   const data = await res.json()
@@ -103,16 +119,16 @@ export async function addRSSFeed(name: string, url: string, autoSync: boolean): 
 }
 
 export async function listRSSFeeds(): Promise<RSSFeed[]> {
-  const res = await fetch(`${API_BASE}/rss/feeds`)
+  const res = await fetch(`${API_BASE}/rss/feeds`, { headers: getHeaders() })
   return res.json()
 }
 
 export async function deleteRSSFeed(id: number): Promise<void> {
-  await fetch(`${API_BASE}/rss/feeds/${id}`, { method: 'DELETE' })
+  await fetch(`${API_BASE}/rss/feeds/${id}`, { method: 'DELETE', headers: getHeaders() })
 }
 
 export async function syncRSSFeed(id: number): Promise<{ newArticles: number }> {
-  const res = await fetch(`${API_BASE}/rss/feeds/${id}/sync`, { method: 'POST' })
+  const res = await fetch(`${API_BASE}/rss/feeds/${id}/sync`, { method: 'POST', headers: getHeaders() })
   return res.json()
 }
 
@@ -126,7 +142,7 @@ interface RSSFeed {
   articleCount: number
 }
 
-// Wiki API - content fetched from /data/wiki/ path
+// Wiki API - content fetched from /data/wiki/ path (no auth needed for static files)
 export async function fetchWikiContent(path: string): Promise<string> {
   const res = await fetch(`/data/wiki/${path}.md`)
   if (!res.ok) throw new Error('Failed to fetch wiki content')
@@ -135,13 +151,13 @@ export async function fetchWikiContent(path: string): Promise<string> {
 
 // Conversation API
 export async function fetchConversations(): Promise<Conversation[]> {
-  const res = await fetch(`${API_BASE}/conversations`)
+  const res = await fetch(`${API_BASE}/conversations`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch conversations')
   return res.json()
 }
 
 export async function fetchConversationMessages(conversationId: number): Promise<Message[]> {
-  const res = await fetch(`${API_BASE}/conversations/${conversationId}/messages`)
+  const res = await fetch(`${API_BASE}/conversations/${conversationId}/messages`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch conversation messages')
   return res.json()
 }
@@ -152,7 +168,7 @@ export async function fetchConversationMessages(conversationId: number): Promise
 export async function createConversation(title?: string, docId?: number): Promise<{ conversationId: number; title: string }> {
   const res = await fetch(`${API_BASE}/query/conversation`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ title, docId }),
   })
   if (!res.ok) throw new Error('Failed to create conversation')
@@ -168,7 +184,7 @@ export async function sendQueryMessage(
 ): Promise<{ status: string; messageId: number; sessionId: string }> {
   const res = await fetch(`${API_BASE}/query/message`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ conversationId, message, images, docId }),
   })
   if (!res.ok) throw new Error('Failed to send message')
@@ -179,7 +195,7 @@ export async function sendQueryMessage(
 export async function interruptQuery(conversationId: number): Promise<{ status: string }> {
   const res = await fetch(`${API_BASE}/query/interrupt`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ conversationId }),
   })
   if (!res.ok) throw new Error('Failed to interrupt')
@@ -190,6 +206,7 @@ export async function interruptQuery(conversationId: number): Promise<{ status: 
 export async function deleteConversation(conversationId: number): Promise<{ status: string; conversationId: number }> {
   const res = await fetch(`${API_BASE}/conversations/${conversationId}`, {
     method: 'DELETE',
+    headers: getHeaders(),
   })
   if (!res.ok) throw new Error('Failed to delete conversation')
   return res.json()
@@ -203,7 +220,7 @@ export async function translateDocument(
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/translate`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ docId, targetLang }),
   })
 
@@ -238,7 +255,7 @@ export async function translateDocument(
 
 // Settings API
 export async function fetchSettings(): Promise<UserSettings> {
-  const res = await fetch(`${API_BASE}/settings`)
+  const res = await fetch(`${API_BASE}/settings`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch settings')
   return res.json()
 }
@@ -246,7 +263,7 @@ export async function fetchSettings(): Promise<UserSettings> {
 export async function updateSettings(settings: Partial<UserSettings>): Promise<UserSettings> {
   const res = await fetch(`${API_BASE}/settings`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify(settings),
   })
   if (!res.ok) throw new Error('Failed to update settings')
@@ -259,7 +276,7 @@ export async function checkPDFTranslationStatus(docId: number): Promise<{
   path?: string
   targetLang?: string
 }> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/translation-status`)
+  const res = await fetch(`${API_BASE}/documents/${docId}/translation-status`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to check translation status')
   return res.json()
 }
@@ -271,7 +288,7 @@ export async function translatePDF(
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/pdf-translate`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ docId, targetLang }),
   })
 
@@ -310,7 +327,7 @@ export async function checkMarkdownTranslationStatus(docId: number): Promise<{
   path: string
   targetLang: string
 }> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/markdown-translation-status`)
+  const res = await fetch(`${API_BASE}/documents/${docId}/markdown-translation-status`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to check markdown translation status')
   return res.json()
 }
@@ -322,7 +339,7 @@ export async function translateMarkdown(
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/markdown-translate`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ docId, targetLang }),
   })
 
@@ -357,13 +374,13 @@ export async function translateMarkdown(
 
 // Pages API - generate page images for bilingual view
 export async function generatePages(docId: number): Promise<{ id: number; total_pages: number; message: string }> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/generate-pages`, { method: 'POST' })
+  const res = await fetch(`${API_BASE}/documents/${docId}/generate-pages`, { method: 'POST', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to generate page images')
   return res.json()
 }
 
 export async function getPagesStatus(docId: number): Promise<{ exists: boolean; page_count: number }> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/pages-status`)
+  const res = await fetch(`${API_BASE}/documents/${docId}/pages-status`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to get pages status')
   return res.json()
 }
@@ -372,7 +389,7 @@ export async function getPagesStatus(docId: number): Promise<{ exists: boolean; 
 export async function uploadImage(data: string, type: string): Promise<{ path: string; filename: string }> {
   const res = await fetch(`${API_BASE}/images/upload`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ data, type }),
   })
   if (!res.ok) {
@@ -395,7 +412,7 @@ export interface DocNote {
 }
 
 export async function fetchDocNotes(docId: number): Promise<DocNote[]> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/notes`)
+  const res = await fetch(`${API_BASE}/documents/${docId}/notes`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch notes')
   return res.json()
 }
@@ -403,7 +420,7 @@ export async function fetchDocNotes(docId: number): Promise<DocNote[]> {
 export async function createDocNote(docId: number, content: string, sourceMsgId?: string): Promise<DocNote> {
   const res = await fetch(`${API_BASE}/documents/${docId}/notes`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ content, sourceMsgId }),
   })
   if (!res.ok) {
@@ -416,7 +433,7 @@ export async function createDocNote(docId: number, content: string, sourceMsgId?
 export async function updateDocNote(docId: number, noteId: number, content: string): Promise<DocNote> {
   const res = await fetch(`${API_BASE}/documents/${docId}/notes/${noteId}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ content }),
   })
   if (!res.ok) throw new Error('Failed to update note')
@@ -424,12 +441,12 @@ export async function updateDocNote(docId: number, noteId: number, content: stri
 }
 
 export async function deleteDocNote(docId: number, noteId: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/notes/${noteId}`, { method: 'DELETE' })
+  const res = await fetch(`${API_BASE}/documents/${docId}/notes/${noteId}`, { method: 'DELETE', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to delete note')
 }
 
 export async function pushNoteToWiki(docId: number, noteId: number): Promise<{ message: string; wikiPath: string }> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/notes/${noteId}/wiki-push`, { method: 'POST' })
+  const res = await fetch(`${API_BASE}/documents/${docId}/notes/${noteId}/wiki-push`, { method: 'POST', headers: getHeaders() })
   if (!res.ok) {
     const err = await res.json()
     throw new Error(err.error || 'Failed to push to wiki')
@@ -437,17 +454,12 @@ export async function pushNoteToWiki(docId: number, noteId: number): Promise<{ m
   return res.json()
 }
 
-// Auth helper
+// Auth helper (for external use)
 export function getAuthHeaders(): HeadersInit {
-  const token = localStorage.getItem('token')
-  const headers: HeadersInit = { 'Content-Type': 'application/json' }
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
-  return headers
+  return getHeaders()
 }
 
-// Auth API
+// Auth API (public routes - no token needed)
 export async function getCaptcha(): Promise<CaptchaResponse> {
   const res = await fetch(`${API_BASE}/auth/captcha`)
   if (!res.ok) throw new Error('Failed to get captcha')
@@ -488,10 +500,9 @@ export async function login(
 }
 
 export async function logout(): Promise<void> {
-  const token = localStorage.getItem('token')
   const res = await fetch(`${API_BASE}/auth/logout`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}` },
+    headers: getHeaders(),
   })
   if (!res.ok) throw new Error('Logout failed')
 }
@@ -507,13 +518,9 @@ export async function checkAuthStatus(): Promise<{ loggedIn: boolean; userId?: n
 }
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
-  const token = localStorage.getItem('token')
   const res = await fetch(`${API_BASE}/auth/password`, {
     method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
+    headers: getHeaders(),
     body: JSON.stringify({ currentPassword, newPassword }),
   })
   const data = await res.json()
