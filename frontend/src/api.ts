@@ -74,8 +74,13 @@ export async function uploadPDF(file: File): Promise<{ id: number; path: string;
     body: formData,
   })
   if (!res.ok) {
-    const err = await res.json()
-    throw new Error(err.error || 'Failed to upload PDF')
+    const text = await res.text()
+    try {
+      const err = JSON.parse(text)
+      throw new Error(err.error || 'Failed to upload PDF')
+    } catch {
+      throw new Error('Failed to upload PDF: ' + res.status)
+    }
   }
   return res.json()
 }
@@ -87,8 +92,13 @@ export async function uploadPDFUrl(url: string): Promise<{ id: number; path: str
     body: JSON.stringify({ url }),
   })
   if (!res.ok) {
-    const err = await res.json()
-    throw new Error(err.error || 'Failed to upload PDF from URL')
+    const text = await res.text()
+    try {
+      const err = JSON.parse(text)
+      throw new Error(err.error || 'Failed to upload PDF from URL')
+    } catch {
+      throw new Error('Failed to upload PDF from URL: ' + res.status)
+    }
   }
   return res.json()
 }
