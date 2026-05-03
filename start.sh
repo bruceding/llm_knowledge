@@ -80,4 +80,8 @@ fi
 mkdir -p logs
 
 echo "启动 LLM Knowledge 服务 (端口: $PORT)..."
+
+# 确保 PATH 包含常用路径（claude 在 /usr/local/bin）
+export PATH="/usr/local/bin:/usr/local/go/bin:$PATH"
+
 ./llm-knowledge -port "$PORT" > logs/llm-knowledge.log 2>&1 & 

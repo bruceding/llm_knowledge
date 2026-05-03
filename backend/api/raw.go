@@ -79,7 +79,10 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 	rawRelPath := filepath.Join("raw", "papers", name)
 	mdRelPath := filepath.Join("raw", "papers", name, "paper.md")
 
+	userId := GetCurrentUserId(c)
+
 	doc := db.Document{
+		UserID:     userId,
 		Title:      name,
 		SourceType: "pdf",
 		RawPath:    rawRelPath,
@@ -198,7 +201,10 @@ func (h *RawHandler) UploadPDFFromURL(c echo.Context) error {
 	rawRelPath := filepath.Join("raw", "papers", name)
 	mdRelPath := filepath.Join("raw", "papers", name, "paper.md")
 
+	userId := GetCurrentUserId(c)
+
 	doc := db.Document{
+		UserID:     userId,
 		Title:      name,
 		SourceType: "pdf",
 		RawPath:    rawRelPath,
