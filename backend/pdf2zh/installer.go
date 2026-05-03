@@ -40,23 +40,7 @@ func addInstallLog(msg string) {
 	log.Printf("[pdf2zh] %s", msg)
 }
 
-// findPython312 locates a Python 3.12 binary for creating the venv.
-// pdf2zh requires Python >= 3.12 (PEP 695 type parameter syntax).
-func findPython312() string {
-	candidates := []string{
-		"python3.12",
-		"/usr/local/opt/python@3.12/bin/python3.12",
-		"/opt/homebrew/opt/python@3.12/bin/python3.12",
-	}
-	for _, p := range candidates {
-		if _, err := exec.LookPath(p); err == nil {
-			return p
-		}
-	}
-	return ""
-}
-
-// CheckAndInstall checks if pdf2zh is installed, and installs asynchronously if not
+// installPDF2Zh performs the actual installation
 func CheckAndInstall(venvDir string) {
 	// Check if venv exists and pdf2zh is installed
 	venvExists := false
@@ -92,16 +76,18 @@ func CheckAndInstall(venvDir string) {
 func installPDF2Zh(venvDir string) {
 	addInstallLog("Starting pdf2zh installation...")
 
-	// Step 1: Find Python 3.12 and create venv
-	pythonBin := findPython312()
-	if pythonBin == "" {
-		addInstallLog("Python 3.12 is required but not found. Install it via: brew install python@3.12")
+	// Step 1: Check Python 3.12 availability (start.sh should have verified this)
+	pythonBin := "python3.12"
+	if _, err := exec.LookPath(pythonBin); err != nil {
+		addInstallLog("Python 3.12 not found. Run start.sh to check dependencies, or install manually.")
 		installStatusMux.Lock()
 		installStatus = "failed"
 		installStatusMux.Unlock()
 		return
 	}
-	addInstallLog(fmt.Sprintf("Creating Python virtual environment at %s (using %s)", venvDir, pythonBin))
+
+	// Create venv
+	addInstallLog(fmt.Sprintf("Creating Python virtual environment at %s", venvDir))
 	cmd := exec.Command(pythonBin, "-m", "venv", venvDir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -113,20 +99,7 @@ func installPDF2Zh(venvDir string) {
 	}
 	addInstallLog("Virtual environment created successfully")
 
-	// Step 2: Install qpdf dependency (needed for pikepdf)
-	addInstallLog("Installing qpdf dependency...")
-	cmd = exec.Command("brew", "install", "qpdf")
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		// brew install might fail if already installed, that's ok
-		if !strings.Contains(string(output), "already installed") {
-			addInstallLog(fmt.Sprintf("Warning: qpdf install: %v", err))
-		}
-	} else {
-		addInstallLog("qpdf installed successfully")
-	}
-
-	// Step 3: Install pdf2zh in venv
+	// Step 2: Install pdf2zh in venv (qpdf dependency handled by start.sh)
 	addInstallLog("Installing pdf2zh package...")
 	installCmd := fmt.Sprintf("source '%s/bin/activate' && pip install pdf2zh", venvDir)
 	cmd = exec.Command("bash", "-c", installCmd)

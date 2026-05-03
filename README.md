@@ -22,7 +22,8 @@ LLM Knowledge is a personal knowledge base that helps you collect, understand, a
 - **Go** 1.25+
 - **Node.js & npm** (for building frontend)
 - **[Claude CLI](https://docs.anthropic.com/en/docs/claude-code/overview)** — available in PATH
-- **pdf2zh** (optional) — for PDF translation feature
+- **Python 3.12** (optional) — for PDF translation via pdf2zh (PEP 695 syntax required)
+- **qpdf** (optional) — pdf2zh dependency for pikepdf
 
 ## Quick Start
 
@@ -31,10 +32,22 @@ LLM Knowledge is a personal knowledge base that helps you collect, understand, a
 git clone https://github.com/bruceding/llm_knowledge.git
 cd llm_knowledge
 ./start.sh
+```
+
+The `start.sh` script automatically:
+- Checks and installs **pdftotext** (poppler) for PDF text extraction
+- Checks **Python 3.12** availability (prints warning if missing, PDF translation disabled)
+- Checks and installs **qpdf** for pdf2zh dependency
+- Builds backend and frontend
+- Starts the server on port 9999
+
+```bash
+# Custom port
+PORT=8080 ./start.sh
 
 # Or build and run manually
 make build
-./llm-knowledge          # default port 3456
+./llm-knowledge -port 8080
 
 # Development mode with hot reload
 make dev                 # backend :3456, frontend :5173
