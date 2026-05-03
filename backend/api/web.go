@@ -393,7 +393,9 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 
 	// Create Document record
 	rawRelPath := filepath.Join("raw", "web", title)
+	userId := GetCurrentUserId(c)
 	docRecord := db.Document{
+		UserID:     userId,
 		Title:      title,
 		SourceType: "web",
 		RawPath:    rawRelPath,
