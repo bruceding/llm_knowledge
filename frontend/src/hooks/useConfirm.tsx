@@ -36,7 +36,7 @@ export function useConfirm() {
     setState({ open: false, options: null, resolver: null })
   }, [])
 
-  const dialog = state.options ? (
+  const dialog = state.options && state.open ? (
     <ConfirmDialog
       open={state.open}
       title={state.options.title}
