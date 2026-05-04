@@ -188,14 +188,16 @@ func (h *PDFTranslateHandler) TranslatePDF(c echo.Context) error {
 
 	sendSSEEvent(c, "progress", echo.Map{"message": "Translation started..."})
 
-	// Read stdout for progress
+	// Read stdout for progress (filter out noisy internal messages)
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			line := scanner.Text()
 			log.Printf("[pdf2zh stdout] %s", line)
-			// Parse progress from output
-			sendSSEEvent(c, "progress", echo.Map{"message": line})
+			msg := filterPDF2ZhOutput(line)
+			if msg != "" {
+				sendSSEEvent(c, "progress", echo.Map{"message": msg})
+			}
 		}
 	}()
 
@@ -262,6 +264,68 @@ func (h *PDFTranslateHandler) TranslatePDF(c echo.Context) error {
 	})
 
 	return nil
+}
+
+// filterPDF2ZhOutput filters noisy pdf2zh output (font downloads, internal paths, etc.)
+// and returns a user-friendly message, or empty string to suppress.
+func filterPDF2ZhOutput(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return ""
+	}
+
+	// Suppress font download messages (e.g., "Downloading ts/SourceHanSerifCN-Regular.ttf")
+	if strings.Contains(strings.ToLower(trimmed), "downloading") &&
+		(strings.HasSuffix(trimmed, ".ttf") || strings.HasSuffix(trimmed, ".otf") ||
+			strings.HasSuffix(trimmed, ".woff") || strings.HasSuffix(trimmed, ".woff2")) {
+		return "Loading fonts..."
+	}
+
+	// Suppress generic font file paths
+	if strings.HasSuffix(trimmed, ".ttf") || strings.HasSuffix(trimmed, ".otf") ||
+		strings.HasSuffix(trimmed, ".woff") || strings.HasSuffix(trimmed, ".woff2") {
+		return ""
+	}
+
+	// Suppress temp file / cache paths
+	if strings.HasPrefix(trimmed, "/tmp/") || strings.HasPrefix(trimmed, "/root/.cache") ||
+		strings.Contains(trimmed, "__MACOSX") || strings.Contains(trimmed, ".DS_Store") {
+		return ""
+	}
+
+	// Suppress progress bar artifacts (lines with lots of \r or spinner chars)
+	if strings.Contains(trimmed, "\r") {
+		return ""
+	}
+
+	// Suppress pure numbers or percentages (progress bar fragments)
+	if strings.Trim(trimmed, " 0123456789.%") == "" {
+		return ""
+	}
+
+	// Map common pdf2zh messages to friendlier text
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(lower, "converting") || strings.Contains(lower, "converting pdf") {
+		return "正在转换 PDF..."
+	}
+	if strings.Contains(lower, "translating") || strings.Contains(lower, "translate") {
+		return "正在翻译..."
+	}
+	if strings.Contains(lower, "extracting") {
+		return "正在提取内容..."
+	}
+	if strings.Contains(lower, "downloading") {
+		return "正在下载资源..."
+	}
+	if strings.Contains(lower, "processing page") || strings.Contains(lower, "page") {
+		return trimmed
+	}
+
+	// Default: show the message if it looks meaningful
+	if len(trimmed) > 3 && !strings.HasPrefix(trimmed, "[") {
+		return trimmed
+	}
+	return ""
 }
 
 func sendSSEEvent(c echo.Context, eventType string, data echo.Map) {
