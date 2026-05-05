@@ -146,9 +146,9 @@ func (h *RSSHandler) DeleteFeed(c echo.Context) error {
 		return c.JSON(404, echo.Map{"error": "feed not found"})
 	}
 
-	// Find all inbox documents for this feed
+	// Find all inbox documents for this feed AND this user
 	var inboxDocs []db.Document
-	if err := db.DB.Where("rss_feed_id = ? AND status = ?", id, "inbox").Find(&inboxDocs).Error; err != nil {
+	if err := db.DB.Where("rss_feed_id = ? AND user_id = ? AND status = ?", id, userId, "inbox").Find(&inboxDocs).Error; err != nil {
 		return c.JSON(500, echo.Map{"error": err.Error()})
 	}
 
@@ -161,7 +161,7 @@ func (h *RSSHandler) DeleteFeed(c echo.Context) error {
 	}
 
 	// Delete inbox documents from database
-	result := db.DB.Where("rss_feed_id = ? AND status = ?", id, "inbox").Delete(&db.Document{})
+	result := db.DB.Where("rss_feed_id = ? AND user_id = ? AND status = ?", id, userId, "inbox").Delete(&db.Document{})
 	if result.Error != nil {
 		return c.JSON(500, echo.Map{"error": result.Error.Error()})
 	}
@@ -246,8 +246,9 @@ func (h *RSSHandler) syncFeedInternal(feed *db.RSSFeed) SyncResult {
 
 		// Check dedup including soft-deleted records to prevent re-fetching deleted articles
 		// Match both normalized URL and original URL (legacy records may have fragment)
+		// Must scope by user_id so different users can subscribe to the same feed
 		var existingDoc db.Document
-		if db.DB.Unscoped().Where("source_url = ? OR source_url = ? OR (source_guid != '' AND source_guid = ?)", normalizedURL, item.Link, guid).First(&existingDoc).Error == nil {
+		if db.DB.Unscoped().Where("(source_url = ? OR source_url = ? OR (source_guid != '' AND source_guid = ?)) AND user_id = ?", normalizedURL, item.Link, guid, feed.UserID).First(&existingDoc).Error == nil {
 			continue
 		}
 
