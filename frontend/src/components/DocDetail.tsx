@@ -306,12 +306,12 @@ export default function DocDetail() {
     setIsResizing(true)
   }
 
-  const handleSave = async () => {
+  const handleSave = async (overrideStatus?: string) => {
     if (!document) return
     try {
       const updated = await updateDocument(document.id, {
         title: editTitle,
-        status: editStatus,
+        status: overrideStatus ?? editStatus,
         tagNames: editTags,
       })
       setDocument(updated)
@@ -928,7 +928,7 @@ export default function DocDetail() {
             <div className="text-xs text-red-600 mb-1">{error}</div>
           )}
           <button
-            onClick={handleSave}
+            onClick={() => handleSave()}
             className="w-full px-3 py-1.5 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
           >
             {t('docDetail.saveChanges')}
@@ -944,10 +944,7 @@ export default function DocDetail() {
           )}
           {document.status !== 'archived' && (
             <button
-              onClick={() => {
-                setEditStatus('archived')
-                handleSave()
-              }}
+              onClick={() => handleSave('archived')}
               className="w-full px-3 py-1.5 text-sm bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors"
             >
               {t('docDetail.archive')}
