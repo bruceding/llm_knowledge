@@ -28,8 +28,9 @@ type Document struct {
 
 type Tag struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
-	Name      string    `gorm:"unique" json:"name"`
+	Name      string    `gorm:"uniqueIndex:idx_name_user" json:"name"`
 	Color     string    `json:"color"`
+	UserID    uint      `gorm:"uniqueIndex:idx_name_user;index;not null;default:1" json:"userId"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 

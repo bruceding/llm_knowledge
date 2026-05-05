@@ -71,6 +71,32 @@ func Init(path string) error {
 		}
 	}
 
+	// Migrate existing tags to have user_id: assign each tag to the user who owns the document
+	if DB.Migrator().HasColumn(&Tag{}, "UserID") {
+		var orphanTags []Tag
+		DB.Where("user_id IS NULL OR user_id = 0").Find(&orphanTags)
+		for _, tag := range orphanTags {
+			// Find the owner via document_tags → documents
+			var docID uint
+			DB.Table("document_tags").Where("tag_id = ?", tag.ID).Select("document_id").Scan(&docID)
+			if docID > 0 {
+				var doc Document
+				DB.First(&doc, docID)
+				if doc.UserID > 0 {
+					DB.Model(&tag).Update("user_id", doc.UserID)
+					continue
+				}
+			}
+			// Fallback: assign to user 1
+			DB.Model(&tag).Update("user_id", 1)
+		}
+	}
+
+	// Drop old unique index on name if it exists, new composite index will be created by AutoMigrate
+	if DB.Migrator().HasIndex(&Tag{}, "idx_tags_name") {
+		DB.Migrator().DropIndex(&Tag{}, "idx_tags_name")
+	}
+
 	// Start session cleanup scheduler
 	startSessionCleanup()
 

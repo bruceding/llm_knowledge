@@ -28,7 +28,7 @@ type DocHandler struct {
 func (h *DocHandler) ListInbox(c echo.Context) error {
 	userId := GetCurrentUserId(c)
 	var docs []db.Document
-	result := db.DB.Where("status = ? AND user_id = ?", "inbox", userId).Order("created_at desc").Find(&docs)
+	result := db.DB.Preload("Tags").Where("status = ? AND user_id = ?", "inbox", userId).Order("created_at desc").Find(&docs)
 	if result.Error != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": result.Error.Error()})
 	}
@@ -105,14 +105,15 @@ func (h *DocHandler) UpdateDoc(c echo.Context) error {
 				if tagName == "" {
 					continue
 				}
-				// Find or create tag
+				// Find or create tag scoped to this user
 				var tag db.Tag
-				result := tx.Where("name = ?", tagName).First(&tag)
+				result := tx.Where("name = ? AND user_id = ?", tagName, userId).First(&tag)
 				if result.Error != nil {
 					// Create new tag
 					tag = db.Tag{
-						Name:  tagName,
-						Color: "#808080", // Default color
+						Name:   tagName,
+						Color:  "#808080", // Default color
+						UserID: userId,
 					}
 					if err := tx.Create(&tag).Error; err != nil {
 						continue // Skip if tag creation fails

@@ -843,6 +843,15 @@ export default function DocDetail() {
                         {meta.feedName && <div>Feed: {meta.feedName}</div>}
                         {meta.author && <div>Author: {meta.author}</div>}
                         {meta.published && <div>Published: {meta.published}</div>}
+                        {meta.categories && (
+                          <div className="flex flex-wrap gap-0.5 pt-0.5">
+                            {meta.categories.split(',').filter((c: string) => c.trim()).map((cat: string) => (
+                              <span key={cat.trim()} className="px-1 py-0.5 bg-green-50 text-green-700 rounded text-[10px]">
+                                {cat.trim()}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )
                   } catch {

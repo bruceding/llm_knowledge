@@ -200,6 +200,17 @@ export default function Inbox() {
                 <span>{formatDate(doc.createdAt)}</span>
                 <span className="text-gray-300">|</span>
                 <span className="uppercase">{doc.language}</span>
+                {doc.sourceType === 'rss' && doc.metadata && (() => {
+                  try {
+                    const meta = JSON.parse(doc.metadata)
+                    return meta.feedName ? (
+                      <>
+                        <span className="text-gray-300">|</span>
+                        <span className="text-orange-600">{meta.feedName}</span>
+                      </>
+                    ) : null
+                  } catch { return null }
+                })()}
               </div>
 
               <div className="flex items-center gap-2">

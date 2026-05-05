@@ -306,6 +306,33 @@ func (h *RSSHandler) syncFeedInternal(feed *db.RSSFeed) SyncResult {
 			continue
 		}
 
+		// Auto-create tags from RSS categories
+		if len(item.Categories) > 0 {
+			for _, catName := range item.Categories {
+				catName = strings.TrimSpace(catName)
+				if catName == "" {
+					continue
+				}
+				var tag db.Tag
+				result := db.DB.Where("name = ? AND user_id = ?", catName, feed.UserID).First(&tag)
+				if result.Error != nil {
+					tag = db.Tag{
+						Name:   catName,
+						Color:  "#808080",
+						UserID: feed.UserID,
+					}
+					if err := db.DB.Create(&tag).Error; err != nil {
+						continue
+					}
+				}
+				docTag := db.DocumentTag{
+					DocumentID: doc.ID,
+					TagID:      tag.ID,
+				}
+				db.DB.Create(&docTag) // Ignore error for duplicate association
+			}
+		}
+
 		// Generate summary asynchronously if ClaudeBin is configured
 		if h.ClaudeBin != "" {
 			docID := doc.ID
