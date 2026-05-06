@@ -165,27 +165,28 @@ func (h *DocHandler) Publish(c echo.Context) error {
 		wikiDir := filepath.Join(h.DataDir, "wiki")
 		mdPath := filepath.Join(h.DataDir, doc.RawPath, "paper.md")
 
-		// Find markdown file
 		if _, err := os.Stat(mdPath); err == nil {
-			p := ingest.NewPipeline(wikiDir, h.ClaudeBin)
-			ctx := context.Background()
-			name := doc.Title
-			if err := p.Ingest(ctx, mdPath, name, doc.ID); err != nil {
-				log.Printf("[api] wiki ingest failed for %d: %v", doc.ID, err)
-				// Still return success - status was updated
-			} else {
-				wikiRelPath := filepath.Join("wiki", name+".md")
-				db.DB.Model(&doc).Update("wiki_path", wikiRelPath)
-				doc.WikiPath = wikiRelPath
-			}
+			// Run wiki ingest asynchronously to avoid blocking the HTTP response
+			docID := doc.ID
+			docTitle := doc.Title
+			go func() {
+				p := ingest.NewPipeline(wikiDir, h.ClaudeBin)
+				ctx := context.Background()
+				if err := p.Ingest(ctx, mdPath, docTitle, docID); err != nil {
+					log.Printf("[api] wiki ingest failed for %d: %v", docID, err)
+				} else {
+					wikiRelPath := filepath.Join("wiki", docTitle+".md")
+					db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("wiki_path", wikiRelPath)
+					log.Printf("[api] wiki ingest completed for %d: %s", docID, wikiRelPath)
+				}
+			}()
 		}
 	}
 
 	return c.JSON(http.StatusOK, echo.Map{
-		"id":       doc.ID,
-		"status":   "published",
-		"wikiPath": doc.WikiPath,
-		"message":  "Published and imported to wiki",
+		"id":      doc.ID,
+		"status":  "published",
+		"message": "Publishing, wiki import started in background",
 	})
 }
 
