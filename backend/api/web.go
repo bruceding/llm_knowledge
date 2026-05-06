@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"llm-knowledge/db"
@@ -394,6 +395,13 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 	// Create Document record
 	rawRelPath := filepath.Join("raw", "web", title)
 	userId := GetCurrentUserId(c)
+
+	// Store original published date in metadata
+	metadata := map[string]string{
+		"published": publishedTime.Format(time.RFC3339),
+	}
+	metadataJSON, _ := json.Marshal(metadata)
+
 	docRecord := db.Document{
 		UserID:     userId,
 		Title:      title,
@@ -402,7 +410,8 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 		SourceURL:  req.URL,
 		Language:   "en",
 		Status:     "inbox",
-		CreatedAt:  publishedTime,
+		Metadata:   string(metadataJSON),
+		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
 	}
 	if err := db.DB.Create(&docRecord).Error; err != nil {
