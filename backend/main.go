@@ -13,6 +13,7 @@ import (
 	"llm-knowledge/pdf2zh"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -95,6 +96,10 @@ func main() {
 	e.GET("/data/*", func(c echo.Context) error {
 		// Remove /data prefix and serve from cfg.DataDir
 		relPath := c.Param("*")
+		// Decode URL-encoded path (frontend uses encodeURIComponent)
+		if decoded, err := url.PathUnescape(relPath); err == nil {
+			relPath = decoded
+		}
 		fullPath := filepath.Join(cfg.DataDir, relPath)
 
 		// Security check: ensure path is within DataDir
