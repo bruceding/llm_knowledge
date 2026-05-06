@@ -175,7 +175,7 @@ func (h *DocHandler) Publish(c echo.Context) error {
 				if err := p.Ingest(ctx, mdPath, docTitle, docID); err != nil {
 					log.Printf("[api] wiki ingest failed for %d: %v", docID, err)
 				} else {
-					wikiRelPath := filepath.Join("wiki", docTitle+".md")
+					wikiRelPath := filepath.Join("wiki", "sources", docTitle+".md")
 					db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("wiki_path", wikiRelPath)
 					log.Printf("[api] wiki ingest completed for %d: %s", docID, wikiRelPath)
 				}

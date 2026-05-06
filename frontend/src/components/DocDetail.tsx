@@ -942,7 +942,7 @@ export default function DocDetail() {
           >
             {t('docDetail.saveChanges')}
           </button>
-          {document.status !== 'published' && (
+          {document.status !== 'published' && !(document.status === 'archived' && document.wikiPath) && (
             <button
               onClick={handlePublish}
               disabled={publishing}
