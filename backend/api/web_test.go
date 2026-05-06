@@ -167,6 +167,31 @@ func TestConvertNodeToMarkdown(t *testing.T) {
 </code></pre>`,
 			expected: "\n```go\ntype Node struct {\n  next *Node\n}\n```\n\n",
 		},
+		{
+			name: "table with header",
+			html: `<table><thead><tr><th>Feature</th><th>Polling</th><th>SSE</th></tr></thead><tbody><tr><td>Direction</td><td>Client-to-server</td><td>Server-to-client</td></tr><tr><td>Protocol</td><td>HTTP</td><td>HTTP</td></tr></tbody></table>`,
+			expected: "| Feature | Polling | SSE |\n|---|---|---|\n| Direction | Client-to-server | Server-to-client |\n| Protocol | HTTP | HTTP |\n\n",
+		},
+		{
+			name: "table without thead (th in first row)",
+			html: `<table><tr><th>Name</th><th>Value</th></tr><tr><td>Test</td><td>123</td></tr></table>`,
+			expected: "| Name | Value |\n|---|---|\n| Test | 123 |\n\n",
+		},
+		{
+			name: "table with td only (first row as header)",
+			html: `<table><tr><td>Col1</td><td>Col2</td></tr><tr><td>A</td><td>B</td></tr></table>`,
+			expected: "| Col1 | Col2 |\n|---|---|\n| A | B |\n\n",
+		},
+		{
+			name:     "h4 inside link (no heading marker)",
+			html:     `<a href="/blog/test"><h4>GraphQL Subscriptions</h4>8 min read</a>`,
+			expected: "[GraphQL Subscriptions 8 min read](/blog/test)",
+		},
+		{
+			name:     "h4 outside link (normal heading)",
+			html:     `<h4>GraphQL Subscriptions</h4>`,
+			expected: "#### GraphQL Subscriptions\n\n",
+		},
 	}
 
 	for _, tt := range tests {
@@ -293,4 +318,102 @@ func TestWebClippingGoBlog(t *testing.T) {
 		}
 	}
 	t.Logf("Blank lines: %d out of %d total", blankLines, len(strings.Split(result, "\n")))
+}
+
+// TestWebClippingSSEArticle tests clipping the SSE guide article with tables
+func TestWebClippingSSEArticle(t *testing.T) {
+	url := "https://codelit.io/blog/sse-server-sent-events-guide"
+
+	// Fetch the HTML
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Skipf("Failed to fetch URL (network issue): %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Skipf("HTTP status: %d", resp.StatusCode)
+	}
+
+	// Parse HTML
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to parse HTML: %v", err)
+	}
+
+	// Remove navigation and non-content elements
+	doc.Find("script, style, nav, .Header, .Footer, aside, .Cookie-notice").Remove()
+
+	// Find main content using same logic as extractContent
+	var contentNode *goquery.Selection
+	selectors := []string{".Article", ".Blog-content", "article", "main", ".content", "#content"}
+	for _, sel := range selectors {
+		if doc.Find(sel).Length() > 0 {
+			contentNode = doc.Find(sel).First()
+			break
+		}
+	}
+	if contentNode == nil {
+		contentNode = doc.Find("body")
+	}
+
+	// Convert to markdown
+	var markdown strings.Builder
+	contentNode.Contents().Each(func(i int, s *goquery.Selection) {
+		markdown.WriteString(convertNodeToMarkdown(s))
+	})
+
+	result := markdown.String()
+
+	// Verify key content is present
+	if !strings.Contains(result, "Server-Sent Events") {
+		t.Error("Expected 'Server-Sent Events' in markdown")
+	}
+
+	// CRITICAL: Check for table markdown format (this was the bug)
+	// Table should have pipe characters and separator row
+	if !strings.Contains(result, "|") {
+		t.Error("Expected table with pipe characters '|' - table formatting is broken")
+	}
+	if !strings.Contains(result, "---|") {
+		t.Error("Expected table separator row '|---|' - table formatting is broken")
+	}
+
+	// Check for specific table headers that should be preserved
+	if !strings.Contains(result, "| Feature |") && !strings.Contains(result, "Feature | Polling") {
+		t.Error("Expected 'Feature' column header in comparison table")
+	}
+
+	// Check for code blocks
+	codeBlockCount := strings.Count(result, "```")
+	if codeBlockCount < 4 {
+		t.Errorf("Expected at least 4 code blocks (SSE article has many examples), got %d occurrences", codeBlockCount)
+	}
+
+	t.Logf("Generated markdown length: %d characters", len(result))
+
+	// Save to temp file for inspection
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "sse_article.md")
+	if err := os.WriteFile(tmpFile, []byte(result), 0644); err != nil {
+		t.Fatalf("Failed to write temp file: %v", err)
+	}
+	t.Logf("Saved markdown to: %s", tmpFile)
+
+	// Print table portion for verification
+	tableStart := strings.Index(result, "| Feature")
+	if tableStart > 0 {
+		tableEnd := tableStart + 300
+		if tableEnd > len(result) {
+			tableEnd = len(result)
+		}
+		t.Logf("Table preview:\n%s", result[tableStart:tableEnd])
+	}
+
+	// Also print the first 800 chars
+	maxPreview := 800
+	if len(result) > maxPreview {
+		t.Logf("Preview (first %d chars):\n%s", maxPreview, result[:maxPreview])
+	}
 }

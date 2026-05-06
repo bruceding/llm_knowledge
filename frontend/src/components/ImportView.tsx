@@ -131,7 +131,7 @@ export default function ImportView() {
     setUploadResult(null)
 
     try {
-      const result = await clipWeb(urlInput)
+      const result = await clipWeb(urlInput.trim())
       setUploadResult({
         id: result.id,
         path: result.path,
@@ -155,7 +155,7 @@ export default function ImportView() {
 
     try {
       // Backend will parse RSS feed title if name is empty
-      await addRSSFeed(rssName.trim(), rssUrl, rssAutoSync)
+      await addRSSFeed(rssName.trim(), rssUrl.trim(), rssAutoSync)
       setRssUrl('')
       setRssName('')
       setRssAutoSync(false)

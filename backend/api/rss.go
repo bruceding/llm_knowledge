@@ -730,6 +730,18 @@ func processHTMLToMarkdown(htmlContent, assetsDir, articleURL string) (string, i
 	return result, imgCount, imgErrors
 }
 
+// isInsideLink checks if the element is nested inside an <a> tag
+func isInsideLink(s *goquery.Selection) bool {
+	parent := s.Parent()
+	for parent.Length() > 0 {
+		if parent.Nodes[0].Data == "a" {
+			return true
+		}
+		parent = parent.Parent()
+	}
+	return false
+}
+
 func convertNodeToMarkdown(s *goquery.Selection) string {
 	node := s.Nodes[0]
 	if node.Type == html.TextNode {
@@ -776,6 +788,11 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		}
 	}
 
+	// Check if we're inside a link - elements inside links should be treated as inline for spacing
+	isInsideLinkContext := isInsideLink(s)
+	// If this element is a link itself, its children should be treated as inline for spacing
+	isLinkElement := tag == "a"
+
 	innerContent := ""
 	// Process children, preserving spaces between inline elements
 	children := s.Contents()
@@ -791,10 +808,14 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 			if i > 0 {
 				prevNode := children.Eq(i - 1).Nodes[0]
 				if prevNode.Type == html.ElementNode {
-					for _, inline := range inlineElements {
-						if prevNode.Data == inline {
-							prevIsInline = true
-							break
+					if isInsideLinkContext || isLinkElement {
+						prevIsInline = true // All elements inside link are inline for spacing
+					} else {
+						for _, inline := range inlineElements {
+							if prevNode.Data == inline {
+								prevIsInline = true
+								break
+							}
 						}
 					}
 				}
@@ -804,10 +825,14 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 			if i < childrenCount - 1 {
 				nextNode := children.Eq(i + 1).Nodes[0]
 				if nextNode.Type == html.ElementNode {
-					for _, inline := range inlineElements {
-						if nextNode.Data == inline {
-							nextIsInline = true
-							break
+					if isInsideLinkContext || isLinkElement {
+						nextIsInline = true // All elements inside link are inline for spacing
+					} else {
+						for _, inline := range inlineElements {
+							if nextNode.Data == inline {
+								nextIsInline = true
+								break
+							}
 						}
 					}
 				}
@@ -819,11 +844,52 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		}
 
 		innerContent += childText
-	})
+
+			// If this child is an inline element with content and next sibling is also inline,
+			// add a space (CSS flex gap or similar visual separation has no text node)
+			if childNode.Type == html.ElementNode && childText != "" {
+				thisIsInline := false
+				if isInsideLinkContext || isLinkElement {
+					thisIsInline = true // All elements inside link are inline for spacing
+				} else {
+					for _, inline := range inlineElements {
+						if childNode.Data == inline {
+							thisIsInline = true
+							break
+						}
+					}
+				}
+				if thisIsInline && i < childrenCount - 1 {
+					nextNode := children.Eq(i + 1).Nodes[0]
+					if nextNode.Type == html.ElementNode {
+						nextIsInline := false
+						if isInsideLinkContext || isLinkElement {
+							nextIsInline = true // All elements inside link are inline for spacing
+						} else {
+							for _, inline := range inlineElements {
+								if nextNode.Data == inline {
+									nextIsInline = true
+									break
+								}
+							}
+						}
+						if nextIsInline {
+							innerContent += " "
+						}
+					} else if nextNode.Type == html.TextNode && strings.TrimSpace(nextNode.Data) != "" {
+						// Next sibling is a text node with content - add space if it doesn't already start with space
+						if len(nextNode.Data) > 0 && nextNode.Data[0] != ' ' && nextNode.Data[0] != '\n' {
+							innerContent += " "
+						}
+					}
+				}
+			}
+		})
 
 	// For inline elements, don't trim - preserve spaces around them
 	// For block elements, trim to clean up whitespace
-	if !isInline {
+	// When inside a link, treat all elements as inline for spacing/trimming purposes
+	if !isInline && !isInsideLinkContext {
 		innerContent = strings.TrimSpace(innerContent)
 	}
 
@@ -833,16 +899,34 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 	case "br":
 		return "\n"
 	case "h1":
+		if isInsideLink(s) {
+			return innerContent
+		}
 		return "# " + innerContent + "\n\n"
 	case "h2":
+		if isInsideLink(s) {
+			return innerContent
+		}
 		return "## " + innerContent + "\n\n"
 	case "h3":
+		if isInsideLink(s) {
+			return innerContent
+		}
 		return "### " + innerContent + "\n\n"
 	case "h4":
+		if isInsideLink(s) {
+			return innerContent
+		}
 		return "#### " + innerContent + "\n\n"
 	case "h5":
+		if isInsideLink(s) {
+			return innerContent
+		}
 		return "##### " + innerContent + "\n\n"
 	case "h6":
+		if isInsideLink(s) {
+			return innerContent
+		}
 		return "###### " + innerContent + "\n\n"
 	case "strong", "b":
 		return "**" + innerContent + "**"
@@ -951,9 +1035,9 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		// Already handled by ul/ol
 		return ""
 	case "div", "section", "article":
-		// Only add newline if there's actual content
+		// Double newline for paragraph separation between blocks
 		if innerContent != "" {
-			return innerContent + "\n"
+			return innerContent + "\n\n"
 		}
 		return ""
 	case "span":
@@ -963,6 +1047,88 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		return "\n---\n\n"
 	case "small":
 		return innerContent
+	case "table":
+		// Convert HTML table to markdown format
+		var result strings.Builder
+		var headerCells []string
+		var bodyRows [][]string
+
+		// Extract header cells from <thead> or first <tr>
+		thead := s.Find("thead")
+		if thead.Length() > 0 {
+			thead.Find("tr th, tr td").Each(func(i int, cell *goquery.Selection) {
+				headerCells = append(headerCells, strings.TrimSpace(cell.Text()))
+			})
+		} else {
+			// Check if first row has th elements
+			firstRow := s.Find("tr").First()
+			if firstRow.Length() > 0 {
+				firstRow.Find("th").Each(func(i int, cell *goquery.Selection) {
+					headerCells = append(headerCells, strings.TrimSpace(cell.Text()))
+				})
+				// If no th found, check for td (some tables use td for headers)
+				if len(headerCells) == 0 {
+					firstRow.Find("td").Each(func(i int, cell *goquery.Selection) {
+						headerCells = append(headerCells, strings.TrimSpace(cell.Text()))
+					})
+				}
+			}
+		}
+
+		// Extract body rows
+		if thead.Length() > 0 {
+			// Explicit thead: body rows are only in tbody (implicit or explicit)
+			s.Find("tbody tr").Each(func(i int, row *goquery.Selection) {
+				var cells []string
+				row.Find("td, th").Each(func(j int, cell *goquery.Selection) {
+					cells = append(cells, strings.TrimSpace(cell.Text()))
+				})
+				if len(cells) > 0 {
+					bodyRows = append(bodyRows, cells)
+				}
+			})
+		} else {
+			// No explicit thead: first row is header, rest are body
+			// Use Slice to skip first row regardless of tbody presence
+			allRows := s.Find("tr")
+			allRows.Slice(1, allRows.Length()).Each(func(i int, row *goquery.Selection) {
+				var cells []string
+				row.Find("td, th").Each(func(j int, cell *goquery.Selection) {
+					cells = append(cells, strings.TrimSpace(cell.Text()))
+				})
+				if len(cells) > 0 {
+					bodyRows = append(bodyRows, cells)
+				}
+			})
+		}
+
+		// Build markdown table
+		if len(headerCells) > 0 {
+			// Header row
+			result.WriteString("|")
+			for _, cell := range headerCells {
+				result.WriteString(" " + cell + " |")
+			}
+			result.WriteString("\n")
+
+			// Separator row
+			result.WriteString("|")
+			for range headerCells {
+				result.WriteString("---|")
+			}
+			result.WriteString("\n")
+		}
+
+		// Body rows
+		for _, row := range bodyRows {
+			result.WriteString("|")
+			for _, cell := range row {
+				result.WriteString(" " + cell + " |")
+			}
+			result.WriteString("\n")
+		}
+
+		return result.String() + "\n"
 	default:
 		// Unknown tags: keep content if non-empty
 		if innerContent != "" {
