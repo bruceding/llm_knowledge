@@ -407,6 +407,7 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 	docRecord := db.Document{
 		UserID:     userId,
 		Title:      originalTitle,
+		Slug:       title,
 		SourceType: "web",
 		RawPath:    rawRelPath,
 		SourceURL:  req.URL,
@@ -438,7 +439,7 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 
 	return c.JSON(200, echo.Map{
 		"id":       docRecord.ID,
-		"title":    title,
+		"title":    originalTitle,
 		"path":     dir,
 		"url":      req.URL,
 		"images":   downloadedImages,

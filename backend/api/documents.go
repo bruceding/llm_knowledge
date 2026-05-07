@@ -84,6 +84,9 @@ func (h *DocHandler) UpdateDoc(c echo.Context) error {
 	// Update title if provided
 	if req.Title != "" {
 		doc.Title = req.Title
+		if doc.Slug == "" {
+			doc.Slug = req.Title // fallback for legacy records
+		}
 	}
 
 	// Wrap all database operations in a transaction
@@ -168,14 +171,17 @@ func (h *DocHandler) Publish(c echo.Context) error {
 		if _, err := os.Stat(mdPath); err == nil {
 			// Run wiki ingest asynchronously to avoid blocking the HTTP response
 			docID := doc.ID
-			docTitle := doc.Title
+			docSlug := doc.Slug
+			if docSlug == "" {
+				docSlug = doc.Title // fallback for legacy records
+			}
 			go func() {
 				p := ingest.NewPipeline(wikiDir, h.ClaudeBin)
 				ctx := context.Background()
-				if err := p.Ingest(ctx, mdPath, docTitle, docID); err != nil {
+				if err := p.Ingest(ctx, mdPath, docSlug, docID); err != nil {
 					log.Printf("[api] wiki ingest failed for %d: %v", docID, err)
 				} else {
-					wikiRelPath := filepath.Join("wiki", "sources", docTitle+".md")
+					wikiRelPath := filepath.Join("wiki", "sources", docSlug+".md")
 					db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("wiki_path", wikiRelPath)
 					log.Printf("[api] wiki ingest completed for %d: %s", docID, wikiRelPath)
 				}
@@ -235,9 +241,12 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 
 	// Clean wiki content (entities, topics, index files) related to this document
 	wikiDir := filepath.Join(h.DataDir, "wiki")
-	docName := doc.Title
-	if err := ingest.CleanWikiForDocument(wikiDir, docName); err != nil {
-		log.Printf("[api] wiki cleanup error for %s: %v", docName, err)
+	docSlug := doc.Slug
+	if docSlug == "" {
+		docSlug = doc.Title // fallback for legacy records
+	}
+	if err := ingest.CleanWikiForDocument(wikiDir, docSlug); err != nil {
+		log.Printf("[api] wiki cleanup error for %s: %v", docSlug, err)
 		// Continue anyway - document deletion is primary operation
 	}
 

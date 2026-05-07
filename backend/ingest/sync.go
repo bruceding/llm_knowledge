@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -106,6 +107,10 @@ func scanDirectory(dir string, itemType string) ([]Item, error) {
 			})
 		}
 	}
+
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Name < items[j].Name
+	})
 
 	return items, nil
 }

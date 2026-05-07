@@ -290,6 +290,7 @@ func (h *RSSHandler) syncFeedInternal(feed *db.RSSFeed) SyncResult {
 		doc := db.Document{
 			UserID:     feed.UserID,
 			Title:      item.Title,
+			Slug:       title,
 			SourceType: "rss",
 			RawPath:    filepath.Join("raw", "rss", sanitizeFilename(feed.Name), title+".md"),
 			SourceURL:  normalizedURL,

@@ -9,6 +9,7 @@ import (
 type Document struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
 	Title      string    `json:"title"`
+	Slug       string    `json:"slug"`                         // Filesystem-safe name derived from Title
 	SourceType string    `json:"sourceType"` // pdf, rss, web, manual
 	RawPath    string    `json:"rawPath"`
 	WikiPath   string    `json:"wikiPath"`
