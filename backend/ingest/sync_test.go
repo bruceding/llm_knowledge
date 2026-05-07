@@ -346,6 +346,69 @@ description: New description
 	}
 }
 
+func TestSyncIndexFilesScanError(t *testing.T) {
+	// Create a wiki dir where sources is a file (not a directory) to trigger scan error
+	tmpWiki := t.TempDir()
+
+	// Create "sources" as a file instead of directory to cause os.ReadDir to fail
+	sourcesPath := filepath.Join(tmpWiki, "sources")
+	if err := os.WriteFile(sourcesPath, []byte("not a dir"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := SyncIndexFiles(tmpWiki)
+	if err == nil {
+		t.Fatal("SyncIndexFiles should return error when scan fails")
+	}
+	if !strings.Contains(err.Error(), "scanning sources") {
+		t.Errorf("error should mention scanning sources, got: %v", err)
+	}
+}
+
+func TestUpdateSectionMD(t *testing.T) {
+	tmpWiki := t.TempDir()
+
+	items := []Item{
+		{Name: "Foo", Description: "A foo", Path: "sources/Foo.md"},
+		{Name: "Bar", Description: "A bar", Path: "sources/Bar.md"},
+	}
+
+	if err := updateSectionMD(tmpWiki, "sources.md", "Sources", "（暂无源文档）", items); err != nil {
+		t.Fatalf("updateSectionMD failed: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpWiki, "sources.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := string(content)
+	if !containsSection(s, "# Sources") {
+		t.Error("missing # Sources header")
+	}
+	if !containsLink(s, "Foo") || !containsLink(s, "Bar") {
+		t.Error("missing item links")
+	}
+}
+
+func TestUpdateSectionMDEmpty(t *testing.T) {
+	tmpWiki := t.TempDir()
+
+	if err := updateSectionMD(tmpWiki, "entities.md", "Entities", "（暂无实体）", nil); err != nil {
+		t.Fatalf("updateSectionMD failed: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpWiki, "entities.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := string(content)
+	if !containsText(s, "（暂无实体）") {
+		t.Error("should show empty placeholder text")
+	}
+}
+
 // Helper functions
 func containsSection(content, section string) bool {
 	return strings.Contains(content, section)

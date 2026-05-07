@@ -12,49 +12,49 @@ import (
 
 // SyncIndexFiles scans wiki directories and rebuilds all index files deterministically.
 // This ensures index.md, sources.md, entities.md, and topics.md stay in sync with actual files.
+// Scan errors cause an immediate return to prevent overwriting valid index content with empty placeholders.
 func SyncIndexFiles(wikiDir string) error {
 	log.Printf("[sync] Starting index sync for wiki: %s", wikiDir)
 
 	// 1. Scan sources directory
 	sources, err := scanDirectory(filepath.Join(wikiDir, "sources"), "source")
 	if err != nil {
-		log.Printf("[sync] Error scanning sources: %v", err)
+		return fmt.Errorf("scanning sources: %w", err)
 	}
 	log.Printf("[sync] Found %d sources", len(sources))
 
 	// 2. Scan entities directory
 	entities, err := scanDirectory(filepath.Join(wikiDir, "entities"), "entity")
 	if err != nil {
-		log.Printf("[sync] Error scanning entities: %v", err)
+		return fmt.Errorf("scanning entities: %w", err)
 	}
 	log.Printf("[sync] Found %d entities", len(entities))
 
 	// 3. Scan topics directory
 	topics, err := scanDirectory(filepath.Join(wikiDir, "topics"), "topic")
 	if err != nil {
-		log.Printf("[sync] Error scanning topics: %v", err)
+		return fmt.Errorf("scanning topics: %w", err)
 	}
 	log.Printf("[sync] Found %d topics", len(topics))
 
 	// 4. Update index.md with all three sections
 	if err := updateIndexMD(wikiDir, sources, entities, topics); err != nil {
-		log.Printf("[sync] Error updating index.md: %v", err)
-		return err
+		return fmt.Errorf("updating index.md: %w", err)
 	}
 
 	// 5. Update sources.md
-	if err := updateSourcesMD(wikiDir, sources); err != nil {
-		log.Printf("[sync] Error updating sources.md: %v", err)
+	if err := updateSectionMD(wikiDir, "sources.md", "Sources", "（暂无源文档）", sources); err != nil {
+		return fmt.Errorf("updating sources.md: %w", err)
 	}
 
 	// 6. Update entities.md
-	if err := updateEntitiesMD(wikiDir, entities); err != nil {
-		log.Printf("[sync] Error updating entities.md: %v", err)
+	if err := updateSectionMD(wikiDir, "entities.md", "Entities", "（暂无实体）", entities); err != nil {
+		return fmt.Errorf("updating entities.md: %w", err)
 	}
 
 	// 7. Update topics.md
-	if err := updateTopicsMD(wikiDir, topics); err != nil {
-		log.Printf("[sync] Error updating topics.md: %v", err)
+	if err := updateSectionMD(wikiDir, "topics.md", "Topics", "（暂无主题）", topics); err != nil {
+		return fmt.Errorf("updating topics.md: %w", err)
 	}
 
 	log.Printf("[sync] Completed index sync")
@@ -143,7 +143,10 @@ func parseFrontmatter(content []byte) (name, description string) {
 	return name, description
 }
 
-// updateIndexMD rebuilds index.md with Sources, Entities, Topics sections
+// updateIndexMD rebuilds index.md with Sources, Entities, Topics sections.
+// NOTE: This function only preserves content before the first "## " header.
+// Any custom content between section headers (## Sources, ## Entities, ## Topics)
+// will be lost on rebuild. Do not add custom paragraphs between sections in index.md.
 func updateIndexMD(wikiDir string, sources, entities, topics []Item) error {
 	indexPath := filepath.Join(wikiDir, "index.md")
 
@@ -158,35 +161,21 @@ func updateIndexMD(wikiDir string, sources, entities, topics []Item) error {
 	buf.WriteString(header)
 	buf.WriteString("\n")
 
-	buf.WriteString("## Sources\n")
-	if len(sources) == 0 {
-		buf.WriteString("（暂无）\n\n")
-	} else {
-		for _, item := range sources {
-			buf.WriteString(fmt.Sprintf("- [%s](%s) — %s\n", item.Name, item.Path, item.Description))
+	writeSection := func(title string, items []Item) {
+		buf.WriteString("## " + title + "\n")
+		if len(items) == 0 {
+			buf.WriteString("（暂无）\n\n")
+		} else {
+			for _, item := range items {
+				buf.WriteString(fmt.Sprintf("- [%s](%s) — %s\n", item.Name, item.Path, item.Description))
+			}
+			buf.WriteString("\n")
 		}
-		buf.WriteString("\n")
 	}
 
-	buf.WriteString("## Entities\n")
-	if len(entities) == 0 {
-		buf.WriteString("（暂无）\n\n")
-	} else {
-		for _, item := range entities {
-			buf.WriteString(fmt.Sprintf("- [%s](%s) — %s\n", item.Name, item.Path, item.Description))
-		}
-		buf.WriteString("\n")
-	}
-
-	buf.WriteString("## Topics\n")
-	if len(topics) == 0 {
-		buf.WriteString("（暂无）\n\n")
-	} else {
-		for _, item := range topics {
-			buf.WriteString(fmt.Sprintf("- [%s](%s) — %s\n", item.Name, item.Path, item.Description))
-		}
-		buf.WriteString("\n")
-	}
+	writeSection("Sources", sources)
+	writeSection("Entities", entities)
+	writeSection("Topics", topics)
 
 	return os.WriteFile(indexPath, []byte(buf.String()), 0644)
 }
@@ -212,53 +201,17 @@ func extractHeader(content []byte) string {
 	return strings.Join(headerLines, "\n")
 }
 
-// updateSourcesMD rebuilds sources.md with all source documents
-func updateSourcesMD(wikiDir string, sources []Item) error {
-	path := filepath.Join(wikiDir, "sources.md")
+// updateSectionMD rebuilds a single-section index file (sources.md, entities.md, topics.md)
+func updateSectionMD(wikiDir, filename, title, emptyText string, items []Item) error {
+	path := filepath.Join(wikiDir, filename)
 
 	var buf strings.Builder
-	buf.WriteString("# Sources\n\n")
+	buf.WriteString("# " + title + "\n\n")
 
-	if len(sources) == 0 {
-		buf.WriteString("（暂无源文档）\n")
+	if len(items) == 0 {
+		buf.WriteString(emptyText + "\n")
 	} else {
-		for _, item := range sources {
-			buf.WriteString(fmt.Sprintf("- [%s](%s) — %s\n", item.Name, item.Path, item.Description))
-		}
-	}
-
-	return os.WriteFile(path, []byte(buf.String()), 0644)
-}
-
-// updateEntitiesMD rebuilds entities.md with all entities
-func updateEntitiesMD(wikiDir string, entities []Item) error {
-	path := filepath.Join(wikiDir, "entities.md")
-
-	var buf strings.Builder
-	buf.WriteString("# Entities\n\n")
-
-	if len(entities) == 0 {
-		buf.WriteString("（暂无实体）\n")
-	} else {
-		for _, item := range entities {
-			buf.WriteString(fmt.Sprintf("- [%s](%s) — %s\n", item.Name, item.Path, item.Description))
-		}
-	}
-
-	return os.WriteFile(path, []byte(buf.String()), 0644)
-}
-
-// updateTopicsMD rebuilds topics.md with all topics
-func updateTopicsMD(wikiDir string, topics []Item) error {
-	path := filepath.Join(wikiDir, "topics.md")
-
-	var buf strings.Builder
-	buf.WriteString("# Topics\n\n")
-
-	if len(topics) == 0 {
-		buf.WriteString("（暂无主题）\n")
-	} else {
-		for _, item := range topics {
+		for _, item := range items {
 			buf.WriteString(fmt.Sprintf("- [%s](%s) — %s\n", item.Name, item.Path, item.Description))
 		}
 	}

@@ -308,12 +308,14 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 		return c.JSON(500, echo.Map{"error": "failed to parse HTML"})
 	}
 
-	// Extract title
-	title := doc.Find("title").Text()
-	if title == "" {
-		title = "untitled"
+	// Extract original title for database
+	originalTitle := doc.Find("title").Text()
+	if originalTitle == "" {
+		originalTitle = "untitled"
 	}
-	// Clean title for filesystem
+
+	// Clean title for filesystem (slug)
+	title := originalTitle
 	title = strings.ReplaceAll(title, "/", "-")
 	title = strings.ReplaceAll(title, ":", "-")
 	title = strings.ReplaceAll(title, " ", "-")
@@ -404,7 +406,7 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 
 	docRecord := db.Document{
 		UserID:     userId,
-		Title:      title,
+		Title:      originalTitle,
 		SourceType: "web",
 		RawPath:    rawRelPath,
 		SourceURL:  req.URL,
