@@ -201,6 +201,13 @@ func (p *Pipeline) Ingest(ctx context.Context, rawPath, name string, docID uint)
 	}
 
 	log.Printf("[ingest] Completed ingest for: %s", name)
+
+	// Sync index files deterministically to ensure they stay in sync
+	if err := SyncIndexFiles(p.WikiDir); err != nil {
+		log.Printf("[ingest] Error syncing index files: %v", err)
+		// Continue anyway - ingest is primary operation
+	}
+
 	return nil
 }
 
