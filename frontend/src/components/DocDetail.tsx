@@ -188,8 +188,10 @@ export default function DocDetail() {
             const mdStatus = await checkMarkdownTranslationStatus(doc.id)
             setMarkdownTranslationStatus(mdStatus)
             if (mdStatus.exists && mdStatus.path) {
-              // Load bilingual content
-              const bilingualRes = await fetch(mdStatus.path)
+              // Load bilingual content - path is /data/... so need to encode properly
+              const relativePath = mdStatus.path.replace('/data/', '')
+              const encodedPath = `/data/${encodeURIPath(relativePath)}`
+              const bilingualRes = await fetch(encodedPath)
               if (bilingualRes.ok) {
                 setBilingualContent(stripYamlFrontmatter(await bilingualRes.text()))
               }
@@ -418,8 +420,10 @@ export default function DocDetail() {
           if (event.path) {
             setMarkdownTranslationStatus({ exists: true, path: event.path, targetLang: lang })
             setViewMode('bilingual')
-            // Load bilingual content
-            fetch(event.path).then(res => res.text()).then(text => setBilingualContent(stripYamlFrontmatter(text)))
+            // Load bilingual content - path is /data/... so need to encode properly
+            const relativePath = event.path.replace('/data/', '')
+            const encodedPath = `/data/${encodeURIPath(relativePath)}`
+            fetch(encodedPath).then(res => res.text()).then(text => setBilingualContent(stripYamlFrontmatter(text)))
           }
         }
       })
