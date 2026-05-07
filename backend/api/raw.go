@@ -84,6 +84,7 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 	doc := db.Document{
 		UserID:     userId,
 		Title:      name,
+		Slug:       name,
 		SourceType: "pdf",
 		RawPath:    rawRelPath,
 		WikiPath:   "",
@@ -206,6 +207,7 @@ func (h *RawHandler) UploadPDFFromURL(c echo.Context) error {
 	doc := db.Document{
 		UserID:     userId,
 		Title:      name,
+		Slug:       name,
 		SourceType: "pdf",
 		RawPath:    rawRelPath,
 		WikiPath:   "",

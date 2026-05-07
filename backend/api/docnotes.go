@@ -140,7 +140,12 @@ func (h *DocNoteHandler) PushToWiki(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "document has no title"})
 	}
 
-	wikiPath := filepath.Join(h.DataDir, "wiki", "sources", doc.Title+".md")
+	docSlug := doc.Slug
+	if docSlug == "" {
+		docSlug = doc.Title // fallback for legacy records
+	}
+
+	wikiPath := filepath.Join(h.DataDir, "wiki", "sources", docSlug+".md")
 
 	// Create sources directory if needed
 	os.MkdirAll(filepath.Dir(wikiPath), 0755)
@@ -181,5 +186,5 @@ func (h *DocNoteHandler) PushToWiki(c echo.Context) error {
 	note.WikiPushedAt = time.Now()
 	db.DB.Save(&note)
 
-	return c.JSON(http.StatusOK, echo.Map{"message": "pushed to wiki", "wikiPath": "wiki/sources/" + doc.Title + ".md"})
+	return c.JSON(http.StatusOK, echo.Map{"message": "pushed to wiki", "wikiPath": "wiki/sources/" + docSlug + ".md"})
 }

@@ -36,8 +36,8 @@ func CleanWikiForDocument(wikiDir string, docName string) error {
 		log.Printf("[cleanwiki] Removed source page: %s", sourcePage)
 	}
 
-	// 4. Update index files
-	if err := updateIndexFiles(wikiDir, docName); err != nil {
+	// 4. Update index files deterministically
+	if err := SyncIndexFiles(wikiDir); err != nil {
 		log.Printf("[cleanwiki] Error updating index files: %v", err)
 	}
 
@@ -136,55 +136,4 @@ func removeSourceReference(filePath string, docName string) error {
 
 	// Write back the updated content
 	return os.WriteFile(filePath, []byte(strings.Join(newLines, "\n")), 0644)
-}
-
-// updateIndexFiles removes references to the deleted document from index.md, sources.md, entities.md, topics.md
-func updateIndexFiles(wikiDir string, docName string) error {
-	indexFiles := []string{
-		filepath.Join(wikiDir, "index.md"),
-		filepath.Join(wikiDir, "sources.md"),
-		filepath.Join(wikiDir, "entities.md"),
-		filepath.Join(wikiDir, "topics.md"),
-	}
-
-	linkPattern := regexp.MustCompile(fmt.Sprintf(`-?\s*\[([^\]]*\b%s\b[^\]]*)\]\([^)]+\)[^\n]*`, docName))
-
-	for _, indexPath := range indexFiles {
-		if _, err := os.Stat(indexPath); err != nil {
-			continue
-		}
-
-		content, err := os.ReadFile(indexPath)
-		if err != nil {
-			continue
-		}
-
-		// Remove lines containing links to the deleted document
-		lines := strings.Split(string(content), "\n")
-		newLines := []string{}
-
-		for _, line := range lines {
-			// Skip lines that link to the deleted document
-			if linkPattern.MatchString(line) {
-				continue
-			}
-			// Also check for simpler pattern: document name in link
-			if strings.Contains(line, docName+".md") || strings.Contains(line, docName+"]") {
-				// Check if this is a bullet item linking to the document
-				if strings.HasPrefix(strings.TrimSpace(line), "-") && strings.Contains(line, "["+docName+"]") {
-					continue
-				}
-			}
-			newLines = append(newLines, line)
-		}
-
-		// Write back
-		if err := os.WriteFile(indexPath, []byte(strings.Join(newLines, "\n")), 0644); err != nil {
-			log.Printf("[cleanwiki] Error updating %s: %v", indexPath, err)
-		} else {
-			log.Printf("[cleanwiki] Updated index: %s", indexPath)
-		}
-	}
-
-	return nil
 }

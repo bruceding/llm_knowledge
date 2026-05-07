@@ -19,6 +19,17 @@ function encodeURIPath(path: string): string {
   return path.split('/').map(segment => encodeURIComponent(segment).replace(/!/g, '%21')).join('/')
 }
 
+// Helper to strip YAML frontmatter from markdown content
+function stripYamlFrontmatter(content: string): string {
+  if (content.startsWith('---')) {
+    const endIndex = content.indexOf('---', 3)
+    if (endIndex !== -1) {
+      return content.substring(endIndex + 3).trim()
+    }
+  }
+  return content
+}
+
 export default function DocDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -180,7 +191,7 @@ export default function DocDetail() {
               // Load bilingual content
               const bilingualRes = await fetch(mdStatus.path)
               if (bilingualRes.ok) {
-                setBilingualContent(await bilingualRes.text())
+                setBilingualContent(stripYamlFrontmatter(await bilingualRes.text()))
               }
             }
           } catch (err) {
@@ -408,7 +419,7 @@ export default function DocDetail() {
             setMarkdownTranslationStatus({ exists: true, path: event.path, targetLang: lang })
             setViewMode('bilingual')
             // Load bilingual content
-            fetch(event.path).then(res => res.text()).then(text => setBilingualContent(text))
+            fetch(event.path).then(res => res.text()).then(text => setBilingualContent(stripYamlFrontmatter(text)))
           }
         }
       })

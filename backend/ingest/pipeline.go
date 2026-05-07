@@ -99,27 +99,12 @@ type: topic
 - 相关实体链接（如：[CSA](../entities/CSA.md)）
 - Source: [{{.Name}}](../sources/{{.Name}}.md)  ← 必须包含此字段
 
-## 4. 更新索引文件
-
-更新 {{.WikiDir}}/index.md，添加文档条目：
-- [{{.Name}}](sources/{{.Name}}.md) — 一句话简介
-
-更新 {{.WikiDir}}/sources.md（如不存在则创建）：
-# Sources
-列出所有源文档（格式：[名称](sources/路径.md) — 简介）
-
-更新 {{.WikiDir}}/entities.md（如不存在则创建）：
-# Entities
-按类别分组列出所有实体（格式：[名称](entities/名称.md) — 简介）
-
-更新 {{.WikiDir}}/topics.md（如不存在则创建）：
-# Topics
-列出所有主题（格式：[名称](topics/名称.md) — 简介）
-
-## 5. 追加操作日志
+## 4. 追加操作日志
 
 在 {{.WikiDir}}/log.md 追加：
 - YYYY-MM-DD: 导入 {{.Name}}，创建了 X 个实体，Y 个主题
+
+注意：索引文件（index.md、sources.md、entities.md、topics.md）由系统自动同步，无需手动更新。
 
 ---
 
@@ -201,6 +186,13 @@ func (p *Pipeline) Ingest(ctx context.Context, rawPath, name string, docID uint)
 	}
 
 	log.Printf("[ingest] Completed ingest for: %s", name)
+
+	// Sync index files deterministically to ensure they stay in sync
+	if err := SyncIndexFiles(p.WikiDir); err != nil {
+		log.Printf("[ingest] Error syncing index files: %v", err)
+		// Continue anyway - ingest is primary operation
+	}
+
 	return nil
 }
 
