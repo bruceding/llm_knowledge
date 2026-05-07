@@ -612,18 +612,40 @@ func buildArticleContentWithImages(item *gofeed.Item, feedName, assetsDir, artic
 		}
 	}
 
-	// Only write Content section (Summary is stored in database separately)
+	// Determine feed content for length check
+	feedContentHTML := ""
 	if item.Content != "" {
-		content.WriteString("## Content\n\n")
-		processedContent, imgs, errs := processHTMLImages(item.Content, assetsDir, articleURL)
-		content.WriteString(processedContent)
-		content.WriteString("\n\n")
-		imgCount += imgs
-		imgErrors += errs
+		feedContentHTML = item.Content
 	} else if item.Description != "" {
+		feedContentHTML = item.Description
+	}
+
+	// Always try to fetch full article if Link exists
+	// Many feeds provide excerpts that look substantial but are incomplete
+	if item.Link != "" {
+		fullContent, imgs, errs, err := fetchFullArticleContent(item.Link, assetsDir)
+		if err == nil {
+			fullText := stripHTML(fullContent)
+			feedText := stripHTML(feedContentHTML)
+			// Use full article if it's at least 50% longer than feed content
+			// This catches cases where feed excerpt is 700 chars but full article is 10KB+
+			if len(fullText) > len(feedText)*3/2 {
+				content.WriteString("## Content\n\n")
+				content.WriteString(fullContent)
+				content.WriteString("\n\n")
+				imgCount += imgs
+				imgErrors += errs
+				return content.String(), imgCount, imgErrors
+			}
+		}
+		// Fall through to use feed content if fetch fails or full article not substantially longer
+	}
+
+	// Use feed content (Content or Description)
+	if feedContentHTML != "" {
 		content.WriteString("## Content\n\n")
-		processedDesc, imgs, errs := processHTMLImages(item.Description, assetsDir, articleURL)
-		content.WriteString(processedDesc)
+		processedContent, imgs, errs := processHTMLImages(feedContentHTML, assetsDir, articleURL)
+		content.WriteString(processedContent)
 		content.WriteString("\n\n")
 		imgCount += imgs
 		imgErrors += errs
@@ -1136,6 +1158,76 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		}
 		return ""
 	}
+}
+
+// stripHTML removes HTML tags and returns plain text for length checking
+func stripHTML(htmlContent string) string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
+	if err != nil {
+		return htmlContent
+	}
+	return doc.Text()
+}
+
+// fetchFullArticleContent fetches the full article HTML from URL,
+// extracts main content, downloads images, and converts to markdown
+func fetchFullArticleContent(articleURL, assetsDir string) (string, int, int, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(articleURL)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", 0, 0, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", 0, 0, err
+	}
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(body)))
+	if err != nil {
+		return "", 0, 0, err
+	}
+
+	// Remove non-content elements
+	doc.Find("script, style, nav, .Header, .Footer, .NavigationDrawer, aside, .sidebar, .navigation, .menu, .ads").Remove()
+	doc.Find(".Cookie-notice, .cookie-notice, .js-cookieNotice").Remove()
+
+	// Find main content area (reuse extractContent selectors from web.go)
+	var contentNode *goquery.Selection
+	selectors := []string{
+		".Article",
+		".Blog-content",
+		"article",
+		"main",
+		".content",
+		".post",
+		"#content",
+		"#main",
+	}
+	for _, sel := range selectors {
+		if doc.Find(sel).Length() > 0 {
+			contentNode = doc.Find(sel).First()
+			break
+		}
+	}
+	if contentNode == nil {
+		contentNode = doc.Find("body")
+	}
+
+	// Get HTML of content node and process
+	contentHTML, err := contentNode.Html()
+	if err != nil {
+		return "", 0, 0, err
+	}
+
+	// Use existing processHTMLToMarkdown (handles images + conversion)
+	markdown, imgs, errs := processHTMLToMarkdown(contentHTML, assetsDir, articleURL)
+	return markdown, imgs, errs, nil
 }
 
 // processHTMLImages is kept for backward compatibility but now uses the markdown converter

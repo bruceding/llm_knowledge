@@ -1,9 +1,46 @@
 package api
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestFetchFullArticleContent(t *testing.T) {
+	// Create temp assets dir
+	tmpDir, err := os.MkdirTemp("", "rss-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	assetsDir := tmpDir + "/assets"
+	os.MkdirAll(assetsDir, 0755)
+
+	// Test fetching a real article
+	content, imgs, errs, err := fetchFullArticleContent(
+		"https://internals-for-interns.com/posts/zfs-filesystem/",
+		assetsDir,
+	)
+
+	if err != nil {
+		t.Logf("Fetch error: %v", err)
+		// Don't fail on network errors, just log
+		return
+	}
+
+	// Check content is substantial (not just excerpt)
+	if len(content) < 500 {
+		t.Errorf("Expected substantial content (>500 chars), got %d chars: %s", len(content), content[:200])
+	}
+
+	// Should contain key sections from the article
+	if !strings.Contains(content, "block pointer") {
+		t.Errorf("Expected content about 'block pointer', got: %s", content[:300])
+	}
+
+	t.Logf("Success: got %d chars, %d images downloaded, %d image errors", len(content), imgs, errs)
+}
 
 func TestRSSHandlerExists(t *testing.T) {
 	h := RSSHandler{DataDir: "/tmp"}
