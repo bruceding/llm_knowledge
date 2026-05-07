@@ -319,10 +319,14 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 	title = strings.ReplaceAll(title, "/", "-")
 	title = strings.ReplaceAll(title, ":", "-")
 	title = strings.ReplaceAll(title, " ", "-")
+	title = strings.ReplaceAll(title, "\\", "-") // backslash
 	// Remove other problematic characters
 	title = strings.ReplaceAll(title, "?", "")
 	title = strings.ReplaceAll(title, "*", "")
 	title = strings.ReplaceAll(title, "|", "")
+	title = strings.ReplaceAll(title, "\"", "")  // quote
+	title = strings.ReplaceAll(title, "<", "")
+	title = strings.ReplaceAll(title, ">", "")
 
 	// Create directory
 	dir := filepath.Join(h.DataDir, "raw", "web", title)
