@@ -146,6 +146,7 @@ export default function ChatView() {
     }
 
     if (event.type === 'assistant') {
+      if (!isStreamingRef.current) return
       const msg = event.message
       const blocks = typeof msg === 'object' ? msg?.content : undefined
       if (blocks && blocks.length > 0) {
@@ -219,6 +220,8 @@ export default function ChatView() {
 
     const headers = { ...getAuthHeaders(), 'Accept': 'text/event-stream' } as Record<string, string>
 
+    let cancelled = false
+
     fetch(`/api/query/stream?conversationId=${currentConversationId}`, { headers, signal: controller.signal })
       .then(res => {
         if (!res.ok) throw new Error(`SSE request failed: ${res.status}`)
@@ -234,6 +237,10 @@ export default function ChatView() {
           if (done) {
             sseReadyRef.current = false
             abortRef.current = null
+            if (isStreamingRef.current) {
+              isStreamingRef.current = false
+              setIsStreaming(false)
+            }
             return
           }
           buffer += decoder.decode(value, { stream: true })
@@ -252,8 +259,8 @@ export default function ChatView() {
 
         return pump()
       })
-      .catch(err => {
-        if (err.name !== 'AbortError') {
+      .catch(() => {
+        if (!cancelled) {
           sseReadyRef.current = false
           isStreamingRef.current = false
           setIsStreaming(false)
@@ -261,6 +268,7 @@ export default function ChatView() {
       })
 
     return () => {
+      cancelled = true
       controller.abort()
       sseReadyRef.current = false
     }
