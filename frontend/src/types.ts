@@ -138,3 +138,44 @@ export interface CaptchaResponse {
   captchaKey: string
   captchaImage: string
 }
+
+// Newsletter IMAP types
+export interface IMAPConfig {
+  id: number
+  host: string
+  port: number
+  username: string
+  folderName: string
+  autoSync: boolean
+  lastSyncAt: string
+  createdAt: string
+}
+
+export interface IMAPConfigInput {
+  host: string
+  port: number
+  username: string
+  password: string
+  folderName: string
+  autoSync: boolean
+}
+
+export interface IMAPConfigResponse {
+  configured: boolean
+  config?: IMAPConfig
+}
+
+export interface IMAPTestResult {
+  success: boolean
+  folderExists?: boolean
+  unseenCount?: number
+  message: string
+}
+
+export interface NewsletterSyncResult {
+  newArticles: number
+  total: number
+  downloadErrors: number
+  message: string
+  error?: string
+}

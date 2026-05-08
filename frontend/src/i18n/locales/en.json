@@ -50,7 +50,16 @@
     "errorOnlyPdf": "Only PDF files are supported for drag and drop upload",
     "errorWebClipNotImplemented": "Web clipping is not yet implemented. Please use PDF upload.",
     "errorRssNotImplemented": "RSS feed management is not yet implemented. This is a placeholder.",
-    "deleteFeedConfirm": "Are you sure you want to delete this RSS feed?"
+    "deleteFeedConfirm": "Are you sure you want to delete this RSS feed?",
+    "newsletter": "Newsletter",
+    "newsletterHint": "Import newsletters from your email via IMAP.",
+    "newsletterNotConfigured": "Configure IMAP in Settings to import newsletters.",
+    "goToSettings": "Go to Settings",
+    "syncNewsletter": "Sync Now",
+    "syncing": "Syncing...",
+    "lastSync": "Last sync",
+    "never": "Never",
+    "deleteImapConfirm": "Are you sure you want to delete the IMAP configuration? Inbox newsletters will be removed."
   },
   "settings": {
     "title": "Settings",
@@ -65,7 +74,24 @@
     "apiBaseUrl": "API Base URL",
     "apiKey": "API Key",
     "apiKeyWarning": "Your API key is stored locally. Keep it secure.",
-    "modelName": "Model Name"
+    "modelName": "Model Name",
+    "newsletter": "Newsletter (IMAP)",
+    "newsletterHint": "Configure IMAP to import newsletters from your email inbox.",
+    "imapHost": "IMAP Server",
+    "imapPort": "Port",
+    "imapUsername": "Username",
+    "imapPassword": "Password",
+    "imapPasswordHint": "Gmail: use app-specific password. QQ/163: use authorization code.",
+    "imapFolder": "Folder Name",
+    "imapFolderHint": "Create this folder in your email and set up rules to route newsletters there.",
+    "autoSync": "Auto Sync",
+    "autoSyncHint": "Automatically sync every hour",
+    "testConnection": "Test Connection",
+    "testing": "Testing...",
+    "testSuccess": "Connection successful",
+    "testFailed": "Connection failed",
+    "deleteConfig": "Delete Configuration",
+    "configSaved": "IMAP configuration saved"
   },
   "documentsList": {
     "title": "Documents",

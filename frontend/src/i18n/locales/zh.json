@@ -50,7 +50,16 @@
     "errorOnlyPdf": "拖拽上传仅支持 PDF 文件",
     "errorWebClipNotImplemented": "网页裁剪功能尚未实现，请使用 PDF 上传。",
     "errorRssNotImplemented": "RSS 订阅管理功能尚未实现，这是一个占位符。",
-    "deleteFeedConfirm": "确定要删除此 RSS 订阅源吗？"
+    "deleteFeedConfirm": "确定要删除此 RSS 订阅源吗？",
+    "newsletter": "Newsletter 邮件",
+    "newsletterHint": "通过 IMAP 从邮箱导入 Newsletter。",
+    "newsletterNotConfigured": "请先在设置中配置 IMAP 以导入 Newsletter。",
+    "goToSettings": "前往设置",
+    "syncNewsletter": "立即同步",
+    "syncing": "同步中...",
+    "lastSync": "上次同步",
+    "never": "从未",
+    "deleteImapConfirm": "确定要删除 IMAP 配置吗？收件箱中的 Newsletter 将被移除。"
   },
   "settings": {
     "title": "设置",
@@ -65,7 +74,24 @@
     "apiBaseUrl": "API 基础地址",
     "apiKey": "API 密钥",
     "apiKeyWarning": "API 密钥本地存储，请妥善保管。",
-    "modelName": "模型名称"
+    "modelName": "模型名称",
+    "newsletter": "Newsletter (IMAP)",
+    "newsletterHint": "配置 IMAP 以从邮箱导入 Newsletter。",
+    "imapHost": "IMAP 服务器",
+    "imapPort": "端口",
+    "imapUsername": "用户名",
+    "imapPassword": "密码",
+    "imapPasswordHint": "Gmail 请使用应用专用密码，QQ/163 请使用授权码。",
+    "imapFolder": "文件夹名",
+    "imapFolderHint": "在邮箱中创建此文件夹，并设置规则将 Newsletter 自动归类到该文件夹。",
+    "autoSync": "自动同步",
+    "autoSyncHint": "每小时自动同步一次",
+    "testConnection": "测试连接",
+    "testing": "测试中...",
+    "testSuccess": "连接成功",
+    "testFailed": "连接失败",
+    "deleteConfig": "删除配置",
+    "configSaved": "IMAP 配置已保存"
   },
   "documentsList": {
     "title": "文档",
