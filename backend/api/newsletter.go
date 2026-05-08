@@ -1,0 +1,609 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"llm-knowledge/crypto"
+	"llm-knowledge/db"
+	"llm-knowledge/ingest"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/PuerkitoBio/goquery"
+	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/labstack/echo/v4"
+)
+
+type NewsletterHandler struct {
+	DataDir   string
+	ClaudeBin string
+}
+
+type IMAPConfigRequest struct {
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	FolderName string `json:"folderName"`
+	AutoSync   bool   `json:"autoSync"`
+}
+
+type IMAPConfigResponse struct {
+	ID         uint      `json:"id"`
+	Host       string    `json:"host"`
+	Port       int       `json:"port"`
+	Username   string    `json:"username"`
+	FolderName string    `json:"folderName"`
+	AutoSync   bool      `json:"autoSync"`
+	LastSyncAt time.Time `json:"lastSyncAt"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
+
+type NewsletterSyncResult struct {
+	NewArticles    int    `json:"newArticles"`
+	Total          int    `json:"total"`
+	DownloadErrors int    `json:"downloadErrors"`
+	Message        string `json:"message"`
+	Error          string `json:"error,omitempty"`
+}
+
+func toIMAPConfigResponse(cfg *db.IMAPConfig) IMAPConfigResponse {
+	return IMAPConfigResponse{
+		ID:         cfg.ID,
+		Host:       cfg.Host,
+		Port:       cfg.Port,
+		Username:   cfg.Username,
+		FolderName: cfg.FolderName,
+		AutoSync:   cfg.AutoSync,
+		LastSyncAt: cfg.LastSyncAt,
+		CreatedAt:  cfg.CreatedAt,
+	}
+}
+
+func (h *NewsletterHandler) GetConfig(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
+	var cfg db.IMAPConfig
+	if err := db.DB.Where("user_id = ?", userId).First(&cfg).Error; err != nil {
+		return c.JSON(http.StatusOK, echo.Map{"configured": false})
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{"configured": true, "config": toIMAPConfigResponse(&cfg)})
+}
+
+func (h *NewsletterHandler) UpdateConfig(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
+	var req IMAPConfigRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid request"})
+	}
+
+	if req.Host == "" || req.Username == "" {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "host and username are required"})
+	}
+	if req.Port == 0 {
+		req.Port = 993
+	}
+	if req.FolderName == "" {
+		req.FolderName = "Newsletter"
+	}
+
+	var cfg db.IMAPConfig
+	isNew := db.DB.Where("user_id = ?", userId).First(&cfg).Error != nil
+
+	cfg.UserID = userId
+	cfg.Host = req.Host
+	cfg.Port = req.Port
+	cfg.Username = req.Username
+	cfg.FolderName = req.FolderName
+	cfg.AutoSync = req.AutoSync
+
+	if req.Password != "" {
+		encrypted, err := crypto.Encrypt(req.Password)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to encrypt password"})
+		}
+		cfg.EncryptedPass = encrypted
+	} else if isNew {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "password is required"})
+	}
+
+	if err := db.DB.Save(&cfg).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to save config"})
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{"configured": true, "config": toIMAPConfigResponse(&cfg)})
+}
+
+func (h *NewsletterHandler) DeleteConfig(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
+	var cfg db.IMAPConfig
+	if err := db.DB.Where("user_id = ?", userId).First(&cfg).Error; err != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "config not found"})
+	}
+
+	var inboxDocs []db.Document
+	db.DB.Where("source_type = ? AND user_id = ? AND status = ?", "newsletter", userId, "inbox").Find(&inboxDocs)
+	for _, doc := range inboxDocs {
+		if doc.RawPath != "" {
+			os.RemoveAll(filepath.Join(h.DataDir, filepath.Dir(doc.RawPath)))
+		}
+	}
+	db.DB.Where("source_type = ? AND user_id = ? AND status = ?", "newsletter", userId, "inbox").Delete(&db.Document{})
+
+	db.DB.Delete(&cfg)
+	return c.JSON(http.StatusOK, echo.Map{"message": "config deleted"})
+}
+
+func (h *NewsletterHandler) TestConnection(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
+	var cfg db.IMAPConfig
+	if err := db.DB.Where("user_id = ?", userId).First(&cfg).Error; err != nil {
+		return c.JSON(http.StatusOK, echo.Map{"success": false, "message": "IMAP not configured"})
+	}
+
+	password, err := crypto.Decrypt(cfg.EncryptedPass)
+	if err != nil {
+		return c.JSON(http.StatusOK, echo.Map{"success": false, "message": "failed to decrypt password"})
+	}
+
+	client, err := imapclient.DialTLS(fmt.Sprintf("%s:%d", cfg.Host, cfg.Port), nil)
+	if err != nil {
+		return c.JSON(http.StatusOK, echo.Map{"success": false, "message": fmt.Sprintf("connection failed: %v", err)})
+	}
+	defer client.Close()
+
+	if err := client.Login(cfg.Username, password).Wait(); err != nil {
+		return c.JSON(http.StatusOK, echo.Map{"success": false, "message": fmt.Sprintf("login failed: %v", err)})
+	}
+
+	selectData, err := client.Select(cfg.FolderName, nil).Wait()
+	if err != nil {
+		return c.JSON(http.StatusOK, echo.Map{
+			"success":      false,
+			"folderExists": false,
+			"message":      fmt.Sprintf("folder '%s' not found: %v", cfg.FolderName, err),
+		})
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{
+		"success":      true,
+		"folderExists": true,
+		"unseenCount":  selectData.NumMessages,
+		"message":      fmt.Sprintf("Connection successful, folder '%s' accessible", cfg.FolderName),
+	})
+}
+
+func (h *NewsletterHandler) Sync(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
+	var cfg db.IMAPConfig
+	if err := db.DB.Where("user_id = ?", userId).First(&cfg).Error; err != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "IMAP not configured"})
+	}
+
+	result := h.syncInternal(&cfg)
+	return c.JSON(http.StatusOK, result)
+}
+
+func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResult {
+	password, err := crypto.Decrypt(cfg.EncryptedPass)
+	if err != nil {
+		return NewsletterSyncResult{Error: "failed to decrypt password: " + err.Error()}
+	}
+
+	client, err := imapclient.DialTLS(fmt.Sprintf("%s:%d", cfg.Host, cfg.Port), nil)
+	if err != nil {
+		return NewsletterSyncResult{Error: "connection failed: " + err.Error()}
+	}
+	defer client.Close()
+
+	if err := client.Login(cfg.Username, password).Wait(); err != nil {
+		return NewsletterSyncResult{Error: "login failed: " + err.Error()}
+	}
+
+	if _, err := client.Select(cfg.FolderName, nil).Wait(); err != nil {
+		return NewsletterSyncResult{Error: fmt.Sprintf("folder '%s' not found: %v", cfg.FolderName, err)}
+	}
+
+	criteria := &imap.SearchCriteria{
+		NotFlag: []imap.Flag{imap.FlagSeen},
+	}
+	if !cfg.LastSyncAt.IsZero() {
+		criteria.Since = cfg.LastSyncAt
+	}
+
+	searchData, err := client.Search(criteria, nil).Wait()
+	if err != nil {
+		return NewsletterSyncResult{Error: "search failed: " + err.Error()}
+	}
+
+	uids := searchData.AllUIDs()
+	if len(uids) == 0 {
+		cfg.LastSyncAt = time.Now()
+		db.DB.Save(cfg)
+		return NewsletterSyncResult{Message: "No new newsletters"}
+	}
+
+	isFirstSync := cfg.LastSyncAt.IsZero()
+
+	fetchOptions := &imap.FetchOptions{
+		Envelope:    true,
+		UID:         true,
+		BodySection: []*imap.FetchItemBodySection{{}},
+	}
+
+	uidSet := imap.UIDSetNum(uids...)
+	fetchCmd := client.Fetch(uidSet, fetchOptions)
+
+	type fetchedMsg struct {
+		uid      imap.UID
+		envelope *imap.Envelope
+		body     []byte
+	}
+	var messages []fetchedMsg
+
+	for {
+		msgData := fetchCmd.Next()
+		if msgData == nil {
+			break
+		}
+
+		buf, err := msgData.Collect()
+		if err != nil {
+			continue
+		}
+
+		if buf.Envelope != nil {
+			var body []byte
+			if len(buf.BodySection) > 0 {
+				body = buf.BodySection[0].Bytes
+			}
+			messages = append(messages, fetchedMsg{
+				uid:      buf.UID,
+				envelope: buf.Envelope,
+				body:     body,
+			})
+		}
+	}
+
+	if err := fetchCmd.Close(); err != nil {
+		return NewsletterSyncResult{Error: "fetch failed: " + err.Error()}
+	}
+
+	sort.Slice(messages, func(i, j int) bool {
+		return messages[i].envelope.Date.After(messages[j].envelope.Date)
+	})
+
+	if isFirstSync && len(messages) > 10 {
+		messages = messages[:10]
+	}
+
+	total := len(messages)
+	newArticles := 0
+	downloadErrors := 0
+	var processedUIDs []imap.UID
+
+	for _, m := range messages {
+		messageID := m.envelope.MessageID
+		if messageID == "" {
+			messageID = fmt.Sprintf("%s-%s-%d", m.envelope.Subject, m.envelope.Date.Format(time.RFC3339), m.uid)
+		}
+
+		var existing db.Document
+		if db.DB.Unscoped().Where("source_guid = ? AND user_id = ?", messageID, cfg.UserID).First(&existing).Error == nil {
+			processedUIDs = append(processedUIDs, m.uid)
+			continue
+		}
+
+		fromName := ""
+		fromAddr := ""
+		if len(m.envelope.From) > 0 {
+			fromName = m.envelope.From[0].Name
+			fromAddr = m.envelope.From[0].Addr()
+			if fromName == "" {
+				fromName = fromAddr
+			}
+		}
+
+		subject := m.envelope.Subject
+		if subject == "" {
+			subject = "untitled"
+		}
+
+		htmlContent := extractHTMLFromEmail(m.body)
+		if htmlContent == "" {
+			processedUIDs = append(processedUIDs, m.uid)
+			continue
+		}
+
+		viewURL := extractViewInBrowserLink(htmlContent)
+
+		senderDir := sanitizeFilename(fromName)
+		feedDir := filepath.Join(h.DataDir, "raw", "newsletter", senderDir)
+		assetsDir := filepath.Join(feedDir, "assets")
+		os.MkdirAll(assetsDir, 0755)
+
+		filteredHTML := filterDecorativeImages(htmlContent)
+		markdown, imgCount, imgErrors := processHTMLToMarkdown(filteredHTML, assetsDir, viewURL)
+		downloadErrors += imgErrors
+
+		var content strings.Builder
+		content.WriteString(fmt.Sprintf("# %s\n\n", subject))
+		content.WriteString(fmt.Sprintf("**From:** %s\n", fromName))
+		content.WriteString(fmt.Sprintf("**Date:** %s\n", m.envelope.Date.Format("2006-01-02 15:04")))
+		if viewURL != "" {
+			content.WriteString(fmt.Sprintf("**Link:** %s\n", viewURL))
+		}
+		content.WriteString("\n## Content\n\n")
+		content.WriteString(markdown)
+
+		slug := sanitizeFilename(subject)
+		articlePath := filepath.Join(feedDir, slug+".md")
+		if err := os.WriteFile(articlePath, []byte(content.String()), 0644); err != nil {
+			continue
+		}
+
+		metadata := map[string]string{
+			"from":      fromName,
+			"fromAddr":  fromAddr,
+			"subject":   subject,
+			"date":      m.envelope.Date.Format(time.RFC3339),
+			"messageId": messageID,
+			"images":    strconv.Itoa(imgCount),
+		}
+		metadataJSON, _ := json.Marshal(metadata)
+
+		doc := db.Document{
+			UserID:     cfg.UserID,
+			Title:      subject,
+			Slug:       slug,
+			SourceType: "newsletter",
+			RawPath:    filepath.Join("raw", "newsletter", senderDir, slug+".md"),
+			SourceURL:  viewURL,
+			SourceGUID: messageID,
+			Language:   "en",
+			Status:     "inbox",
+			Metadata:   string(metadataJSON),
+			CreatedAt:  m.envelope.Date,
+			UpdatedAt:  time.Now(),
+		}
+
+		if err := db.DB.Create(&doc).Error; err != nil {
+			continue
+		}
+
+		if fromName != "" {
+			var tag db.Tag
+			result := db.DB.Where("name = ? AND user_id = ?", fromName, cfg.UserID).First(&tag)
+			if result.Error != nil {
+				tag = db.Tag{Name: fromName, Color: "#808080", UserID: cfg.UserID}
+				db.DB.Create(&tag)
+			}
+			db.DB.Create(&db.DocumentTag{DocumentID: doc.ID, TagID: tag.ID})
+		}
+
+		if h.ClaudeBin != "" {
+			docID := doc.ID
+			rawPath := doc.RawPath
+			go func() {
+				summary, err := ingest.GenerateSummary(h.DataDir, rawPath, h.ClaudeBin)
+				if err != nil {
+					fmt.Printf("[newsletter] summary generation failed for %d: %v\n", docID, err)
+				} else {
+					db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
+				}
+			}()
+		}
+
+		processedUIDs = append(processedUIDs, m.uid)
+		newArticles++
+	}
+
+	if len(processedUIDs) > 0 {
+		storeFlags := imap.StoreFlags{
+			Op:    imap.StoreFlagsAdd,
+			Flags: []imap.Flag{imap.FlagSeen},
+		}
+		uidSet := imap.UIDSetNum(processedUIDs...)
+		if err := client.Store(uidSet, &storeFlags, nil).Close(); err != nil {
+			fmt.Printf("[newsletter] failed to mark messages as seen: %v\n", err)
+		}
+	}
+
+	cfg.LastSyncAt = time.Now()
+	db.DB.Save(cfg)
+
+	msg := fmt.Sprintf("Synced %d new newsletters", newArticles)
+	if downloadErrors > 0 {
+		msg += fmt.Sprintf(" (%d image download errors)", downloadErrors)
+	}
+
+	return NewsletterSyncResult{
+		NewArticles:    newArticles,
+		Total:          total,
+		DownloadErrors: downloadErrors,
+		Message:        msg,
+	}
+}
+
+func extractHTMLFromEmail(body []byte) string {
+	bodyStr := string(body)
+
+	htmlIdx := strings.Index(strings.ToLower(bodyStr), "content-type: text/html")
+	if htmlIdx >= 0 {
+		headerEnd := strings.Index(bodyStr[htmlIdx:], "\r\n\r\n")
+		if headerEnd < 0 {
+			headerEnd = strings.Index(bodyStr[htmlIdx:], "\n\n")
+		}
+		if headerEnd >= 0 {
+			contentStart := htmlIdx + headerEnd
+			if strings.Contains(bodyStr[htmlIdx:htmlIdx+headerEnd], "\r\n") {
+				contentStart += 4
+			} else {
+				contentStart += 2
+			}
+
+			remaining := bodyStr[contentStart:]
+			boundaryIdx := strings.Index(remaining, "\r\n--")
+			if boundaryIdx < 0 {
+				boundaryIdx = strings.Index(remaining, "\n--")
+			}
+			if boundaryIdx >= 0 {
+				return remaining[:boundaryIdx]
+			}
+			return remaining
+		}
+	}
+
+	if strings.Contains(bodyStr, "<html") || strings.Contains(bodyStr, "<HTML") {
+		return bodyStr
+	}
+
+	return ""
+}
+
+func extractViewInBrowserLink(htmlContent string) string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
+	if err != nil {
+		return ""
+	}
+
+	patterns := []string{
+		"view in browser",
+		"view online",
+		"view this email",
+		"view in your browser",
+		"在浏览器中查看",
+		"view it in your browser",
+		"read online",
+		"open in browser",
+	}
+
+	var viewURL string
+	doc.Find("a").Each(func(i int, s *goquery.Selection) {
+		if viewURL != "" {
+			return
+		}
+		text := strings.ToLower(strings.TrimSpace(s.Text()))
+		for _, pattern := range patterns {
+			if strings.Contains(text, pattern) {
+				if href, exists := s.Attr("href"); exists && href != "" {
+					viewURL = href
+					return
+				}
+			}
+		}
+	})
+
+	return viewURL
+}
+
+func filterDecorativeImages(htmlContent string) string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
+	if err != nil {
+		return htmlContent
+	}
+
+	sizePattern := regexp.MustCompile(`(\d+)`)
+
+	doc.Find("img").Each(func(i int, s *goquery.Selection) {
+		shouldRemove := false
+
+		width, hasWidth := s.Attr("width")
+		height, hasHeight := s.Attr("height")
+
+		if hasWidth {
+			if w := sizePattern.FindString(width); w != "" {
+				if val, err := strconv.Atoi(w); err == nil && val < 50 {
+					shouldRemove = true
+				}
+			}
+		}
+		if hasHeight {
+			if h := sizePattern.FindString(height); h != "" {
+				if val, err := strconv.Atoi(h); err == nil && val < 50 {
+					shouldRemove = true
+				}
+			}
+		}
+
+		if hasWidth && hasHeight {
+			w := sizePattern.FindString(width)
+			h := sizePattern.FindString(height)
+			if w == "1" && h == "1" {
+				shouldRemove = true
+			}
+		}
+
+		if style, exists := s.Attr("style"); exists {
+			styleLower := strings.ToLower(style)
+			if strings.Contains(styleLower, "width:1px") || strings.Contains(styleLower, "height:1px") ||
+				strings.Contains(styleLower, "width: 1px") || strings.Contains(styleLower, "height: 1px") {
+				shouldRemove = true
+			}
+			if strings.Contains(styleLower, "display:none") || strings.Contains(styleLower, "display: none") {
+				shouldRemove = true
+			}
+		}
+
+		if shouldRemove {
+			s.Remove()
+		}
+	})
+
+	result, err := doc.Html()
+	if err != nil {
+		return htmlContent
+	}
+	return result
+}
+
+func (h *NewsletterHandler) StartAutoSyncScheduler() {
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+
+		fmt.Println("[newsletter] Auto-sync scheduler started, checking every hour")
+
+		for range ticker.C {
+			h.syncAutoSyncConfigs()
+		}
+	}()
+}
+
+func (h *NewsletterHandler) syncAutoSyncConfigs() {
+	var configs []db.IMAPConfig
+	if err := db.DB.Where("auto_sync = ?", true).Find(&configs).Error; err != nil {
+		fmt.Printf("[newsletter] Failed to query auto-sync configs: %v\n", err)
+		return
+	}
+
+	if len(configs) == 0 {
+		return
+	}
+
+	for _, cfg := range configs {
+		if !cfg.LastSyncAt.IsZero() && time.Since(cfg.LastSyncAt) < 1*time.Hour {
+			continue
+		}
+
+		fmt.Printf("[newsletter] Auto-syncing for user %d (%s)\n", cfg.UserID, cfg.Username)
+		result := h.syncInternal(&cfg)
+		if result.Error != "" {
+			fmt.Printf("[newsletter] Auto-sync failed for user %d: %s\n", cfg.UserID, result.Error)
+		} else {
+			fmt.Printf("[newsletter] Auto-sync completed for user %d: %s\n", cfg.UserID, result.Message)
+		}
+	}
+}
