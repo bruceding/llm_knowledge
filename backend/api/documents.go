@@ -224,21 +224,17 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 	if doc.RawPath != "" {
 		rawPath := filepath.Join(h.DataDir, doc.RawPath)
 		if _, err := os.Stat(rawPath); err == nil {
-			// RSS articles share a feed directory - only delete the single file
+			// RSS articles are single .md files in a shared feed directory
 			if strings.HasPrefix(doc.RawPath, "raw/rss/") {
 				os.Remove(rawPath)
 			} else {
-				// For papers/web clips, check if other documents reference the same raw_path
-				// before deleting the directory to avoid clobbering shared content
+				// For papers/web clips, RawPath is the document's own directory
+				// (e.g. raw/web/{title}/ or raw/papers/{name}/).
+				// Check if other documents reference the same directory before removing.
 				var refCount int64
 				db.DB.Model(&db.Document{}).Where("raw_path = ? AND id != ?", doc.RawPath, doc.ID).Count(&refCount)
 				if refCount == 0 {
-					parentDir := filepath.Dir(rawPath)
-					if filepath.Base(parentDir) != "raw" {
-						os.RemoveAll(parentDir)
-					} else {
-						os.Remove(rawPath)
-					}
+					os.RemoveAll(rawPath)
 				} else {
 					log.Printf("[delete] Skipping raw dir deletion: %d other document(s) reference %q", refCount, doc.RawPath)
 				}
