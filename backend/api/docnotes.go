@@ -3,6 +3,8 @@ package api
 import (
 	"fmt"
 	"llm-knowledge/db"
+	"llm-knowledge/ingest"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -185,6 +187,12 @@ func (h *DocNoteHandler) PushToWiki(c echo.Context) error {
 	note.WikiPushed = true
 	note.WikiPushedAt = time.Now()
 	db.DB.Save(&note)
+
+	// Rebuild index files so the new document appears in sidebar
+	wikiDir := filepath.Join(h.DataDir, "wiki")
+	if err := ingest.SyncIndexFiles(wikiDir); err != nil {
+		log.Printf("[pushWiki] warning: failed to sync index files: %v", err)
+	}
 
 	return c.JSON(http.StatusOK, echo.Map{"message": "pushed to wiki", "wikiPath": "wiki/sources/" + docSlug + ".md"})
 }
