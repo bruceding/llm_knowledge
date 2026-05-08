@@ -328,8 +328,42 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 	title = strings.ReplaceAll(title, "<", "")
 	title = strings.ReplaceAll(title, ">", "")
 
+	userId := GetCurrentUserId(c)
+
+	// Dedup: hard-delete any soft-deleted records with the same source_url for this user
+	// This prevents "ghost" records from causing confusion and accidental deletion of re-imported files
+	var staleDocs []db.Document
+	if err := db.DB.Unscoped().Where("source_url = ? AND user_id = ? AND deleted_at IS NOT NULL", req.URL, userId).Find(&staleDocs).Error; err == nil {
+		for _, stale := range staleDocs {
+			db.DB.Unscoped().Delete(&stale) // hard delete
+			fmt.Printf("[web] Hard-deleted stale soft-deleted record id=%d for re-import: %s\n", stale.ID, req.URL)
+		}
+	}
+
+	// Check if an active document with the same source_url already exists for this user
+	var existingDoc db.Document
+	if err := db.DB.Where("source_url = ? AND user_id = ?", req.URL, userId).First(&existingDoc).Error; err == nil {
+		return c.JSON(200, echo.Map{
+			"id":      existingDoc.ID,
+			"title":   existingDoc.Title,
+			"path":    filepath.Join(h.DataDir, existingDoc.RawPath),
+			"url":     req.URL,
+			"message": "Document already exists",
+		})
+	}
+
+	// Resolve raw_path collision: different URLs may produce the same title/slug.
+	// If another active document already uses this raw_path, append a numeric suffix.
+	rawRelPath := filepath.Join("raw", "web", title)
+	var collisionCount int64
+	db.DB.Model(&db.Document{}).Where("raw_path = ? AND source_url != ?", rawRelPath, req.URL).Count(&collisionCount)
+	if collisionCount > 0 {
+		title = fmt.Sprintf("%s-%d", title, collisionCount+1)
+		rawRelPath = filepath.Join("raw", "web", title)
+	}
+
 	// Create directory
-	dir := filepath.Join(h.DataDir, "raw", "web", title)
+	dir := filepath.Join(h.DataDir, rawRelPath)
 	assetsDir := filepath.Join(dir, "assets")
 	if err := os.MkdirAll(assetsDir, 0755); err != nil {
 		return c.JSON(500, echo.Map{"error": "failed to create directory"})
@@ -396,32 +430,6 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 
 	if err := os.WriteFile(mdPath, []byte(mdContent), 0644); err != nil {
 		return c.JSON(500, echo.Map{"error": "failed to save markdown"})
-	}
-
-	// Create Document record
-	rawRelPath := filepath.Join("raw", "web", title)
-	userId := GetCurrentUserId(c)
-
-	// Dedup: hard-delete any soft-deleted records with the same source_url for this user
-	// This prevents "ghost" records from causing confusion and accidental deletion of re-imported files
-	var staleDocs []db.Document
-	if err := db.DB.Unscoped().Where("source_url = ? AND user_id = ? AND deleted_at IS NOT NULL", req.URL, userId).Find(&staleDocs).Error; err == nil {
-		for _, stale := range staleDocs {
-			db.DB.Unscoped().Delete(&stale) // hard delete
-			fmt.Printf("[web] Hard-deleted stale soft-deleted record id=%d for re-import: %s\n", stale.ID, req.URL)
-		}
-	}
-
-	// Check if an active document with the same source_url already exists for this user
-	var existingDoc db.Document
-	if err := db.DB.Where("source_url = ? AND user_id = ?", req.URL, userId).First(&existingDoc).Error; err == nil {
-		return c.JSON(200, echo.Map{
-			"id":      existingDoc.ID,
-			"title":   existingDoc.Title,
-			"path":    filepath.Join(h.DataDir, existingDoc.RawPath),
-			"url":     req.URL,
-			"message": "Document already exists",
-		})
 	}
 
 	// Store original published date in metadata

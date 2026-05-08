@@ -228,12 +228,19 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 			if strings.HasPrefix(doc.RawPath, "raw/rss/") {
 				os.Remove(rawPath)
 			} else {
-				// For papers/web clips, each document has its own directory
-				parentDir := filepath.Dir(rawPath)
-				if filepath.Base(parentDir) != "raw" {
-					os.RemoveAll(parentDir)
+				// For papers/web clips, check if other documents reference the same raw_path
+				// before deleting the directory to avoid clobbering shared content
+				var refCount int64
+				db.DB.Model(&db.Document{}).Where("raw_path = ? AND id != ?", doc.RawPath, doc.ID).Count(&refCount)
+				if refCount == 0 {
+					parentDir := filepath.Dir(rawPath)
+					if filepath.Base(parentDir) != "raw" {
+						os.RemoveAll(parentDir)
+					} else {
+						os.Remove(rawPath)
+					}
 				} else {
-					os.Remove(rawPath)
+					log.Printf("[delete] Skipping raw dir deletion: %d other document(s) reference %q", refCount, doc.RawPath)
 				}
 			}
 		}
