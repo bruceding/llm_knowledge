@@ -1076,14 +1076,45 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 	case "small":
 		return innerContent
 	case "table":
-		// Convert HTML table to markdown format
+		// Detect if this is a layout table (email newsletter style) vs data table
+		// Layout tables typically have: no thead, single column, cellpadding="0", used for spacing
+		// Data tables have: thead/th elements, multiple columns with actual data
+
+		// Check for layout table indicators
+		thead := s.Find("thead")
+		hasThead := thead.Length() > 0
+
+		// Check if any row has th elements (indicates data table)
+		hasThElements := s.Find("th").Length() > 0
+
+		// Count columns in first data row
+		allRows := s.Find("tr")
+		colCount := 0
+		if allRows.Length() > 0 {
+			colCount = allRows.First().Find("td, th").Length()
+		}
+
+		// Check for cellpadding="0" cellspacing="0" (common in layout tables)
+		cellpadding, _ := s.Attr("cellpadding")
+		cellspacing, _ := s.Attr("cellspacing")
+		isLayoutStyle := cellpadding == "0" && cellspacing == "0"
+
+		// Determine if this is a layout table
+		// Layout table: no thead, no th, single column, or explicit layout style
+		isLayoutTable := !hasThead && !hasThElements && (colCount <= 1 || isLayoutStyle)
+
+		if isLayoutTable {
+			// Layout table: just extract text content, don't format as markdown table
+			return innerContent + "\n\n"
+		}
+
+		// Data table: convert to markdown format
 		var result strings.Builder
 		var headerCells []string
 		var bodyRows [][]string
 
 		// Extract header cells from <thead> or first <tr>
-		thead := s.Find("thead")
-		if thead.Length() > 0 {
+		if hasThead {
 			thead.Find("tr th, tr td").Each(func(i int, cell *goquery.Selection) {
 				headerCells = append(headerCells, strings.TrimSpace(cell.Text()))
 			})
@@ -1104,7 +1135,7 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		}
 
 		// Extract body rows
-		if thead.Length() > 0 {
+		if hasThead {
 			// Explicit thead: body rows are only in tbody (implicit or explicit)
 			s.Find("tbody tr").Each(func(i int, row *goquery.Selection) {
 				var cells []string
@@ -1118,7 +1149,6 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		} else {
 			// No explicit thead: first row is header, rest are body
 			// Use Slice to skip first row regardless of tbody presence
-			allRows := s.Find("tr")
 			allRows.Slice(1, allRows.Length()).Each(func(i int, row *goquery.Selection) {
 				var cells []string
 				row.Find("td, th").Each(func(j int, cell *goquery.Selection) {

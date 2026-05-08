@@ -524,3 +524,122 @@ func TestWebClippingSSEArticle(t *testing.T) {
 		t.Logf("Preview (first %d chars):\n%s", maxPreview, result[:maxPreview])
 	}
 }
+
+// TestWebClippingGolangWeekly tests clipping a newsletter-style page with multiple sections
+// https://golangweekly.com/issues/598 - RSS抓取链接测试
+func TestWebClippingGolangWeekly(t *testing.T) {
+	url := "https://golangweekly.com/issues/598"
+
+	// Fetch the HTML
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Skipf("Failed to fetch URL (network issue): %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Skipf("HTTP status: %d", resp.StatusCode)
+	}
+
+	// Parse HTML
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to parse HTML: %v", err)
+	}
+
+	// Remove navigation and non-content elements
+	doc.Find("script, style, nav, .Header, .Footer, aside, .Cookie-notice, .navigation, .menu").Remove()
+
+	// Find main content using same logic as extractContent
+	var contentNode *goquery.Selection
+	selectors := []string{".Article", ".Blog-content", "article", "main", ".content", "#content"}
+	for _, sel := range selectors {
+		if doc.Find(sel).Length() > 0 {
+			contentNode = doc.Find(sel).First()
+			break
+		}
+	}
+	if contentNode == nil {
+		contentNode = doc.Find("body")
+	}
+
+	// Convert to markdown
+	var markdown strings.Builder
+	contentNode.Contents().Each(func(i int, s *goquery.Selection) {
+		markdown.WriteString(convertNodeToMarkdown(s))
+	})
+
+	result := markdown.String()
+
+	// Verify key content is present
+	if !strings.Contains(result, "#598") && !strings.Contains(result, "598") {
+		t.Error("Expected issue number '#598' in markdown")
+	}
+
+	if !strings.Contains(result, "Go") {
+		t.Error("Expected 'Go' content in markdown")
+	}
+
+	// Check for section headers (newsletter has multiple sections)
+	// Should have headings like "In Brief", "Code & Tools", etc.
+	headingCount := strings.Count(result, "##")
+	t.Logf("Section headings (##) found: %d", headingCount)
+
+	// Check link count - newsletter has many links
+	linkCount := strings.Count(result, "[")
+	t.Logf("Links found: %d", linkCount)
+
+	// Check if sponsor content is properly handled (should be present but marked)
+	// golangweekly has sponsor sections
+	sponsorMention := strings.Contains(strings.ToLower(result), "sponsor")
+	t.Logf("Has sponsor content: %v", sponsorMention)
+
+	t.Logf("Generated markdown length: %d characters", len(result))
+
+	// Save to temp file for inspection
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "golangweekly_598.md")
+	if err := os.WriteFile(tmpFile, []byte(result), 0644); err != nil {
+		t.Fatalf("Failed to write temp file: %v", err)
+	}
+	t.Logf("Saved markdown to: %s", tmpFile)
+
+	// Also save to project directory for manual inspection
+	debugFile := "/tmp/golangweekly_598_debug.md"
+	if err := os.WriteFile(debugFile, []byte(result), 0644); err == nil {
+		t.Logf("Saved debug file to: %s", debugFile)
+	}
+
+	// Print the first 1500 chars for debugging
+	maxPreview := 1500
+	if len(result) > maxPreview {
+		t.Logf("Preview (first %d chars):\n%s", maxPreview, result[:maxPreview])
+	} else {
+		t.Logf("Full content:\n%s", result)
+	}
+
+	// Analyze potential improvements
+	// Check for issues that could be optimized
+
+	// 1. Check if golangweekly.com/link/ redirect URLs are preserved (may want to resolve to actual URLs)
+	redirectLinks := strings.Count(result, "golangweekly.com/link/")
+	t.Logf("Redirect links (golangweekly.com/link/): %d", redirectLinks)
+
+	// 2. Check blank line count - should be reasonable for newsletter format
+	blankLines := 0
+	for _, line := range strings.Split(result, "\n") {
+		if strings.TrimSpace(line) == "" {
+			blankLines++
+		}
+	}
+	totalLines := len(strings.Split(result, "\n"))
+	t.Logf("Blank lines: %d out of %d total (%.1f%%)", blankLines, totalLines, float64(blankLines)/float64(totalLines)*100)
+
+	// 3. Check if issue date is extracted
+	if strings.Contains(result, "April") || strings.Contains(result, "2026") || strings.Contains(result, "2025") {
+		t.Logf("Issue date found in content ✓")
+	} else {
+		t.Logf("Warning: Issue date may not be clearly extracted")
+	}
+}
