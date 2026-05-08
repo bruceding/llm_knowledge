@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { createDocNote } from '../api'
+import { createDocNote, getAuthHeaders } from '../api'
 import type { ContentBlock } from '../types'
 
 // Format a tool_use content block into a human-readable description
@@ -88,7 +88,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   const [noteContent, setNoteContent] = useState('')
   const [savingNote, setSavingNote] = useState(false)
 
-  const eventSourceRef = useRef<EventSource | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // Auto-scroll to bottom
@@ -96,105 +96,133 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Start SSE connection
+  // Process a single SSE event object
+  const handleSSEEvent = useCallback((event: Record<string, unknown>) => {
+    if (event.type === 'session') {
+      setSessionId(event.sessionId as string)
+      setLoading(false)
+    } else if (event.type === 'assistant') {
+      const msg = event.message as Record<string, unknown> | undefined
+      const blocks = typeof msg === 'object' ? (msg?.content as ContentBlock[]) : undefined
+      if (blocks && blocks.length > 0) {
+        const { text, hasThinking, hasToolUse, toolDesc } = extractFromContentBlocks(blocks)
+        setMessages(prev => {
+          const lastMsg = prev[prev.length - 1]
+          if (lastMsg?.role === 'assistant' && lastMsg.isStreaming) {
+            return prev.map((m, i) =>
+              i === prev.length - 1
+                ? { ...m, content: m.content + text, isThinking: hasThinking && !text, isToolUse: hasToolUse && !text, toolDesc }
+                : m
+            )
+          } else {
+            return [...prev, {
+              id: Date.now().toString(),
+              role: 'assistant',
+              content: text,
+              timestamp: new Date(),
+              isStreaming: true,
+              isThinking: hasThinking && !text,
+              isToolUse: hasToolUse && !text,
+              toolDesc,
+            }]
+          }
+        })
+      } else if (event.content) {
+        setMessages(prev => {
+          const lastMsg = prev[prev.length - 1]
+          if (lastMsg?.role === 'assistant' && lastMsg.isStreaming) {
+            return prev.map((m, i) =>
+              i === prev.length - 1
+                ? { ...m, content: m.content + (event.content as string) }
+                : m
+            )
+          } else {
+            return [...prev, {
+              id: Date.now().toString(),
+              role: 'assistant',
+              content: (event.content as string) || '',
+              timestamp: new Date(),
+              isStreaming: true
+            }]
+          }
+        })
+      }
+    } else if (event.type === 'result') {
+      setMessages(prev => prev.map(m =>
+        m.isStreaming ? { ...m, isStreaming: false, isThinking: false } : m
+      ))
+    } else if (event.type === 'error') {
+      setError((event.error as string) || 'An error occurred')
+      setMessages(prev => prev.map(m =>
+        m.isStreaming ? { ...m, isStreaming: false, isThinking: false } : m
+      ))
+    }
+  }, [])
+
+  // Start SSE connection using fetch + ReadableStream (supports auth headers)
   const startSSE = useCallback(() => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close()
+    if (abortRef.current) {
+      abortRef.current.abort()
     }
 
-    const es = new EventSource(`/api/doc-chat/stream?docId=${docId}`)
-    eventSourceRef.current = es
+    const controller = new AbortController()
+    abortRef.current = controller
     setLoading(true)
 
-    es.onmessage = (e) => {
-      const event = JSON.parse(e.data)
+    const headers = { ...getAuthHeaders(), 'Accept': 'text/event-stream' } as Record<string, string>
 
-      if (event.type === 'session') {
-        setSessionId(event.sessionId)
-        setLoading(false)
-      } else if (event.type === 'assistant') {
-        // Parse content blocks from the message (works across different models)
-        const msg = event.message
-        const blocks = typeof msg === 'object' ? msg?.content : undefined
-        if (blocks && blocks.length > 0) {
-          const { text, hasThinking, hasToolUse, toolDesc } = extractFromContentBlocks(blocks)
-          setMessages(prev => {
-            const lastMsg = prev[prev.length - 1]
-            if (lastMsg?.role === 'assistant' && lastMsg.isStreaming) {
-              return prev.map((m, i) =>
-                i === prev.length - 1
-                  ? { ...m, content: m.content + text, isThinking: hasThinking && !text, isToolUse: hasToolUse && !text, toolDesc }
-                  : m
-              )
-            } else {
-              return [...prev, {
-                id: Date.now().toString(),
-                role: 'assistant',
-                content: text,
-                timestamp: new Date(),
-                isStreaming: true,
-                isThinking: hasThinking && !text,
-                isToolUse: hasToolUse && !text,
-                toolDesc,
-              }]
+    fetch(`/api/doc-chat/stream?docId=${docId}`, { headers, signal: controller.signal })
+      .then(res => {
+        if (!res.ok) throw new Error(`SSE request failed: ${res.status}`)
+        const reader = res.body?.getReader()
+        if (!reader) throw new Error('No response body')
+
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        const pump = (): Promise<void> => reader.read().then(({ done, value }) => {
+          if (done) {
+            setLoading(false)
+            abortRef.current = null
+            return
+          }
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split(/\r?\n/)
+          buffer = lines.pop() || ''
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6))
+                handleSSEEvent(data)
+              } catch { /* ignore parse errors */ }
             }
-          })
-        } else if (event.content) {
-          // Fallback: models without content blocks
-          setMessages(prev => {
-            const lastMsg = prev[prev.length - 1]
-            if (lastMsg?.role === 'assistant' && lastMsg.isStreaming) {
-              return prev.map((m, i) =>
-                i === prev.length - 1
-                  ? { ...m, content: m.content + event.content }
-                  : m
-              )
-            } else {
-              return [...prev, {
-                id: Date.now().toString(),
-                role: 'assistant',
-                content: event.content || '',
-                timestamp: new Date(),
-                isStreaming: true
-              }]
-            }
-          })
+          }
+          return pump()
+        })
+
+        return pump()
+      })
+      .catch(err => {
+        if (err.name !== 'AbortError') {
+          setLoading(false)
         }
-      } else if (event.type === 'result') {
-        // Mark streaming complete
-        setMessages(prev => prev.map(m =>
-          m.isStreaming ? { ...m, isStreaming: false, isThinking: false } : m
-        ))
-      } else if (event.type === 'error') {
-        setError(event.error || 'An error occurred')
-        setMessages(prev => prev.map(m =>
-          m.isStreaming ? { ...m, isStreaming: false, isThinking: false } : m
-        ))
-      }
-    }
-
-    es.onerror = () => {
-      es.close()
-      eventSourceRef.current = null
-      setLoading(false)
-    }
-  }, [docId])
+      })
+  }, [docId, handleSSEEvent])
 
   // Start SSE when active becomes true
   useEffect(() => {
     if (!active) {
-      // Close connection when inactive
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close()
-        eventSourceRef.current = null
+      if (abortRef.current) {
+        abortRef.current.abort()
+        abortRef.current = null
       }
       return
     }
 
     startSSE()
     return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close()
+      if (abortRef.current) {
+        abortRef.current.abort()
       }
     }
   }, [active, startSSE])
@@ -227,7 +255,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     try {
       const res = await fetch('/api/doc-chat/message', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ sessionId, message: input.trim() })
       })
 

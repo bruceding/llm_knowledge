@@ -166,7 +166,12 @@ func (h *DocHandler) Publish(c echo.Context) error {
 	// Trigger wiki ingest if raw content exists and ClaudeBin is configured
 	if doc.RawPath != "" && h.ClaudeBin != "" {
 		wikiDir := filepath.Join(h.DataDir, "wiki")
-		mdPath := filepath.Join(h.DataDir, doc.RawPath, "paper.md")
+		var mdPath string
+		if strings.HasSuffix(doc.RawPath, ".md") {
+			mdPath = filepath.Join(h.DataDir, doc.RawPath)
+		} else {
+			mdPath = filepath.Join(h.DataDir, doc.RawPath, "paper.md")
+		}
 
 		if _, err := os.Stat(mdPath); err == nil {
 			// Run wiki ingest asynchronously to avoid blocking the HTTP response
