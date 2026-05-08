@@ -122,7 +122,7 @@ export default function ChatView() {
             id: m.id,
             role: m.role as 'user' | 'assistant' | 'system',
             content: m.content,
-            images: typeof m.images === 'string' ? JSON.parse(m.images as string) : (m.images || []),
+            images: typeof m.images === 'string' && m.images ? JSON.parse(m.images) : (m.images || []),
             timestamp: new Date(m.createdAt),
           })))
         } else {

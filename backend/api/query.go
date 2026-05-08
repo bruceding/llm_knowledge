@@ -263,6 +263,7 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 				ConversationID: convID,
 				Role:           "assistant",
 				Content:        evt.ResultFullContent,
+				Images:         "[]",
 				CreatedAt:      time.Now(),
 			}
 			if err := db.DB.Create(&assistantMsg).Error; err != nil {
