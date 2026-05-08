@@ -81,7 +81,7 @@ export default function ChatView() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
-  const [currentConversationId, setCurrentConversationId] = useState<number | undefined>(urlConversationId)
+  const [currentConversationId, setCurrentConversationId] = useState<number | undefined>(undefined)
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [showHistory, setShowHistory] = useState(false)
 
