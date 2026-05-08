@@ -230,6 +230,7 @@ export default function ChatView() {
         let buffer = ''
 
         const pump = (): Promise<void> => reader.read().then(({ done, value }) => {
+          if (controller.signal.aborted) return
           if (done) {
             sseReadyRef.current = false
             abortRef.current = null
@@ -366,11 +367,13 @@ export default function ChatView() {
 
     // Send message to backend
     try {
-      // Wait for SSE connection to be ready before sending
+      // Wait for SSE connection to be ready before sending (timeout after 10s)
       if (!sseReadyRef.current) {
-        await new Promise<void>((resolve) => {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('SSE connection timeout')), 10000)
           const check = () => {
             if (sseReadyRef.current) {
+              clearTimeout(timeout)
               resolve()
             } else {
               setTimeout(check, 50)

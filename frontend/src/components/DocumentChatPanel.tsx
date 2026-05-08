@@ -181,6 +181,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
         let buffer = ''
 
         const pump = (): Promise<void> => reader.read().then(({ done, value }) => {
+          if (controller.signal.aborted) return
           if (done) {
             setLoading(false)
             abortRef.current = null
