@@ -418,6 +418,8 @@ func (h *RSSHandler) syncAutoSyncFeeds() {
 }
 
 func sanitizeFilename(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.ReplaceAll(name, " ", "-")
 	name = strings.ReplaceAll(name, "/", "-")
 	name = strings.ReplaceAll(name, "\\", "-")
 	name = strings.ReplaceAll(name, ":", "-")
@@ -427,8 +429,7 @@ func sanitizeFilename(name string) string {
 	name = strings.ReplaceAll(name, "<", "-")
 	name = strings.ReplaceAll(name, ">", "-")
 	name = strings.ReplaceAll(name, "|", "-")
-	name = strings.ReplaceAll(name, "'", "")  // Remove single quotes (not replace with -)
-	name = strings.TrimSpace(name)
+	name = strings.ReplaceAll(name, "'", "")
 	if len(name) > 100 {
 		name = name[:100]
 	}

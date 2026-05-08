@@ -49,6 +49,25 @@ func TestRSSHandlerExists(t *testing.T) {
 	}
 }
 
+func TestSanitizeFilename(t *testing.T) {
+	tests := []struct{ input, want string }{
+		{"simple", "simple"},
+		{"hello world", "hello-world"},
+		{"a/b\\c:d", "a-b-c-d"},
+		{"it's", "its"},
+		{"  trim  ", "trim"},
+		{strings.Repeat("a", 150), strings.Repeat("a", 100)},
+		{"file<name>test", "file-name-test"},
+		{"pipe|star*quest?", "pipe-star-quest-"},
+		{"\"quoted\"", "-quoted-"},
+	}
+	for _, tt := range tests {
+		if got := sanitizeFilename(tt.input); got != tt.want {
+			t.Errorf("sanitizeFilename(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestProcessHTMLToMarkdown_PreTagIndentation(t *testing.T) {
 	// Test that syntax-highlighted HTML with indentation is cleaned up
 	html := `<div class="codehilite"><pre><span></span><code><span class="p">...</span>

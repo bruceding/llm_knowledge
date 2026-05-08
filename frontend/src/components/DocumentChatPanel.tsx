@@ -90,6 +90,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
 
   const abortRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -151,6 +152,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       setMessages(prev => prev.map(m =>
         m.isStreaming ? { ...m, isStreaming: false, isThinking: false } : m
       ))
+      setTimeout(() => inputRef.current?.focus(), 0)
     } else if (event.type === 'error') {
       setError((event.error as string) || 'An error occurred')
       setMessages(prev => prev.map(m =>
@@ -397,6 +399,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       <div className="border-t border-gray-200 p-2">
         <div className="flex gap-2">
           <input
+            ref={inputRef}
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}

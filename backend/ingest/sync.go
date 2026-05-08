@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -172,7 +173,7 @@ func updateIndexMD(wikiDir string, sources, entities, topics []Item) error {
 			buf.WriteString("（暂无）\n\n")
 		} else {
 			for _, item := range items {
-				buf.WriteString(fmt.Sprintf("- [%s](%s) — %s\n", item.Name, item.Path, item.Description))
+				buf.WriteString(fmt.Sprintf("- [%s](%s) — %s\n", item.Name, encodeMarkdownPath(item.Path), item.Description))
 			}
 			buf.WriteString("\n")
 		}
@@ -206,6 +207,14 @@ func extractHeader(content []byte) string {
 	return strings.Join(headerLines, "\n")
 }
 
+func encodeMarkdownPath(p string) string {
+	segments := strings.Split(p, "/")
+	for i, seg := range segments {
+		segments[i] = url.PathEscape(seg)
+	}
+	return strings.Join(segments, "/")
+}
+
 // updateSectionMD rebuilds a single-section index file (sources.md, entities.md, topics.md)
 func updateSectionMD(wikiDir, filename, title, emptyText string, items []Item) error {
 	path := filepath.Join(wikiDir, filename)
@@ -217,7 +226,7 @@ func updateSectionMD(wikiDir, filename, title, emptyText string, items []Item) e
 		buf.WriteString(emptyText + "\n")
 	} else {
 		for _, item := range items {
-			buf.WriteString(fmt.Sprintf("- [%s](%s) — %s\n", item.Name, item.Path, item.Description))
+			buf.WriteString(fmt.Sprintf("- [%s](%s) — %s\n", item.Name, encodeMarkdownPath(item.Path), item.Description))
 		}
 	}
 

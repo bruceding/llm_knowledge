@@ -190,6 +190,7 @@ export default function ChatView() {
       isStreamingRef.current = false
       setIsStreaming(false)
       loadConversations()
+      setTimeout(() => inputRef.current?.focus(), 0)
     } else if (event.type === 'error') {
       if (!isStreamingRef.current) return
       setMessages((prev) => {
@@ -201,6 +202,7 @@ export default function ChatView() {
       })
       isStreamingRef.current = false
       setIsStreaming(false)
+      setTimeout(() => inputRef.current?.focus(), 0)
     }
   }, [loadConversations])
 

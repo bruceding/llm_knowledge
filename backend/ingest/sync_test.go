@@ -409,6 +409,62 @@ func TestUpdateSectionMDEmpty(t *testing.T) {
 	}
 }
 
+func TestSyncIndexFilesWithSpaces(t *testing.T) {
+	tmpWiki := t.TempDir()
+
+	for _, dir := range []string{"sources", "entities", "topics"} {
+		if err := os.MkdirAll(filepath.Join(tmpWiki, dir), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	spaceFile := `---
+name: Accepted proposal UUID in Go
+description: Go标准库UUID包提案被接受
+---
+# Accepted proposal UUID in Go`
+	spacePath := filepath.Join(tmpWiki, "sources", "Accepted proposal UUID in Go.md")
+	if err := os.WriteFile(spacePath, []byte(spaceFile), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SyncIndexFiles(tmpWiki); err != nil {
+		t.Fatalf("SyncIndexFiles failed: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpWiki, "index.md"))
+	if err != nil {
+		t.Fatalf("index.md not created: %v", err)
+	}
+
+	indexStr := string(content)
+
+	if !strings.Contains(indexStr, "[Accepted proposal UUID in Go]") {
+		t.Error("index.md missing link text for spaced filename")
+	}
+
+	if strings.Contains(indexStr, "(sources/Accepted proposal UUID in Go.md)") {
+		t.Error("index.md contains raw spaces in link URL — should be encoded")
+	}
+
+	if !strings.Contains(indexStr, "sources/Accepted%20proposal%20UUID%20in%20Go.md") {
+		t.Error("index.md link URL not properly encoded")
+	}
+
+	sourcesContent, err := os.ReadFile(filepath.Join(tmpWiki, "sources.md"))
+	if err != nil {
+		t.Fatalf("sources.md not created: %v", err)
+	}
+
+	sourcesStr := string(sourcesContent)
+	if strings.Contains(sourcesStr, "(sources/Accepted proposal UUID in Go.md)") {
+		t.Error("sources.md contains raw spaces in link URL — should be encoded")
+	}
+	if !strings.Contains(sourcesStr, "sources/Accepted%20proposal%20UUID%20in%20Go.md") {
+		t.Error("sources.md link URL not properly encoded")
+	}
+}
+
 // Helper functions
 func containsSection(content, section string) bool {
 	return strings.Contains(content, section)

@@ -51,9 +51,12 @@ func (qs *QuerySession) routeEvents() {
 			evt.ResultFullContent = qs.currentContent.String()
 		}
 
-		// Route to active turn
+		// Route to active turn (non-blocking to avoid deadlock when no reader)
 		if qs.turnCh != nil {
-			qs.turnCh <- evt
+			select {
+			case qs.turnCh <- evt:
+			default:
+			}
 			if evt.Type == "result" || evt.Type == "error" {
 				close(qs.turnCh)
 				qs.turnCh = nil
