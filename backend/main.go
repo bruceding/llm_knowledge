@@ -245,6 +245,19 @@ func main() {
 	// Start RSS auto-sync scheduler
 	rssH.StartAutoSyncScheduler()
 
+	// Newsletter IMAP API (protected)
+	newsletterH := &api.NewsletterHandler{
+		DataDir:   cfg.DataDir,
+		ClaudeBin: cfg.ClaudeBin,
+	}
+	apiGroup.GET("/imap/config", newsletterH.GetConfig)
+	apiGroup.PUT("/imap/config", newsletterH.UpdateConfig)
+	apiGroup.DELETE("/imap/config", newsletterH.DeleteConfig)
+	apiGroup.POST("/imap/test", newsletterH.TestConnection)
+	apiGroup.POST("/imap/sync", newsletterH.Sync)
+
+	newsletterH.StartAutoSyncScheduler()
+
 	// Serve frontend static files from embedded filesystem
 	// Create a sub filesystem from the embedded dist directory
 	distSubFS, err := fs.Sub(embedfs.DistFS, "dist")
