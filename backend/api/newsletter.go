@@ -1,11 +1,15 @@
 package api
 
 import (
+	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"llm-knowledge/crypto"
 	"llm-knowledge/db"
 	"llm-knowledge/ingest"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,6 +22,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-message/mail"
 	"github.com/labstack/echo/v4"
 )
 
@@ -135,13 +140,24 @@ func (h *NewsletterHandler) DeleteConfig(c echo.Context) error {
 	db.DB.Where("source_type = ? AND user_id = ? AND status = ?", "newsletter", userId, "inbox").Find(&inboxDocs)
 	for _, doc := range inboxDocs {
 		if doc.RawPath != "" {
-			os.RemoveAll(filepath.Join(h.DataDir, filepath.Dir(doc.RawPath)))
+			os.Remove(filepath.Join(h.DataDir, doc.RawPath))
 		}
 	}
 	db.DB.Where("source_type = ? AND user_id = ? AND status = ?", "newsletter", userId, "inbox").Delete(&db.Document{})
 
 	db.DB.Delete(&cfg)
 	return c.JSON(http.StatusOK, echo.Map{"message": "config deleted"})
+}
+
+func dialIMAP(host string, port int, timeout time.Duration) (*imapclient.Client, error) {
+	addr := fmt.Sprintf("%s:%d", host, port)
+	dialer := &net.Dialer{Timeout: timeout}
+	conn, err := tls.DialWithDialer(dialer, "tcp", addr, nil)
+	if err != nil {
+		return nil, err
+	}
+	conn.SetDeadline(time.Now().Add(timeout))
+	return imapclient.New(conn, nil), nil
 }
 
 func (h *NewsletterHandler) TestConnection(c echo.Context) error {
@@ -157,7 +173,7 @@ func (h *NewsletterHandler) TestConnection(c echo.Context) error {
 		return c.JSON(http.StatusOK, echo.Map{"success": false, "message": "failed to decrypt password"})
 	}
 
-	client, err := imapclient.DialTLS(fmt.Sprintf("%s:%d", cfg.Host, cfg.Port), nil)
+	client, err := dialIMAP(cfg.Host, cfg.Port, 30*time.Second)
 	if err != nil {
 		return c.JSON(http.StatusOK, echo.Map{"success": false, "message": fmt.Sprintf("connection failed: %v", err)})
 	}
@@ -202,7 +218,7 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 		return NewsletterSyncResult{Error: "failed to decrypt password: " + err.Error()}
 	}
 
-	client, err := imapclient.DialTLS(fmt.Sprintf("%s:%d", cfg.Host, cfg.Port), nil)
+	client, err := dialIMAP(cfg.Host, cfg.Port, 5*time.Minute)
 	if err != nil {
 		return NewsletterSyncResult{Error: "connection failed: " + err.Error()}
 	}
@@ -438,36 +454,40 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 }
 
 func extractHTMLFromEmail(body []byte) string {
-	bodyStr := string(body)
-
-	htmlIdx := strings.Index(strings.ToLower(bodyStr), "content-type: text/html")
-	if htmlIdx >= 0 {
-		headerEnd := strings.Index(bodyStr[htmlIdx:], "\r\n\r\n")
-		if headerEnd < 0 {
-			headerEnd = strings.Index(bodyStr[htmlIdx:], "\n\n")
+	mr, err := mail.CreateReader(bytes.NewReader(body))
+	if err != nil {
+		bodyStr := string(body)
+		if strings.Contains(bodyStr, "<html") || strings.Contains(bodyStr, "<HTML") {
+			return bodyStr
 		}
-		if headerEnd >= 0 {
-			contentStart := htmlIdx + headerEnd
-			if strings.Contains(bodyStr[htmlIdx:htmlIdx+headerEnd], "\r\n") {
-				contentStart += 4
-			} else {
-				contentStart += 2
-			}
-
-			remaining := bodyStr[contentStart:]
-			boundaryIdx := strings.Index(remaining, "\r\n--")
-			if boundaryIdx < 0 {
-				boundaryIdx = strings.Index(remaining, "\n--")
-			}
-			if boundaryIdx >= 0 {
-				return remaining[:boundaryIdx]
-			}
-			return remaining
-		}
+		return ""
 	}
+	defer mr.Close()
 
-	if strings.Contains(bodyStr, "<html") || strings.Contains(bodyStr, "<HTML") {
-		return bodyStr
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			continue
+		}
+
+		h, ok := p.Header.(*mail.InlineHeader)
+		if !ok {
+			continue
+		}
+
+		contentType, _, _ := h.ContentType()
+		if contentType != "text/html" {
+			continue
+		}
+
+		b, err := io.ReadAll(p.Body)
+		if err != nil {
+			continue
+		}
+		return string(b)
 	}
 
 	return ""
