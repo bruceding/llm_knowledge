@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { createConversation, sendQueryMessage, interruptQuery, fetchConversations, fetchConversationMessages, deleteConversation, uploadImage } from '../api'
+import { createConversation, sendQueryMessage, interruptQuery, fetchConversations, fetchConversationMessages, deleteConversation, uploadImage, getAuthHeaders } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
 import type { SSEEvent, ContentBlock } from '../types'
 
@@ -90,7 +90,7 @@ export default function ChatView() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const eventSourceRef = useRef<EventSource | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
   const isStreamingRef = useRef(false)
   const sseReadyRef = useRef(false)
 
@@ -135,48 +135,6 @@ export default function ChatView() {
       setIsStreaming(false)
     }
   }, [urlConversationId, currentConversationId])
-
-  // Connect SSE stream when conversationId changes
-  useEffect(() => {
-    if (!currentConversationId) return
-
-    // Close existing connection
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close()
-      sseReadyRef.current = false
-    }
-
-    sseReadyRef.current = false
-
-    // Open new SSE connection
-    const es = new EventSource(`/api/query/stream?conversationId=${currentConversationId}`)
-    eventSourceRef.current = es
-
-    es.onopen = () => {
-      sseReadyRef.current = true
-    }
-
-    es.onmessage = (e) => {
-      try {
-        const event: SSEEvent = JSON.parse(e.data)
-        handleSSEEvent(event)
-      } catch {
-        // Ignore parse errors
-      }
-    }
-
-    es.onerror = () => {
-      // Connection closed or error
-      sseReadyRef.current = false
-      isStreamingRef.current = false
-      setIsStreaming(false)
-    }
-
-    return () => {
-      es.close()
-      sseReadyRef.current = false
-    }
-  }, [currentConversationId])
 
   // Handle SSE events
   const handleSSEEvent = useCallback((event: SSEEvent) => {
@@ -244,6 +202,68 @@ export default function ChatView() {
       setIsStreaming(false)
     }
   }, [loadConversations])
+
+  // Connect SSE stream when conversationId changes
+  useEffect(() => {
+    if (!currentConversationId) return
+
+    if (abortRef.current) {
+      abortRef.current.abort()
+      sseReadyRef.current = false
+    }
+
+    sseReadyRef.current = false
+
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    const headers = { ...getAuthHeaders(), 'Accept': 'text/event-stream' } as Record<string, string>
+
+    fetch(`/api/query/stream?conversationId=${currentConversationId}`, { headers, signal: controller.signal })
+      .then(res => {
+        if (!res.ok) throw new Error(`SSE request failed: ${res.status}`)
+        sseReadyRef.current = true
+        const reader = res.body?.getReader()
+        if (!reader) throw new Error('No response body')
+
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        const pump = (): Promise<void> => reader.read().then(({ done, value }) => {
+          if (done) {
+            sseReadyRef.current = false
+            abortRef.current = null
+            return
+          }
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split(/\r?\n/)
+          buffer = lines.pop() || ''
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const event: SSEEvent = JSON.parse(line.slice(6))
+                handleSSEEvent(event)
+              } catch { /* ignore parse errors */ }
+            }
+          }
+          return pump()
+        })
+
+        return pump()
+      })
+      .catch(err => {
+        if (err.name !== 'AbortError') {
+          sseReadyRef.current = false
+          isStreamingRef.current = false
+          setIsStreaming(false)
+        }
+      })
+
+    return () => {
+      controller.abort()
+      sseReadyRef.current = false
+    }
+  }, [currentConversationId, handleSSEEvent])
 
   // Handle image upload
   const handleImageUpload = useCallback(async (file: File) => {
