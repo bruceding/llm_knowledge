@@ -49,8 +49,8 @@ func (h *DocHandler) GetDoc(c echo.Context) error {
 
 // UpdateDocRequest represents the request body for updating a document
 type UpdateDocRequest struct {
-	Title    string `json:"title"`
-	Status   string `json:"status"`
+	Title    string   `json:"title"`
+	Status   string   `json:"status"`
 	TagNames []string `json:"tagNames"`
 }
 
@@ -217,6 +217,9 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "文档不存在或无权访问"})
 	}
 
+	log.Printf("[delete] Deleting document id=%d title=%q sourceType=%s rawPath=%q wikiPath=%q userId=%d remoteAddr=%s",
+		doc.ID, doc.Title, doc.SourceType, doc.RawPath, doc.WikiPath, userId, c.RealIP())
+
 	// Delete associated raw files if RawPath is set
 	if doc.RawPath != "" {
 		rawPath := filepath.Join(h.DataDir, doc.RawPath)
@@ -258,7 +261,19 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 	// Delete document-tag associations
 	db.DB.Where("document_id = ?", idUint).Delete(&db.DocumentTag{})
 
-	// Delete the document record from database
+	// Hard-delete any soft-deleted records that share the same raw_path
+	// This prevents "ghost" records from lingering after a delete + re-import cycle
+	if doc.RawPath != "" {
+		var ghostDocs []db.Document
+		if err := db.DB.Unscoped().Where("raw_path = ? AND id != ? AND deleted_at IS NOT NULL", doc.RawPath, doc.ID).Find(&ghostDocs).Error; err == nil {
+			for _, ghost := range ghostDocs {
+				db.DB.Unscoped().Delete(&ghost)
+				log.Printf("[delete] Hard-deleted ghost record id=%d with same raw_path=%q", ghost.ID, doc.RawPath)
+			}
+		}
+	}
+
+	// Delete the document record from database (soft delete)
 	if err := db.DB.Delete(&doc).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to delete document"})
 	}
@@ -421,11 +436,11 @@ func (h *DocHandler) LLMExtract(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, echo.Map{
-		"id":           doc.ID,
-		"total_pages":  totalPages,
-		"pages":        end - start + 1,
-		"message":      "PDF extracted with LLM successfully",
-		"output_path":  mdPath,
+		"id":          doc.ID,
+		"total_pages": totalPages,
+		"pages":       end - start + 1,
+		"message":     "PDF extracted with LLM successfully",
+		"output_path": mdPath,
 	})
 }
 
@@ -474,11 +489,11 @@ func (h *DocHandler) HTMLExtract(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, echo.Map{
-		"id":          doc.ID,
-		"html_dir":    htmlDir,
-		"html_pages":  htmlFiles,
-		"first_page":  "/data/" + doc.RawPath + "/html/page-1.html",
-		"message":     "PDF converted to HTML successfully",
+		"id":         doc.ID,
+		"html_dir":   htmlDir,
+		"html_pages": htmlFiles,
+		"first_page": "/data/" + doc.RawPath + "/html/page-1.html",
+		"message":    "PDF converted to HTML successfully",
 	})
 }
 

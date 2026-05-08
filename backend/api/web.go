@@ -131,8 +131,8 @@ func extractContent(doc *goquery.Document) string {
 	var contentNode *goquery.Selection
 	// Try multiple selectors in order of specificity
 	selectors := []string{
-		".Article",           // Go blog
-		".Blog-content",      // Go blog alternative
+		".Article",      // Go blog
+		".Blog-content", // Go blog alternative
 		"article",
 		"main",
 		".content",
@@ -324,7 +324,7 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 	title = strings.ReplaceAll(title, "?", "")
 	title = strings.ReplaceAll(title, "*", "")
 	title = strings.ReplaceAll(title, "|", "")
-	title = strings.ReplaceAll(title, "\"", "")  // quote
+	title = strings.ReplaceAll(title, "\"", "") // quote
 	title = strings.ReplaceAll(title, "<", "")
 	title = strings.ReplaceAll(title, ">", "")
 
@@ -401,6 +401,28 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 	// Create Document record
 	rawRelPath := filepath.Join("raw", "web", title)
 	userId := GetCurrentUserId(c)
+
+	// Dedup: hard-delete any soft-deleted records with the same source_url for this user
+	// This prevents "ghost" records from causing confusion and accidental deletion of re-imported files
+	var staleDocs []db.Document
+	if err := db.DB.Unscoped().Where("source_url = ? AND user_id = ? AND deleted_at IS NOT NULL", req.URL, userId).Find(&staleDocs).Error; err == nil {
+		for _, stale := range staleDocs {
+			db.DB.Unscoped().Delete(&stale) // hard delete
+			fmt.Printf("[web] Hard-deleted stale soft-deleted record id=%d for re-import: %s\n", stale.ID, req.URL)
+		}
+	}
+
+	// Check if an active document with the same source_url already exists for this user
+	var existingDoc db.Document
+	if err := db.DB.Where("source_url = ? AND user_id = ?", req.URL, userId).First(&existingDoc).Error; err == nil {
+		return c.JSON(200, echo.Map{
+			"id":      existingDoc.ID,
+			"title":   existingDoc.Title,
+			"path":    filepath.Join(h.DataDir, existingDoc.RawPath),
+			"url":     req.URL,
+			"message": "Document already exists",
+		})
+	}
 
 	// Store original published date in metadata
 	metadata := map[string]string{
