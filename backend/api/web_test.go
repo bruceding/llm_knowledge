@@ -192,6 +192,21 @@ func TestConvertNodeToMarkdown(t *testing.T) {
 			html:     `<h4>GraphQL Subscriptions</h4>`,
 			expected: "#### GraphQL Subscriptions\n\n",
 		},
+		{
+			name:     "empty link should be skipped",
+			html:     `<a href="#"></a>`,
+			expected: "",
+		},
+		{
+			name:     "link with only whitespace should be skipped",
+			html:     `<a href="#">   </a>`,
+			expected: "",
+		},
+		{
+			name:     "anchor link with text is preserved",
+			html:     `<a href="#section">Jump to section</a>`,
+			expected: "[Jump to section](#section)",
+		},
 	}
 
 	for _, tt := range tests {
@@ -304,6 +319,98 @@ func TestWebClippingGoBlog(t *testing.T) {
 
 	// Also print the first 1500 chars for immediate debugging
 	maxPreview := 1500
+	if len(result) > maxPreview {
+		t.Logf("Preview (first %d chars):\n%s", maxPreview, result[:maxPreview])
+	} else {
+		t.Logf("Full content:\n%s", result)
+	}
+
+	// Check blank line count - should be reasonable
+	blankLines := 0
+	for _, line := range strings.Split(result, "\n") {
+		if strings.TrimSpace(line) == "" {
+			blankLines++
+		}
+	}
+	t.Logf("Blank lines: %d out of %d total", blankLines, len(strings.Split(result, "\n")))
+}
+
+// TestWebClippingClaudeBlog tests clipping the Claude Code prompt caching blog
+func TestWebClippingClaudeBlog(t *testing.T) {
+	url := "https://claude.com/blog/lessons-from-building-claude-code-prompt-caching-is-everything"
+
+	// Fetch the HTML
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Skipf("Failed to fetch URL (network issue): %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Skipf("HTTP status: %d", resp.StatusCode)
+	}
+
+	// Parse HTML
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to parse HTML: %v", err)
+	}
+
+	// Remove navigation and non-content elements
+	doc.Find("script, style, nav, .Header, .Footer, aside, .Cookie-notice, .navigation, .menu").Remove()
+
+	// Find main content using same logic as extractContent
+	var contentNode *goquery.Selection
+	selectors := []string{".Article", ".Blog-content", "article", "main", ".content", "#content"}
+	for _, sel := range selectors {
+		if doc.Find(sel).Length() > 0 {
+			contentNode = doc.Find(sel).First()
+			break
+		}
+	}
+	if contentNode == nil {
+		contentNode = doc.Find("body")
+	}
+
+	// Convert to markdown
+	var markdown strings.Builder
+	contentNode.Contents().Each(func(i int, s *goquery.Selection) {
+		markdown.WriteString(convertNodeToMarkdown(s))
+	})
+
+	result := markdown.String()
+
+	// Verify key content is present
+	if !strings.Contains(result, "Prompt caching") {
+		t.Error("Expected 'Prompt caching' in markdown")
+	}
+
+	// Check for key sections/headings
+	if !strings.Contains(result, "cache") {
+		t.Error("Expected 'cache' content")
+	}
+
+	// Check for code blocks or technical examples
+	codeBlockCount := strings.Count(result, "```")
+	t.Logf("Code block pairs: %d", codeBlockCount/2)
+
+	// Check for proper heading structure
+	headingCount := strings.Count(result, "#")
+	t.Logf("Headings found: %d", headingCount)
+
+	t.Logf("Generated markdown length: %d characters", len(result))
+
+	// Save to temp file for inspection
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "claude_prompt_caching.md")
+	if err := os.WriteFile(tmpFile, []byte(result), 0644); err != nil {
+		t.Fatalf("Failed to write temp file: %v", err)
+	}
+	t.Logf("Saved markdown to: %s", tmpFile)
+
+	// Print the first 1200 chars for debugging
+	maxPreview := 1200
 	if len(result) > maxPreview {
 		t.Logf("Preview (first %d chars):\n%s", maxPreview, result[:maxPreview])
 	} else {

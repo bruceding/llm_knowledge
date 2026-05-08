@@ -1034,6 +1034,10 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		if href == "" {
 			return innerContent
 		}
+		// Skip empty links (anchor links without text content)
+		if strings.TrimSpace(innerContent) == "" {
+			return ""
+		}
 		return "[" + innerContent + "](" + href + ")"
 	case "ul":
 		var result strings.Builder

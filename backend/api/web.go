@@ -133,6 +133,7 @@ func extractContent(doc *goquery.Document) string {
 	selectors := []string{
 		".Article",      // Go blog
 		".Blog-content", // Go blog alternative
+		".u-rich-text-blog", // Claude blog
 		"article",
 		"main",
 		".content",
