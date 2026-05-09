@@ -382,8 +382,9 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 				// Channel closed (session terminated)
 				return nil
 			}
-			// Skip system hook events
-			if evt.Type == "system" && (evt.Subtype == "hook_started" || evt.Subtype == "hook_response") {
+			// Skip system events (init, hooks, etc.) — they are process-internal
+			// metadata and should not be sent to SSE subscribers.
+			if evt.Type == "system" {
 				continue
 			}
 

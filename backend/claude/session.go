@@ -141,7 +141,6 @@ func waitForInit(session *InteractiveSession, timeout time.Duration) error {
 // StartSession creates a new Claude session with user/document ownership
 func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID uint, docID uint) (*InteractiveSession, error) {
 	args := []string{
-		"--print",
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
@@ -502,10 +501,18 @@ func (s *InteractiveSession) readEvents() {
 		// Send to main channel (non-blocking to avoid deadlock when no consumer)
 		// docchat handlers use Subscribe() instead of direct eventCh consumption,
 		// so eventCh may have no reader after waitForInit() drains it.
+		// Note: system events are sent to eventCh for waitForInit/session_id capture,
+		// but are filtered out from subscriber fan-out below.
 		select {
 		case s.eventCh <- event:
 		default:
 			// No consumer (docchat path uses Subscribe); drop to avoid deadlock
+		}
+
+		// Skip system events in subscriber fan-out — they are process-internal
+		// metadata (init, hooks, etc.) and should not be sent to SSE subscribers.
+		if event.Type == "system" {
+			continue
 		}
 
 		// Fan-out to subscribers (non-blocking to avoid deadlock)

@@ -89,6 +89,13 @@ func (qs *QuerySession) routeEvents() {
 			qs.currentContent.Reset()
 		}
 
+		// Skip system events (init, hooks, etc.) — they are process-internal
+		// metadata and should not be sent to SSE subscribers.
+		if evt.Type == "system" {
+			qs.mu.Unlock()
+			continue
+		}
+
 		// Fan-out to stream subscribers
 		for _, ch := range qs.streamChs {
 			select {
@@ -450,7 +457,6 @@ func (p *QuerySessionPool) Remove(convID uint) {
 // so session creation returns immediately without waiting for Claude CLI to boot.
 func StartSession(ctx context.Context, claudeBin string, dataDir string, systemPrompt string) (*InteractiveSession, error) {
 	args := []string{
-		"--print",
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
@@ -518,7 +524,6 @@ func StartSession(ctx context.Context, claudeBin string, dataDir string, systemP
 func StartResumedSession(ctx context.Context, claudeBin string, dataDir string, prevSessionID string, systemPrompt string) (*InteractiveSession, error) {
 	args := []string{
 		"--resume", prevSessionID,
-		"--print",
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",

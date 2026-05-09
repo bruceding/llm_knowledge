@@ -15,8 +15,8 @@ import (
 
 // DocChatHandler handles document-specific chat operations
 type DocChatHandler struct {
-	Pool     *claude.SessionPool
-	DataDir  string
+	Pool    *claude.SessionPool
+	DataDir string
 }
 
 // Stream handles SSE streaming for document chat
@@ -85,7 +85,6 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 	flusher.Flush()
 
 	ctx := c.Request().Context()
-	skipFirstAssistant := true
 	for {
 		select {
 		case <-ctx.Done():
@@ -97,12 +96,9 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 				return nil
 			}
 
-			if evt.Type == "system" && (evt.Subtype == "hook_started" || evt.Subtype == "hook_response") {
-				continue
-			}
-
-			if evt.Type == "assistant" && skipFirstAssistant {
-				skipFirstAssistant = false
+			// Skip system events (init, hooks, etc.) — they are process-internal
+			// metadata and should not be sent to SSE subscribers.
+			if evt.Type == "system" {
 				continue
 			}
 
@@ -148,9 +144,9 @@ func (h *DocChatHandler) Message(c echo.Context) error {
 		// Session not found - need to start new one
 		// Return isNewSession flag so frontend can reset
 		return c.JSON(http.StatusOK, echo.Map{
-			"status":        "session_expired",
-			"isNewSession":  true,
-			"message":       "对话已过期，请重新开始",
+			"status":       "session_expired",
+			"isNewSession": true,
+			"message":      "对话已过期，请重新开始",
 		})
 	}
 
@@ -212,8 +208,8 @@ func (h *DocChatHandler) Reconnect(c echo.Context) error {
 
 	// Confirm reconnection
 	sessionData, _ := json.Marshal(echo.Map{
-		"type":       "session",
-		"sessionId":  session.SessionID,
+		"type":        "session",
+		"sessionId":   session.SessionID,
 		"reconnected": true,
 	})
 	if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", sessionData); err != nil {
@@ -235,7 +231,9 @@ func (h *DocChatHandler) Reconnect(c echo.Context) error {
 				return nil
 			}
 
-			if evt.Type == "system" && evt.Subtype != "error" {
+			// Skip system events (init, hooks, etc.) — they are process-internal
+			// metadata and should not be sent to SSE subscribers.
+			if evt.Type == "system" {
 				continue
 			}
 
