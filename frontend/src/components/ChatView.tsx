@@ -116,8 +116,16 @@ export default function ChatView() {
   // Load conversation history when switching
   useEffect(() => {
     if (urlConversationId && urlConversationId !== currentConversationId) {
-      // Don't reset streaming state here — we'll check backend status below
-      // and restore the thinking state if the session is still active
+      // IMPORTANT: Abort existing SSE connection first to prevent old messages leaking
+      if (abortRef.current) {
+        abortRef.current.abort()
+        abortRef.current = null
+        sseReadyRef.current = false
+      }
+
+      // Reset streaming state before loading new conversation
+      isStreamingRef.current = false
+      setIsStreaming(false)
       setPendingImages([])
 
       // Load history and check backend session status in parallel
@@ -268,6 +276,9 @@ export default function ChatView() {
     const controller = new AbortController()
     abortRef.current = controller
 
+    // Capture conversationId for this SSE connection (for defensive checks)
+    const sseConversationId = currentConversationId
+
     const headers = { ...getAuthHeaders(), 'Accept': 'text/event-stream' } as Record<string, string>
 
     let cancelled = false
@@ -329,6 +340,11 @@ export default function ChatView() {
             if (line.startsWith('data: ')) {
               try {
                 const event: SSEEvent = JSON.parse(line.slice(6))
+                // Defensive check: skip events from wrong conversation
+                if (event.conversationId && event.conversationId !== sseConversationId) {
+                  console.warn(`[SSE] Received event from wrong conversation ${event.conversationId}, expected ${sseConversationId}`)
+                  continue
+                }
                 handleSSEEvent(event)
               } catch { /* ignore parse errors */ }
             }
@@ -515,15 +531,25 @@ export default function ChatView() {
   }
 
   // Start new conversation
-  const handleNewChat = () => {
+  const handleNewChat = useCallback(() => {
+    // IMPORTANT: Abort existing SSE connection first to prevent old messages leaking
+    if (abortRef.current) {
+      abortRef.current.abort()
+      abortRef.current = null
+    }
+
+    // Clear all state
     setCurrentConversationId(undefined)
     setMessages([])
     isStreamingRef.current = false
     setIsStreaming(false)
     setPendingImages([])
     setShowHistory(false)
+    sseReadyRef.current = false
+
+    // Navigate to new chat route (without conversation ID)
     navigate('/chat')
-  }
+  }, [navigate])
 
   // Switch to a different conversation
   const handleSwitchConversation = (convId: number) => {
