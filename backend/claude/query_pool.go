@@ -98,6 +98,15 @@ func (qs *QuerySession) routeEvents() {
 		}
 		qs.mu.Unlock()
 	}
+
+	// Session event channel closed — clean up all subscriber channels
+	// so Stream handlers can detect session termination
+	qs.mu.Lock()
+	for _, ch := range qs.streamChs {
+		close(ch)
+	}
+	qs.streamChs = nil
+	qs.mu.Unlock()
 }
 
 // Ask sends a question to the session and returns a channel that receives
@@ -183,14 +192,37 @@ func (qs *QuerySession) LastAsk() time.Time {
 	return qs.lastAsk
 }
 
+// Status returns the current processing state: "idle", "thinking", or "streaming".
+// - idle: no active turn
+// - thinking: processing but no text output yet
+// - streaming: processing and text has been emitted
+func (qs *QuerySession) Status() string {
+	qs.mu.Lock()
+	defer qs.mu.Unlock()
+	if qs.turnCh == nil {
+		return "idle"
+	}
+	if qs.currentContent.Len() > 0 {
+		return "streaming"
+	}
+	return "thinking"
+}
+
+// StreamingContent returns the accumulated text from the current streaming response.
+func (qs *QuerySession) StreamingContent() string {
+	qs.mu.Lock()
+	defer qs.mu.Unlock()
+	return qs.currentContent.String()
+}
+
 // SessionID returns the underlying session's ID.
 func (qs *QuerySession) SessionID() string {
 	return qs.session.SessionID
 }
 
-// SSEConnect delegates to the underlying session.
-func (qs *QuerySession) SSEConnect() {
-	qs.session.SSEConnect()
+// SSEConnect delegates to the underlying session; returns false if limit reached.
+func (qs *QuerySession) SSEConnect() bool {
+	return qs.session.SSEConnect()
 }
 
 // SSEDisconnect delegates to the underlying session.

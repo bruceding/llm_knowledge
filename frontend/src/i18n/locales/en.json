@@ -149,6 +149,8 @@
     "send": "Send",
     "clearChat": "Clear",
     "sessionExpired": "Session expired. Please try again.",
+    "connecting": "Connecting...",
+    "reconnecting": "Reconnecting...",
     "translatePdf": "Translate PDF",
     "dualPdfView": "Dual PDF",
     "translationProgress": "Translation progress...",

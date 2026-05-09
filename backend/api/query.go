@@ -266,47 +266,106 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 		return nil
 	}
 
-	// Subscribe to session events
+	// Mark SSE connection (reject if too many concurrent connections)
+	if !qs.SSEConnect() {
+		data, _ := json.Marshal(echo.Map{
+			"type":           "error",
+			"conversationId": convID,
+			"error":          "too many concurrent SSE connections",
+		})
+		fmt.Fprintf(c.Response(), "data: %s\n\n", data)
+		flusher.Flush()
+		return nil
+	}
+
+	// Capture streaming content BEFORE subscribing to avoid duplication.
+	// If we subscribe first, events between subscribe and content snapshot
+	// would be sent both in "full" and through the channel.
+	if content := qs.StreamingContent(); len(content) > 0 {
+		data, _ := json.Marshal(echo.Map{
+			"type":           "full",
+			"conversationId": convID,
+			"content":        content,
+		})
+		fmt.Fprintf(c.Response(), "data: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	// Subscribe to session events AFTER capturing content
 	eventCh := qs.Subscribe()
 	defer qs.Unsubscribe(eventCh)
 
-	// Mark SSE connection
-	qs.SSEConnect()
-
-	// Stream events
-	for evt := range eventCh {
-		// Skip system hook events
-		if evt.Type == "system" && (evt.Subtype == "hook_started" || evt.Subtype == "hook_response") {
-			continue
-		}
-
-		// Send event to SSE
-		data, _ := json.Marshal(evt)
-		fmt.Fprintf(c.Response(), "data: %s\n\n", data)
-		flusher.Flush()
-
-		// Note: assistant message saving is handled by routeEvents in query_pool.go
-		// so it persists even when SSE disconnects. No need to save here.
-
-		// On interrupt (error_during_execution), don't save empty content
-		// Frontend will handle showing "[Stopped]"
-
-		// Stop on error (but not error_during_execution which is from interrupt)
-		if evt.Type == "error" && evt.Subtype != "error_during_execution" {
-			break
-		}
-
-		// Check if client disconnected
+	// Stream events using select to detect client disconnect promptly
+	for {
 		select {
+		case evt, ok := <-eventCh:
+			if !ok {
+				// Channel closed (session terminated)
+				qs.SSEDisconnect()
+				return nil
+			}
+			// Skip system hook events
+			if evt.Type == "system" && (evt.Subtype == "hook_started" || evt.Subtype == "hook_response") {
+				continue
+			}
+
+			// Send event to SSE; check write error to detect client disconnect
+			data, _ := json.Marshal(evt)
+			if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", data); err != nil {
+				qs.SSEDisconnect()
+				return nil
+			}
+			flusher.Flush()
+
+			// Stop on error (but not error_during_execution which is from interrupt)
+			if evt.Type == "error" && evt.Subtype != "error_during_execution" {
+				qs.SSEDisconnect()
+				return nil
+			}
+
 		case <-ctx.Done():
+			// Client disconnected
 			qs.SSEDisconnect()
 			return nil
-		default:
+		}
+	}
+}
+
+// Status returns whether a conversation's session is active and currently thinking.
+// GET /api/query/status?conversationId=xxx
+func (h *QueryHandler) Status(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
+	convIDStr := c.QueryParam("conversationId")
+	if convIDStr == "" {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "conversationId is required"})
+	}
+
+	convID := parseUint(convIDStr)
+	if convID == 0 {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid conversationId"})
+	}
+
+	// Verify conversation ownership
+	var conv db.Conversation
+	if err := db.DB.Where("id = ? AND user_id = ?", convID, userId).First(&conv).Error; err != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
+	}
+
+	qs := h.Pool.Get(convID)
+	status := "idle"
+	streamingContent := ""
+	if qs != nil {
+		status = qs.Status()
+		if status == "streaming" {
+			streamingContent = qs.StreamingContent()
 		}
 	}
 
-	qs.SSEDisconnect()
-	return nil
+	return c.JSON(http.StatusOK, echo.Map{
+		"status":           status,
+		"streamingContent": streamingContent,
+	})
 }
 
 // InterruptRequest represents an interrupt request

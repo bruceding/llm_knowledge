@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { createConversation, sendQueryMessage, interruptQuery, fetchConversations, fetchConversationMessages, deleteConversation, uploadImage, getAuthHeaders } from '../api'
+import { createConversation, sendQueryMessage, interruptQuery, fetchConversations, fetchConversationMessages, fetchQueryStatus, deleteConversation, uploadImage, getAuthHeaders } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
 import type { SSEEvent, ContentBlock } from '../types'
 
@@ -116,27 +116,61 @@ export default function ChatView() {
   // Load conversation history when switching
   useEffect(() => {
     if (urlConversationId && urlConversationId !== currentConversationId) {
-      // Reset streaming state for the new conversation (the old one continues in the background)
-      isStreamingRef.current = false
-      setIsStreaming(false)
+      // Don't reset streaming state here — we'll check backend status below
+      // and restore the thinking state if the session is still active
       setPendingImages([])
 
-      fetchConversationMessages(urlConversationId).then((dbMessages) => {
-        if (dbMessages.length > 0) {
-          setMessages(dbMessages.map((m) => ({
-            id: m.id,
-            role: m.role as 'user' | 'assistant' | 'system',
-            content: m.content,
-            images: typeof m.images === 'string' && m.images ? JSON.parse(m.images) : (m.images || []),
-            timestamp: new Date(m.createdAt),
-          })))
+      // Load history and check backend session status in parallel
+      Promise.all([
+        fetchConversationMessages(urlConversationId).catch(() => []),
+        fetchQueryStatus(urlConversationId),
+      ]).then(([dbMessages, queryStatus]) => {
+        const loadedMessages: Message[] = (dbMessages as any[]).length > 0
+          ? (dbMessages as any[]).map((m) => ({
+              id: m.id,
+              role: m.role as 'user' | 'assistant' | 'system',
+              content: m.content,
+              images: typeof m.images === 'string' && m.images ? JSON.parse(m.images) : (m.images || []),
+              timestamp: new Date(m.createdAt),
+            }))
+          : []
+
+        // Restore streaming state based on backend session status
+        const status = queryStatus.status || 'idle'
+        if (status === 'streaming') {
+          // Session is actively streaming text — restore content
+          isStreamingRef.current = true
+          setIsStreaming(true)
+          loadedMessages.push({
+            id: Date.now(),
+            role: 'assistant',
+            content: queryStatus.streamingContent || '',
+            timestamp: new Date(),
+            isStreaming: true,
+            isThinking: false,
+          })
+        } else if (status === 'thinking') {
+          // Session is processing but no text output yet
+          isStreamingRef.current = true
+          setIsStreaming(true)
+          loadedMessages.push({
+            id: Date.now(),
+            role: 'assistant',
+            content: '',
+            timestamp: new Date(),
+            isStreaming: true,
+            isThinking: true,
+          })
         } else {
-          setMessages([])
+          // Idle — no active processing
+          isStreamingRef.current = false
+          setIsStreaming(false)
         }
-      }).catch(() => {
-        setMessages([])
+
+        setMessages(loadedMessages)
+        // Set conversation ID after messages are loaded to avoid SSE race condition
+        setCurrentConversationId(urlConversationId)
       })
-      setCurrentConversationId(urlConversationId)
     }
   }, [urlConversationId, currentConversationId])
 
@@ -146,6 +180,18 @@ export default function ChatView() {
       // Session expired, need to reconnect
       isStreamingRef.current = false
       setIsStreaming(false)
+      return
+    }
+
+    if (event.type === 'full') {
+      // SSE reconnect: replace streaming message with accumulated content
+      setMessages((prev) => {
+        const last = prev[prev.length - 1]
+        if (last.role === 'assistant' && last.isStreaming) {
+          return [...prev.slice(0, -1), { ...last, content: event.content || '', isThinking: false, toolUse: undefined }]
+        }
+        return prev
+      })
       return
     }
 
@@ -408,10 +454,11 @@ export default function ChatView() {
 
     // Send message to backend
     try {
-      // Wait for SSE connection to be ready before sending (timeout after 10s)
+      // Wait for SSE connection to be ready before sending (timeout after 30s)
+      // Claude Code startup can be slow, especially on first run
       if (!sseReadyRef.current) {
         await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error('SSE connection timeout')), 10000)
+          const timeout = setTimeout(() => reject(new Error('SSE connection timeout')), 30000)
           const check = () => {
             if (sseReadyRef.current) {
               clearTimeout(timeout)

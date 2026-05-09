@@ -22,13 +22,17 @@ type ImageData struct {
 // InteractiveSession manages a bidirectional stream-json session with Claude CLI
 type InteractiveSession struct {
 	SessionID      string
+	OwnerUserID    uint   // user who created this session (for authorization)
+	OwnerDocID     uint   // document ID this session is for (for authorization)
 	cmd            *exec.Cmd
 	stdin          io.Writer
 	stdoutScanner  *bufio.Scanner
-	eventCh        chan StreamEvent
+	eventCh        chan StreamEvent      // main event channel (closed by readEvents)
+	streamChs      []chan StreamEvent    // subscriber channels for fan-out
 	lastDisconnect time.Time
-	sseCount       int // active SSE connections
+	sseCount       int                   // active SSE connections
 	mu             sync.Mutex
+	closeOnce      sync.Once             // protects Close() from double channel close
 	ctx            context.Context
 	cancel         context.CancelFunc
 }
@@ -132,8 +136,8 @@ func waitForInit(session *InteractiveSession, timeout time.Duration) error {
 	}
 }
 
-// StartSession creates a new Claude session
-func (p *SessionPool) StartSession(ctx context.Context, docInfo string) (*InteractiveSession, error) {
+// StartSession creates a new Claude session with user/document ownership
+func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID uint, docID uint) (*InteractiveSession, error) {
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
@@ -157,12 +161,14 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string) (*Intera
 	}
 
 	session := &InteractiveSession{
-		cmd:           cmd,
-		stdin:         stdinPipe,
+		OwnerUserID: userID,
+		OwnerDocID:  docID,
+		cmd:         cmd,
+		stdin:       stdinPipe,
 		stdoutScanner: newScanner(stdoutPipe),
-		eventCh:       make(chan StreamEvent, 100),
-		ctx:           ctx,
-		cancel:        cancel,
+		eventCh:     make(chan StreamEvent, 100),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -300,24 +306,38 @@ func (s *InteractiveSession) SendInterrupt() error {
 	return nil
 }
 
-// SSEConnect increments SSE connection count
-func (s *InteractiveSession) SSEConnect() {
+// SSEConnect increments SSE connection count; returns false if limit reached
+const maxSSEConnsPerSession = 3
+
+func (s *InteractiveSession) SSEConnect() bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sseCount >= maxSSEConnsPerSession {
+		log.Printf("[session] SSE connect rejected: count=%d, limit=%d", s.sseCount, maxSSEConnsPerSession)
+		return false
+	}
 	s.sseCount++
 	s.lastDisconnect = time.Time{} // Clear disconnect time
-	s.mu.Unlock()
 	log.Printf("[session] SSE connected, count=%d", s.sseCount)
+	return true
 }
 
 // SSEDisconnect decrements SSE count and records disconnect time
 func (s *InteractiveSession) SSEDisconnect() {
 	s.mu.Lock()
+	if s.sseCount <= 0 {
+		s.sseCount = 0
+		log.Printf("[session] WARNING: SSEDisconnect called with sseCount already 0 on session %s", s.SessionID)
+		s.mu.Unlock()
+		return
+	}
 	s.sseCount--
 	if s.sseCount == 0 {
 		s.lastDisconnect = time.Now()
 	}
+	count := s.sseCount
 	s.mu.Unlock()
-	log.Printf("[session] SSE disconnected, count=%d", s.sseCount)
+	log.Printf("[session] SSE disconnected, count=%d", count)
 }
 
 // SSEState returns the current SSE connection count and last disconnect time.
@@ -327,22 +347,46 @@ func (s *InteractiveSession) SSEState() (sseCount int, lastDisconnect time.Time)
 	return s.sseCount, s.lastDisconnect
 }
 
-// Events returns the event channel
+// Events returns the event channel (for direct access, prefer Subscribe for fan-out)
 func (s *InteractiveSession) Events() <-chan StreamEvent {
 	return s.eventCh
 }
 
-// Close terminates the session
-func (s *InteractiveSession) Close() {
-	s.cancel()
-	if s.cmd.Process != nil {
-		s.cmd.Process.Kill()
-	}
-	close(s.eventCh)
-	log.Printf("[session] Closed session %s", s.SessionID)
+// Subscribe returns a channel that receives a copy of all session events.
+// The channel has a buffer of 100 events. Call Unsubscribe when done.
+func (s *InteractiveSession) Subscribe() chan StreamEvent {
+	ch := make(chan StreamEvent, 100)
+	s.mu.Lock()
+	s.streamChs = append(s.streamChs, ch)
+	s.mu.Unlock()
+	return ch
 }
 
-// readEvents parses stdout JSON events
+// Unsubscribe removes a subscriber channel.
+func (s *InteractiveSession) Unsubscribe(ch chan StreamEvent) {
+	s.mu.Lock()
+	for i, c := range s.streamChs {
+		if c == ch {
+			s.streamChs = append(s.streamChs[:i], s.streamChs[i+1:]...)
+			break
+		}
+	}
+	s.mu.Unlock()
+}
+
+// Close terminates the session (safe to call multiple times)
+func (s *InteractiveSession) Close() {
+	s.closeOnce.Do(func() {
+		s.cancel()
+		if s.cmd.Process != nil {
+			s.cmd.Process.Kill()
+		}
+		close(s.eventCh)
+		log.Printf("[session] Closed session %s", s.SessionID)
+	})
+}
+
+// readEvents parses stdout JSON events and fans out to subscribers
 func (s *InteractiveSession) readEvents() {
 	for s.stdoutScanner.Scan() {
 		line := s.stdoutScanner.Bytes()
@@ -396,7 +440,29 @@ func (s *InteractiveSession) readEvents() {
 			}
 		}
 
-		s.eventCh <- event
+		// Send to main channel (non-blocking to avoid deadlock when no consumer)
+		// docchat handlers use Subscribe() instead of direct eventCh consumption,
+		// so eventCh may have no reader after waitForInit() drains it.
+		select {
+		case s.eventCh <- event:
+		default:
+			// No consumer (docchat path uses Subscribe); drop to avoid deadlock
+		}
+
+		// Fan-out to subscribers (non-blocking to avoid deadlock)
+		// For critical events (error/result), log warning if dropped
+		s.mu.Lock()
+		for _, ch := range s.streamChs {
+			select {
+			case ch <- event:
+			default:
+				// Skip slow subscriber, but warn for critical events
+				if event.Type == "error" || event.Type == "result" {
+					log.Printf("[session] WARNING: critical event %s dropped for slow subscriber on session %s", event.Type, s.SessionID)
+				}
+			}
+		}
+		s.mu.Unlock()
 	}
 
 	if err := s.stdoutScanner.Err(); err != nil {
@@ -406,4 +472,12 @@ func (s *InteractiveSession) readEvents() {
 	// Wait for command to finish
 	s.cmd.Wait()
 	log.Printf("[session] Claude process ended for session %s", s.SessionID)
+
+	// Close subscriber channels so Stream handlers can detect session termination
+	s.mu.Lock()
+	for _, ch := range s.streamChs {
+		close(ch)
+	}
+	s.streamChs = nil
+	s.mu.Unlock()
 }

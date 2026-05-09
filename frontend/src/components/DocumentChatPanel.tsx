@@ -73,12 +73,31 @@ interface ChatMessage {
   toolDesc?: string
 }
 
+// Persist messages and sessionId across component remounts (module-level)
+// Keep only last 5 documents to prevent memory leak
+const MAX_STORED_DOCS = 5
+const chatStore = new Map<number, { messages: ChatMessage[]; sessionId: string }>()
+
+function cleanupChatStore(currentDocId: number) {
+  // Remove entries for documents other than current, keeping only last N
+  if (chatStore.size > MAX_STORED_DOCS) {
+    const keys = [...chatStore.keys()].filter(k => k !== currentDocId)
+    // Remove oldest entries first
+    while (chatStore.size > MAX_STORED_DOCS && keys.length > 0) {
+      chatStore.delete(keys.shift()!)
+    }
+  }
+}
+
 export default function DocumentChatPanel({ docId, active, onNoteSaved }: DocumentChatPanelProps) {
   const { t } = useTranslation()
-  const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [sessionId, setSessionId] = useState<string>('')
+
+  // Restore from store on mount
+  const stored = chatStore.get(docId)
+  const [messages, setMessages] = useState<ChatMessage[]>(stored?.messages || [])
+  const [sessionId, setSessionId] = useState<string>(stored?.sessionId || '')
   const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   // Note saving state
@@ -91,6 +110,17 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   const abortRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const sessionIdRef = useRef(sessionId)
+
+  // Keep ref and store in sync
+  useEffect(() => {
+    sessionIdRef.current = sessionId
+  }, [sessionId])
+
+  useEffect(() => {
+    chatStore.set(docId, { messages, sessionId })
+    cleanupChatStore(docId)
+  }, [docId, messages, sessionId])
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -101,7 +131,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   const handleSSEEvent = useCallback((event: Record<string, unknown>) => {
     if (event.type === 'session') {
       setSessionId(event.sessionId as string)
-      setLoading(false)
+      setConnecting(false)
     } else if (event.type === 'assistant') {
       const msg = event.message as Record<string, unknown> | undefined
       const blocks = typeof msg === 'object' ? (msg?.content as ContentBlock[]) : undefined
@@ -161,58 +191,104 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     }
   }, [])
 
-  // Start SSE connection using fetch + ReadableStream (supports auth headers)
-  const startSSE = useCallback(() => {
+  // Shared SSE stream processor
+  const processSSEStream = useCallback((res: Response, controller: AbortController) => {
+    const reader = res.body?.getReader()
+    if (!reader) throw new Error('No response body')
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    const pump = (): Promise<void> => reader.read().then(({ done, value }) => {
+      if (controller.signal.aborted) return
+      if (done) {
+        setConnecting(false)
+        abortRef.current = null
+        return
+      }
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split(/\r?\n/)
+      buffer = lines.pop() || ''
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6))
+            handleSSEEvent(data)
+          } catch { /* ignore parse errors */ }
+        }
+      }
+      return pump()
+    })
+
+    return pump()
+  }, [handleSSEEvent])
+
+  // Start a brand new session
+  const startNewSession = useCallback(() => {
     if (abortRef.current) {
       abortRef.current.abort()
     }
 
     const controller = new AbortController()
     abortRef.current = controller
-    setLoading(true)
+    setConnecting(true)
+    setError(null)
 
     const headers = { ...getAuthHeaders(), 'Accept': 'text/event-stream' } as Record<string, string>
 
     fetch(`/api/doc-chat/stream?docId=${docId}`, { headers, signal: controller.signal })
       .then(res => {
         if (!res.ok) throw new Error(`SSE request failed: ${res.status}`)
-        const reader = res.body?.getReader()
-        if (!reader) throw new Error('No response body')
-
-        const decoder = new TextDecoder()
-        let buffer = ''
-
-        const pump = (): Promise<void> => reader.read().then(({ done, value }) => {
-          if (controller.signal.aborted) return
-          if (done) {
-            setLoading(false)
-            abortRef.current = null
-            return
-          }
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split(/\r?\n/)
-          buffer = lines.pop() || ''
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6))
-                handleSSEEvent(data)
-              } catch { /* ignore parse errors */ }
-            }
-          }
-          return pump()
-        })
-
-        return pump()
+        return processSSEStream(res, controller)
       })
       .catch(err => {
         if (err.name !== 'AbortError') {
-          setLoading(false)
+          setConnecting(false)
         }
       })
-  }, [docId, handleSSEEvent])
+  }, [docId, processSSEStream])
 
-  // Start SSE when active becomes true
+  // Connect: try reconnecting to existing session, fall back to new
+  const connectSSE = useCallback(() => {
+    if (abortRef.current) {
+      abortRef.current.abort()
+    }
+
+    const sid = sessionIdRef.current
+    if (!sid) {
+      startNewSession()
+      return
+    }
+
+    const controller = new AbortController()
+    abortRef.current = controller
+    setConnecting(true)
+    setError(null)
+
+    const headers = { ...getAuthHeaders(), 'Accept': 'text/event-stream' } as Record<string, string>
+
+    fetch(`/api/doc-chat/reconnect?sessionId=${sid}`, { headers, signal: controller.signal })
+      .then(res => {
+        if (!res.ok) {
+          // Session expired - clear history and start fresh
+          setMessages([])
+          setSessionId('')
+          sessionIdRef.current = ''
+          startNewSession()
+          return
+        }
+        return processSSEStream(res, controller)
+      })
+      .catch(err => {
+        if (err.name !== 'AbortError') {
+          setConnecting(false)
+          // Reconnect failed, try new session
+          startNewSession()
+        }
+      })
+  }, [startNewSession, processSSEStream])
+
+  // Connect when active, disconnect when inactive
   useEffect(() => {
     if (!active) {
       if (abortRef.current) {
@@ -222,13 +298,13 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       return
     }
 
-    startSSE()
+    connectSSE()
     return () => {
       if (abortRef.current) {
         abortRef.current.abort()
       }
     }
-  }, [active, startSSE])
+  }, [active, connectSSE])
 
   // Send message
   const handleSend = async () => {
@@ -265,11 +341,11 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       const data = await res.json()
 
       if (data.isNewSession || data.status === 'session_expired') {
-        // Session expired - clear and restart
         setMessages([])
         setSessionId('')
+        sessionIdRef.current = ''
         setError(t('docDetail.sessionExpired'))
-        startSSE()
+        startNewSession()
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message')
@@ -282,8 +358,9 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   const handleClear = () => {
     setMessages([])
     setSessionId('')
+    sessionIdRef.current = ''
     setError(null)
-    startSSE()
+    startNewSession()
   }
 
   // Open note save modal
@@ -310,11 +387,13 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     }
   }
 
+  const isAnyStreaming = messages.some(m => m.isStreaming)
+
   return (
     <div className="flex flex-col h-full">
       {/* Messages area */}
       <div className="flex-1 overflow-auto p-2 space-y-2">
-        {messages.length === 0 && !loading && (
+        {messages.length === 0 && !connecting && (
           <div className="text-center text-gray-400 text-xs py-8">
             {t('docDetail.chatPlaceholder')}
           </div>
@@ -380,9 +459,11 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
           </div>
         ))}
 
-        {loading && messages.length === 0 && (
+        {/* Show connecting indicator regardless of message count */}
+        {connecting && (
           <div className="text-center text-gray-400 text-xs py-4">
             <div className="animate-spin inline-block w-4 h-4 border border-gray-300 border-t-blue-500 rounded-full"></div>
+            <div className="mt-1">{messages.length > 0 ? (t('docDetail.reconnecting') || 'Reconnecting...') : (t('docDetail.connecting') || 'Connecting...')}</div>
           </div>
         )}
 
@@ -411,11 +492,11 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
             }}
             placeholder={t('docDetail.chatPlaceholder')}
             className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
-            disabled={loading}
+            disabled={connecting || isAnyStreaming}
           />
           <button
             onClick={handleSend}
-            disabled={!input.trim() || loading}
+            disabled={!input.trim() || connecting || isAnyStreaming}
             className="px-3 py-1.5 bg-blue-500 text-white rounded text-xs disabled:opacity-50 hover:bg-blue-600"
           >
             {t('docDetail.send')}

@@ -79,7 +79,7 @@ export interface SSEMessage {
 }
 
 export interface SSEEvent {
-  type: 'conversation' | 'document' | 'assistant' | 'result' | 'error' | 'complete' | 'progress' | 'session_expired' | 'system' | 'user'
+  type: 'conversation' | 'document' | 'assistant' | 'result' | 'error' | 'complete' | 'progress' | 'session_expired' | 'system' | 'user' | 'full'
   subtype?: string
   conversationId?: number
   docId?: number

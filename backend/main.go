@@ -175,6 +175,7 @@ func main() {
 	apiGroup.GET("/query/stream", queryH.Stream)
 	apiGroup.POST("/query/message", queryH.Message)
 	apiGroup.POST("/query/interrupt", queryH.Interrupt)
+	apiGroup.GET("/query/status", queryH.Status)
 	apiGroup.GET("/conversations", queryH.ListConversations)
 	apiGroup.GET("/conversations/:id/messages", queryH.GetConversationMessages)
 	apiGroup.DELETE("/conversations/:id", queryH.DeleteConversation)

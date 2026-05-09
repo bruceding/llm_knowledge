@@ -212,6 +212,17 @@ export async function interruptQuery(conversationId: number): Promise<{ status: 
   return res.json()
 }
 
+// Check if a conversation's session is active and thinking
+export async function fetchQueryStatus(conversationId: number): Promise<{ status: string; streamingContent: string }> {
+  try {
+    const res = await fetch(`${API_BASE}/query/status?conversationId=${conversationId}`, { headers: getHeaders() })
+    if (!res.ok) return { status: 'idle', streamingContent: '' }
+    return res.json()
+  } catch {
+    return { status: 'idle', streamingContent: '' }
+  }
+}
+
 // Delete a conversation
 export async function deleteConversation(conversationId: number): Promise<{ status: string; conversationId: number }> {
   const res = await fetch(`${API_BASE}/conversations/${conversationId}`, {
