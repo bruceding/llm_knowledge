@@ -94,6 +94,7 @@ export default function ChatView() {
   const isStreamingRef = useRef(false)
   const sseReadyRef = useRef(false)
   const [forceRefreshKey, setForceRefreshKey] = useState(0)
+  const forceRefreshKeyRef = useRef(0)
 
   // Load conversation list
   const loadConversations = useCallback(async () => {
@@ -116,7 +117,11 @@ export default function ChatView() {
 
   // Load conversation history when switching
   useEffect(() => {
-    if (urlConversationId && urlConversationId !== currentConversationId) {
+    // Run when: URL differs from currentConversationId (normal case),
+    // OR forceRefreshKey was incremented (sidebar click while async pending)
+    if (urlConversationId && (urlConversationId !== currentConversationId || forceRefreshKey > forceRefreshKeyRef.current)) {
+      forceRefreshKeyRef.current = forceRefreshKey // Mark this key as processed
+
       // IMPORTANT: Abort existing SSE connection first to prevent old messages leaking
       if (abortRef.current) {
         abortRef.current.abort()
