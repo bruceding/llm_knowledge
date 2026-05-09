@@ -129,6 +129,7 @@ export default function ChatView() {
         abortRef.current.abort()
         abortRef.current = null
         sseReadyRef.current = false
+        sseFailedRef.current = false
       }
 
       // Reset streaming state before loading new conversation
@@ -136,11 +137,16 @@ export default function ChatView() {
       setIsStreaming(false)
       setPendingImages([])
 
+      // Stale guard: prevent async results from overriding state after user navigates away
+      let stale = false
+
       // Load history and check backend session status in parallel
       Promise.all([
         fetchConversationMessages(urlConversationId).catch(() => []),
         fetchQueryStatus(urlConversationId),
       ]).then(([dbMessages, queryStatus]) => {
+        if (stale) return
+
         const loadedMessages: Message[] = (dbMessages as any[]).length > 0
           ? (dbMessages as any[]).map((m) => ({
               id: m.id,
@@ -187,6 +193,8 @@ export default function ChatView() {
         // Set conversation ID after messages are loaded to avoid SSE race condition
         setCurrentConversationId(urlConversationId)
       })
+
+      return () => { stale = true }
     }
   }, [urlConversationId, currentConversationId, forceRefreshKey])
 
@@ -272,7 +280,12 @@ export default function ChatView() {
 
   // Connect SSE stream when conversationId changes
   useEffect(() => {
-    if (!currentConversationId) return
+    if (!currentConversationId) {
+      // No active conversation — ensure SSE state is clean
+      sseReadyRef.current = false
+      sseFailedRef.current = false
+      return
+    }
 
     if (abortRef.current) {
       abortRef.current.abort()
@@ -579,6 +592,8 @@ export default function ChatView() {
     setPendingImages([])
     setShowHistory(false)
     sseReadyRef.current = false
+    sseFailedRef.current = false
+    setConnectionError(null)
 
     // Navigate to new chat route (without conversation ID)
     navigate('/chat')
