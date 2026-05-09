@@ -175,7 +175,7 @@ type fxtwitterArticle struct {
 				Style  string `json:"style"`
 			} `json:"inlineStyleRanges"`
 		} `json:"blocks"`
-		EntityMap map[string]interface{} `json:"entityMap"`
+		EntityMap json.RawMessage `json:"entityMap"`
 	} `json:"content"`
 	CoverMedia *struct {
 		MediaInfo struct {
