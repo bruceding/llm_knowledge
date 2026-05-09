@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -27,6 +28,8 @@ import (
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )
+
+var syncLocks sync.Map
 
 type NewsletterHandler struct {
 	DataDir   string
@@ -155,12 +158,47 @@ func (h *NewsletterHandler) DeleteConfig(c echo.Context) error {
 	return c.JSON(http.StatusOK, echo.Map{"message": "config deleted"})
 }
 
+func isPrivateIP(ip net.IP) bool {
+	privateRanges := []struct{ start, end net.IP }{
+		{net.ParseIP("10.0.0.0"), net.ParseIP("10.255.255.255")},
+		{net.ParseIP("172.16.0.0"), net.ParseIP("172.31.255.255")},
+		{net.ParseIP("192.168.0.0"), net.ParseIP("192.168.255.255")},
+		{net.ParseIP("127.0.0.0"), net.ParseIP("127.255.255.255")},
+		{net.ParseIP("169.254.0.0"), net.ParseIP("169.254.255.255")},
+	}
+	for _, r := range privateRanges {
+		if bytes.Compare(ip, r.start) >= 0 && bytes.Compare(ip, r.end) <= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func validateIMAPHost(host string, port int) error {
+	if port != 993 && port != 143 {
+		return fmt.Errorf("only port 993 (IMAPS) and 143 (IMAP) are allowed")
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("cannot resolve host")
+	}
+	for _, ip := range ips {
+		if isPrivateIP(ip.To4()) || isPrivateIP(ip.To16()) {
+			return fmt.Errorf("connection to private networks is not allowed")
+		}
+	}
+	return nil
+}
+
 func dialIMAP(host string, port int, timeout time.Duration) (*imapclient.Client, error) {
+	if err := validateIMAPHost(host, port); err != nil {
+		return nil, err
+	}
 	addr := fmt.Sprintf("%s:%d", host, port)
 	dialer := &net.Dialer{Timeout: timeout}
 	conn, err := tls.DialWithDialer(dialer, "tcp", addr, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("connection failed")
 	}
 	conn.SetDeadline(time.Now().Add(timeout))
 	return imapclient.New(conn, nil), nil
@@ -181,12 +219,14 @@ func (h *NewsletterHandler) TestConnection(c echo.Context) error {
 
 	client, err := dialIMAP(cfg.Host, cfg.Port, 30*time.Second)
 	if err != nil {
-		return c.JSON(http.StatusOK, echo.Map{"success": false, "message": fmt.Sprintf("connection failed: %v", err)})
+		fmt.Printf("[newsletter] test connection failed for %s:%d: %v\n", cfg.Host, cfg.Port, err)
+		return c.JSON(http.StatusOK, echo.Map{"success": false, "message": "connection failed"})
 	}
 	defer client.Close()
 
 	if err := client.Login(cfg.Username, password).Wait(); err != nil {
-		return c.JSON(http.StatusOK, echo.Map{"success": false, "message": fmt.Sprintf("login failed: %v", err)})
+		fmt.Printf("[newsletter] login failed for %s: %v\n", cfg.Username, err)
+		return c.JSON(http.StatusOK, echo.Map{"success": false, "message": "login failed, check credentials"})
 	}
 
 	selectData, err := client.Select(cfg.FolderName, nil).Wait()
@@ -194,7 +234,7 @@ func (h *NewsletterHandler) TestConnection(c echo.Context) error {
 		return c.JSON(http.StatusOK, echo.Map{
 			"success":      false,
 			"folderExists": false,
-			"message":      fmt.Sprintf("folder '%s' not found: %v", cfg.FolderName, err),
+			"message":      fmt.Sprintf("folder '%s' not found", cfg.FolderName),
 		})
 	}
 
@@ -219,6 +259,14 @@ func (h *NewsletterHandler) Sync(c echo.Context) error {
 }
 
 func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResult {
+	mu := &sync.Mutex{}
+	actual, _ := syncLocks.LoadOrStore(cfg.UserID, mu)
+	mu = actual.(*sync.Mutex)
+	if !mu.TryLock() {
+		return NewsletterSyncResult{Message: "Sync already in progress"}
+	}
+	defer mu.Unlock()
+
 	password, err := crypto.Decrypt(cfg.EncryptedPass)
 	if err != nil {
 		return NewsletterSyncResult{Error: "failed to decrypt password: " + err.Error()}
@@ -441,7 +489,16 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 		}
 	}
 
-	db.DB.Model(cfg).Update("last_sync_at", time.Now())
+	// When first sync is truncated, set LastSyncAt to the oldest processed
+	// message's date so the next sync picks up remaining older messages.
+	syncTime := time.Now()
+	if isFirstSync && total > 0 {
+		oldest := messages[len(messages)-1].envelope.Date
+		if !oldest.IsZero() {
+			syncTime = oldest
+		}
+	}
+	db.DB.Model(cfg).Update("last_sync_at", syncTime)
 
 	msg := fmt.Sprintf("Synced %d new newsletters", newArticles)
 	if downloadErrors > 0 {

@@ -97,8 +97,40 @@ func Encrypt(plaintext string) (string, error) {
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
+func getExistingKey() ([]byte, error) {
+	keyMu.Lock()
+	defer keyMu.Unlock()
+
+	if cachedKey != nil {
+		return cachedKey, nil
+	}
+
+	if envKey := os.Getenv("ENCRYPT_KEY"); envKey != "" {
+		key, err := hex.DecodeString(envKey)
+		if err != nil {
+			return nil, fmt.Errorf("ENCRYPT_KEY must be hex-encoded: %w", err)
+		}
+		if len(key) != 32 {
+			return nil, fmt.Errorf("ENCRYPT_KEY must be 32 bytes (64 hex chars), got %d", len(key))
+		}
+		cachedKey = key
+		return cachedKey, nil
+	}
+
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("encryption key not found at %s — cannot decrypt existing data (was the key file deleted?)", keyPath)
+	}
+	key, err := hex.DecodeString(string(data))
+	if err != nil || len(key) != 32 {
+		return nil, fmt.Errorf("encryption key at %s is corrupt", keyPath)
+	}
+	cachedKey = key
+	return cachedKey, nil
+}
+
 func Decrypt(ciphertext string) (string, error) {
-	key, err := getKey()
+	key, err := getExistingKey()
 	if err != nil {
 		return "", err
 	}

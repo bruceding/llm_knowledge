@@ -7,6 +7,7 @@ import (
 	"io"
 	"llm-knowledge/db"
 	"llm-knowledge/ingest"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -682,6 +683,21 @@ func downloadImageToAssets(imgURL, assetsDir, articleURL string) (string, error)
 		ext := filepath.Ext(filename)
 		filename = fmt.Sprintf("%s_%d%s", strings.TrimSuffix(filename, ext), time.Now().UnixNano(), ext)
 		localPath = filepath.Join(assetsDir, filename)
+	}
+
+	// SSRF: validate resolved IPs before downloading
+	parsed, err := url.Parse(imgURL)
+	if err != nil {
+		return "", err
+	}
+	ips, err := net.LookupIP(parsed.Hostname())
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve host")
+	}
+	for _, ip := range ips {
+		if isPrivateIP(ip.To4()) || isPrivateIP(ip.To16()) {
+			return "", fmt.Errorf("download from private network is not allowed")
+		}
 	}
 
 	// Download with timeout
