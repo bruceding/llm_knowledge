@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -119,8 +120,9 @@ func (h *QueryHandler) Message(c echo.Context) error {
 	// Build system prompt
 	systemPrompt := h.buildSystemPrompt(req.DocID)
 
-	// Get or create session
-	ctx := c.Request().Context()
+	// Use context.Background() — request context gets cancelled when handler returns,
+	// which would kill the Claude subprocess via exec.CommandContext.
+	ctx := context.Background()
 	var qs *claude.QuerySession
 	var err error
 
@@ -218,6 +220,59 @@ func (h *QueryHandler) Message(c echo.Context) error {
 	})
 }
 
+// ResumeConversationRequest represents a request to resume/activate a conversation
+type ResumeConversationRequest struct {
+	ConversationID uint `json:"conversationId"`
+}
+
+// ResumeConversation activates a conversation session for SSE streaming.
+// This must be called before establishing SSE connection or sending messages.
+// POST /api/query/resume
+func (h *QueryHandler) ResumeConversation(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
+	var req ResumeConversationRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid request body"})
+	}
+
+	if req.ConversationID == 0 {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "conversationId is required"})
+	}
+
+	// Verify conversation ownership
+	var conv db.Conversation
+	if err := db.DB.Where("id = ? AND user_id = ?", req.ConversationID, userId).First(&conv).Error; err != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
+	}
+
+	// Build system prompt
+	systemPrompt := h.buildSystemPrompt(0)
+
+	// Use context.Background() for session creation
+	ctx := context.Background()
+
+	// Atomically: remove old session if exists, then get or create new one
+	// This ensures clean session state when resuming
+	h.Pool.Remove(req.ConversationID)
+
+	qs, err := h.Pool.GetOrCreate(ctx, req.ConversationID, systemPrompt)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create session"})
+	}
+
+	// Update session_id in database
+	newSessionID := qs.SessionID()
+	if newSessionID != conv.SessionID {
+		db.DB.Model(&db.Conversation{}).Where("id = ?", req.ConversationID).Update("session_id", newSessionID)
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{
+		"status":    "resumed",
+		"sessionId": qs.SessionID(),
+	})
+}
+
 // Stream handles SSE streaming for query chat - continuous connection
 // GET /api/query/stream?conversationId=xxx
 func (h *QueryHandler) Stream(c echo.Context) error {
@@ -251,10 +306,12 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 	}
 	flusher.Flush() // Flush headers immediately so EventSource onopen fires
 
-	// Get or create session (creates Claude process if first connection)
-	ctx := c.Request().Context()
+	// Use context.Background() for session creation — request context would kill
+	// the Claude subprocess via exec.CommandContext when cancelled.
+	// We still use the request context below in the select to detect client disconnect.
+	bgCtx := context.Background()
 	systemPrompt := h.buildSystemPrompt(0)
-	qs, err := h.Pool.GetOrCreate(ctx, convID, systemPrompt)
+	qs, err := h.Pool.GetOrCreate(bgCtx, convID, systemPrompt)
 	if err != nil {
 		data, _ := json.Marshal(echo.Map{
 			"type":           "error",
@@ -288,8 +345,8 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 			"content":        content,
 		})
 		if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", data); err != nil {
-					qs.SSEDisconnect()
-					return nil
+			qs.SSEDisconnect()
+			return nil
 		}
 		flusher.Flush()
 	}
@@ -326,7 +383,7 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 				return nil
 			}
 
-		case <-ctx.Done():
+		case <-c.Request().Context().Done():
 			// Client disconnected
 			qs.SSEDisconnect()
 			return nil

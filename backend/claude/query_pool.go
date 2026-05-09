@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"llm-knowledge/db"
@@ -377,7 +378,7 @@ func StartSession(ctx context.Context, claudeBin string, dataDir string, systemP
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := buildCmd(ctx, claudeBin, args, dataDir)
 
-	stdinPipe, stdoutPipe, err := createPipes(cmd)
+	stdinPipe, stdoutPipe, stderrPipe, err := createPipes(cmd)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -396,6 +397,14 @@ func StartSession(ctx context.Context, claudeBin string, dataDir string, systemP
 		cancel()
 		return nil, fmt.Errorf("failed to start claude: %w", err)
 	}
+
+	// Start goroutine to log stderr output (helps debug Claude CLI crashes)
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			log.Printf("[query-session] Claude stderr: %s", scanner.Text())
+		}
+	}()
 
 	// Send init message to trigger init event
 	initMsg := "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"用户准备提问，请等待。\"}}\n"
@@ -434,7 +443,7 @@ func StartResumedSession(ctx context.Context, claudeBin string, dataDir string, 
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := buildCmd(ctx, claudeBin, args, dataDir)
 
-	stdinPipe, stdoutPipe, err := createPipes(cmd)
+	stdinPipe, stdoutPipe, stderrPipe, err := createPipes(cmd)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -453,6 +462,14 @@ func StartResumedSession(ctx context.Context, claudeBin string, dataDir string, 
 		cancel()
 		return nil, fmt.Errorf("failed to start claude: %w", err)
 	}
+
+	// Start goroutine to log stderr output (helps debug Claude CLI crashes)
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			log.Printf("[query-session] Claude stderr: %s", scanner.Text())
+		}
+	}()
 
 	// Send init message
 	initMsg := "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"继续对话。\"}}\n"

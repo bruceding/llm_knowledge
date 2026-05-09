@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"llm-knowledge/claude"
@@ -43,7 +44,9 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 	docInfo := fmt.Sprintf("文档标题: %s。原始文件路径: %s。相关 wiki 文件在 wiki/ 目录下。", doc.Title, doc.RawPath)
 
 	// Start new session with ownership
-	session, err := h.Pool.StartSession(c.Request().Context(), docInfo, userId, uint(docId))
+	// Use context.Background() — request context gets cancelled when handler returns,
+	// which would kill the Claude subprocess via exec.CommandContext.
+	session, err := h.Pool.StartSession(context.Background(), docInfo, userId, uint(docId))
 	if err != nil {
 		log.Printf("[docchat] Failed to start session: %v", err)
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to start session"})

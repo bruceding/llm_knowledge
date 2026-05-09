@@ -101,18 +101,23 @@ func buildCmd(ctx context.Context, claudeBin string, args []string, dataDir stri
 	return cmd
 }
 
-func createPipes(cmd *exec.Cmd) (io.Writer, io.Reader, error) {
+func createPipes(cmd *exec.Cmd) (io.Writer, io.Reader, io.Reader, error) {
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create stdin pipe: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create stdin pipe: %w", err)
 	}
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 
-	return stdinPipe, stdoutPipe, nil
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
+	return stdinPipe, stdoutPipe, stderrPipe, nil
 }
 
 func newScanner(r io.Reader) *bufio.Scanner {
@@ -154,7 +159,7 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := buildCmd(ctx, p.claudeBin, args, p.dataDir)
 
-	stdinPipe, stdoutPipe, err := createPipes(cmd)
+	stdinPipe, stdoutPipe, stderrPipe, err := createPipes(cmd)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -175,6 +180,17 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 		cancel()
 		return nil, fmt.Errorf("failed to start claude: %w", err)
 	}
+
+	// Start goroutine to log stderr output (helps debug Claude CLI crashes)
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			log.Printf("[session] Claude stderr: %s", scanner.Text())
+		}
+		if scanner.Err() != nil {
+			log.Printf("[session] stderr scanner error: %v", scanner.Err())
+		}
+	}()
 
 	// IMPORTANT: Send initial stdin message BEFORE readEvents to trigger init
 	initMsg := "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"用户准备提问，请等待。\"}}\n"
