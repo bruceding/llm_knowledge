@@ -557,7 +557,10 @@ export async function updateIMAPConfig(config: IMAPConfigInput): Promise<IMAPCon
 
 export async function deleteIMAPConfig(): Promise<void> {
   const res = await fetch(`${API_BASE}/imap/config`, { method: 'DELETE', headers: getHeaders() })
-  if (!res.ok) throw new Error('Failed to delete IMAP config')
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || 'Failed to delete IMAP config')
+  }
 }
 
 export async function testIMAPConnection(): Promise<IMAPTestResult> {

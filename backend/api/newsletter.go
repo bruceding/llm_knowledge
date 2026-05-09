@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"llm-knowledge/crypto"
@@ -24,6 +25,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-message/mail"
 	"github.com/labstack/echo/v4"
+	"gorm.io/gorm"
 )
 
 type NewsletterHandler struct {
@@ -102,7 +104,11 @@ func (h *NewsletterHandler) UpdateConfig(c echo.Context) error {
 	}
 
 	var cfg db.IMAPConfig
-	isNew := db.DB.Where("user_id = ?", userId).First(&cfg).Error != nil
+	err := db.DB.Where("user_id = ?", userId).First(&cfg).Error
+	isNew := errors.Is(err, gorm.ErrRecordNotFound)
+	if err != nil && !isNew {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "database error"})
+	}
 
 	cfg.UserID = userId
 	cfg.Host = req.Host
@@ -195,7 +201,7 @@ func (h *NewsletterHandler) TestConnection(c echo.Context) error {
 	return c.JSON(http.StatusOK, echo.Map{
 		"success":      true,
 		"folderExists": true,
-		"unseenCount":  selectData.NumMessages,
+		"messageCount": selectData.NumMessages,
 		"message":      fmt.Sprintf("Connection successful, folder '%s' accessible", cfg.FolderName),
 	})
 }
@@ -246,8 +252,6 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 
 	uids := searchData.AllUIDs()
 	if len(uids) == 0 {
-		cfg.LastSyncAt = time.Now()
-		db.DB.Save(cfg)
 		return NewsletterSyncResult{Message: "No new newsletters"}
 	}
 
@@ -339,7 +343,7 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 
 		htmlContent := extractHTMLFromEmail(m.body)
 		if htmlContent == "" {
-			processedUIDs = append(processedUIDs, m.uid)
+			fmt.Printf("[newsletter] skipping uid=%d: no HTML content\n", m.uid)
 			continue
 		}
 
@@ -364,7 +368,7 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 		content.WriteString("\n## Content\n\n")
 		content.WriteString(markdown)
 
-		slug := sanitizeFilename(subject)
+		slug := fmt.Sprintf("%s-%d", sanitizeFilename(subject), m.uid)
 		articlePath := filepath.Join(feedDir, slug+".md")
 		if err := os.WriteFile(articlePath, []byte(content.String()), 0644); err != nil {
 			continue
@@ -437,8 +441,7 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 		}
 	}
 
-	cfg.LastSyncAt = time.Now()
-	db.DB.Save(cfg)
+	db.DB.Model(cfg).Update("last_sync_at", time.Now())
 
 	msg := fmt.Sprintf("Synced %d new newsletters", newArticles)
 	if downloadErrors > 0 {

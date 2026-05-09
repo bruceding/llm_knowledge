@@ -168,7 +168,7 @@ export interface IMAPConfigResponse {
 export interface IMAPTestResult {
   success: boolean
   folderExists?: boolean
-  unseenCount?: number
+  messageCount?: number
   message: string
 }
 
