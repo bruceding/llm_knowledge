@@ -18,3 +18,6 @@ memory/
 
 # Python cache
 __pycache__/
+
+# E2E test auth state
+tests/e2e/.auth/

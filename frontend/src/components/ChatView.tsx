@@ -93,6 +93,7 @@ export default function ChatView() {
   const abortRef = useRef<AbortController | null>(null)
   const isStreamingRef = useRef(false)
   const sseReadyRef = useRef(false)
+  const [forceRefreshKey, setForceRefreshKey] = useState(0)
 
   // Load conversation list
   const loadConversations = useCallback(async () => {
@@ -180,7 +181,7 @@ export default function ChatView() {
         setCurrentConversationId(urlConversationId)
       })
     }
-  }, [urlConversationId, currentConversationId])
+  }, [urlConversationId, currentConversationId, forceRefreshKey])
 
   // Handle SSE events
   const handleSSEEvent = useCallback((event: SSEEvent) => {
@@ -553,6 +554,7 @@ export default function ChatView() {
 
   // Switch to a different conversation
   const handleSwitchConversation = (convId: number) => {
+    setForceRefreshKey(k => k + 1) // Force effect re-run to handle race condition when switching back
     navigate(`/chat/${convId}`)
   }
 
