@@ -294,18 +294,8 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
 	}
 
-	// Set SSE headers first
-	c.Response().Header().Set("Content-Type", "text/event-stream")
-	c.Response().Header().Set("Cache-Control", "no-cache")
-	c.Response().Header().Set("Connection", "keep-alive")
-	c.Response().WriteHeader(http.StatusOK)
-
-	flusher, ok := c.Response().Writer.(http.Flusher)
-	if !ok {
-		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "streaming not supported"})
-	}
-	flusher.Flush() // Flush headers immediately so EventSource onopen fires
-
+	// Create session BEFORE flushing SSE headers so the frontend only receives
+	// 200 OK when the backend is truly ready to handle messages.
 	// Use context.Background() for session creation — request context would kill
 	// the Claude subprocess via exec.CommandContext when cancelled.
 	// We still use the request context below in the select to detect client disconnect.
@@ -313,27 +303,26 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 	systemPrompt := h.buildSystemPrompt(0)
 	qs, err := h.Pool.GetOrCreate(bgCtx, convID, systemPrompt)
 	if err != nil {
-		data, _ := json.Marshal(echo.Map{
-			"type":           "error",
-			"conversationId": convID,
-			"error":          "failed to create session",
-		})
-		fmt.Fprintf(c.Response(), "data: %s\n\n", data)
-		flusher.Flush()
-		return nil
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create session"})
 	}
 
 	// Mark SSE connection (reject if too many concurrent connections)
 	if !qs.SSEConnect() {
-		data, _ := json.Marshal(echo.Map{
-			"type":           "error",
-			"conversationId": convID,
-			"error":          "too many concurrent SSE connections",
-		})
-		fmt.Fprintf(c.Response(), "data: %s\n\n", data)
-		flusher.Flush()
-		return nil
+		return c.JSON(http.StatusServiceUnavailable, echo.Map{"error": "too many concurrent SSE connections"})
 	}
+
+	// Set SSE headers — only after session is ready
+	c.Response().Header().Set("Content-Type", "text/event-stream")
+	c.Response().Header().Set("Cache-Control", "no-cache")
+	c.Response().Header().Set("Connection", "keep-alive")
+	c.Response().WriteHeader(http.StatusOK)
+
+	flusher, ok := c.Response().Writer.(http.Flusher)
+	if !ok {
+		qs.SSEDisconnect()
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "streaming not supported"})
+	}
+	flusher.Flush()
 
 	// Capture streaming content BEFORE subscribing to avoid duplication.
 	// If we subscribe first, events between subscribe and content snapshot

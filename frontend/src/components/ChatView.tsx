@@ -87,12 +87,14 @@ export default function ChatView() {
 
   const [pendingImages, setPendingImages] = useState<string[]>([])
   const [enlargedImage, setEnlargedImage] = useState<string | null>(null)
+  const [connectionError, setConnectionError] = useState<string | null>(null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const abortRef = useRef<AbortController | null>(null)
   const isStreamingRef = useRef(false)
   const sseReadyRef = useRef(false)
+  const sseFailedRef = useRef(false)
   const [forceRefreshKey, setForceRefreshKey] = useState(0)
   const forceRefreshKeyRef = useRef(0)
 
@@ -278,6 +280,8 @@ export default function ChatView() {
     }
 
     sseReadyRef.current = false
+    sseFailedRef.current = false
+    setConnectionError(null)
 
     const controller = new AbortController()
     abortRef.current = controller
@@ -291,7 +295,13 @@ export default function ChatView() {
 
     fetch(`/api/query/stream?conversationId=${currentConversationId}`, { headers, signal: controller.signal })
       .then(res => {
-        if (!res.ok) throw new Error(`SSE request failed: ${res.status}`)
+        if (!res.ok) {
+          // Backend returned error before SSE could start — session creation likely failed
+          sseFailedRef.current = true
+          sseReadyRef.current = false
+          setConnectionError(t('chatView.connectionError'))
+          return
+        }
         sseReadyRef.current = true
         const reader = res.body?.getReader()
         if (!reader) throw new Error('No response body')
@@ -307,6 +317,7 @@ export default function ChatView() {
             console.warn('[SSE] Idle timeout (90s), disconnecting')
             controller.abort()
             sseReadyRef.current = false
+            sseFailedRef.current = true
             abortRef.current = null
             if (isStreamingRef.current) {
               setMessages((prev) => {
@@ -318,6 +329,8 @@ export default function ChatView() {
               })
               isStreamingRef.current = false
               setIsStreaming(false)
+            } else {
+              setConnectionError(t('chatView.connectionError'))
             }
           }, IDLE_TIMEOUT)
         }
@@ -331,10 +344,14 @@ export default function ChatView() {
           if (done) {
             if (idleTimer) clearTimeout(idleTimer)
             sseReadyRef.current = false
+            sseFailedRef.current = true
             if (abortRef.current === controller) abortRef.current = null
             if (isStreamingRef.current) {
               isStreamingRef.current = false
               setIsStreaming(false)
+            } else if (!cancelled) {
+              // Stream ended unexpectedly while idle — backend session died
+              setConnectionError(t('chatView.connectionError'))
             }
             return
           }
@@ -363,8 +380,10 @@ export default function ChatView() {
       .catch(() => {
         if (!cancelled) {
           sseReadyRef.current = false
+          sseFailedRef.current = true
           isStreamingRef.current = false
           setIsStreaming(false)
+          setConnectionError(t('chatView.connectionError'))
         }
       })
 
@@ -373,7 +392,7 @@ export default function ChatView() {
       controller.abort()
       sseReadyRef.current = false
     }
-  }, [currentConversationId, handleSSEEvent])
+  }, [currentConversationId, handleSSEEvent, t])
 
   // Handle image upload
   const handleImageUpload = useCallback(async (file: File) => {
@@ -476,13 +495,21 @@ export default function ChatView() {
 
     // Send message to backend
     try {
+      // If SSE has already failed, don't wait — show error immediately
+      if (sseFailedRef.current) {
+        throw new Error('SSE connection failed')
+      }
+
       // Wait for SSE connection to be ready before sending (timeout after 30s)
       // Claude Code startup can be slow, especially on first run
       if (!sseReadyRef.current) {
         await new Promise<void>((resolve, reject) => {
           const timeout = setTimeout(() => reject(new Error('SSE connection timeout')), 30000)
           const check = () => {
-            if (sseReadyRef.current) {
+            if (sseFailedRef.current) {
+              clearTimeout(timeout)
+              reject(new Error('SSE connection failed'))
+            } else if (sseReadyRef.current) {
               clearTimeout(timeout)
               resolve()
             } else {
@@ -672,7 +699,27 @@ export default function ChatView() {
         {/* Messages */}
         <div className="flex-1 overflow-auto p-6">
           <div className="max-w-3xl mx-auto space-y-4">
-            {messages.length === 0 ? (
+            {connectionError && (
+              <div className="text-center py-4">
+                <div className="inline-flex items-center gap-2 px-4 py-2 bg-red-50 text-red-700 rounded-lg text-sm">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                  </svg>
+                  {connectionError}
+                  <button
+                    onClick={() => {
+                      setConnectionError(null)
+                      sseFailedRef.current = false
+                      setForceRefreshKey(k => k + 1)
+                    }}
+                    className="text-red-600 hover:text-red-800 underline ml-2"
+                  >
+                    {t('chatView.retry') || 'Retry'}
+                  </button>
+                </div>
+              </div>
+            )}
+            {messages.length === 0 && !connectionError ? (
               <div className="text-center text-gray-500 py-12">
                 <svg className="w-16 h-16 mx-auto mb-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />

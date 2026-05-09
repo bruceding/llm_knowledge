@@ -184,6 +184,7 @@
     "lookingUp": "Looking up:",
     "sendHint": "Press Enter to send, Shift+Enter for new line",
     "connectionError": "Failed to connect to server. Please try again.",
+    "retry": "Retry",
     "contextLostWarning": "⚠️ Failed to restore context, started a new session. Previous conversation history may be lost.",
     "delete": "Delete",
     "deleteConfirm": "Are you sure you want to delete this conversation?",
