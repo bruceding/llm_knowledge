@@ -231,7 +231,9 @@ func (h *MarkdownTranslateHandler) TranslateMarkdown(c echo.Context) error {
 			if chunk != "" {
 				translatedContent.WriteString(chunk)
 				// Send chunk to client
-				sendMarkdownSSEEvent(c, flusher, "chunk", echo.Map{"content": chunk})
+				if err := sendMarkdownSSEEvent(c, flusher, "chunk", echo.Map{"content": chunk}); err != nil {
+					return nil
+				}
 			}
 		}
 	}
@@ -260,13 +262,16 @@ func (h *MarkdownTranslateHandler) TranslateMarkdown(c echo.Context) error {
 	return nil
 }
 
-func sendMarkdownSSEEvent(c echo.Context, flusher http.Flusher, eventType string, data echo.Map) {
+func sendMarkdownSSEEvent(c echo.Context, flusher http.Flusher, eventType string, data echo.Map) error {
 	data["type"] = eventType
 	jsonData, _ := json.Marshal(data)
-	fmt.Fprintf(c.Response(), "data: %s\n\n", jsonData)
+	if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", jsonData); err != nil {
+		return err
+	}
 	flusher.Flush()
+	return nil
 }
 
-func sendMarkdownSSEError(c echo.Context, flusher http.Flusher, errorMsg string) {
-	sendMarkdownSSEEvent(c, flusher, "error", echo.Map{"error": errorMsg})
+func sendMarkdownSSEError(c echo.Context, flusher http.Flusher, errorMsg string) error {
+	return sendMarkdownSSEEvent(c, flusher, "error", echo.Map{"error": errorMsg})
 }

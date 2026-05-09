@@ -287,7 +287,10 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 			"conversationId": convID,
 			"content":        content,
 		})
-		fmt.Fprintf(c.Response(), "data: %s\n\n", data)
+		if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", data); err != nil {
+					qs.SSEDisconnect()
+					return nil
+		}
 		flusher.Flush()
 	}
 

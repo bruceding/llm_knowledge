@@ -157,7 +157,9 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 		"title":      doc.Title,
 		"targetLang": req.TargetLang,
 	})
-	fmt.Fprintf(c.Response(), "data: %s\n\n", docData)
+	if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", docData); err != nil {
+		return nil
+	}
 	flusher.Flush()
 
 	// Create Claude client and channel for streaming
@@ -184,7 +186,9 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 	// Stream events to client
 	for evt := range eventCh {
 		data, _ := json.Marshal(evt)
-		fmt.Fprintf(c.Response(), "data: %s\n\n", data)
+		if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", data); err != nil {
+			return nil
+		}
 		flusher.Flush()
 
 		if evt.Type == "assistant" {
@@ -213,7 +217,9 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 			"type":  "error",
 			"error": fmt.Sprintf("failed to save translated content: %v", err),
 		})
-		fmt.Fprintf(c.Response(), "data: %s\n\n", errorData)
+		if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", errorData); err != nil {
+			return nil
+		}
 		flusher.Flush()
 	} else {
 		// Send completion event with file path
@@ -221,7 +227,9 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 			"type":     "complete",
 			"filePath": translatedPath,
 		})
-		fmt.Fprintf(c.Response(), "data: %s\n\n", completeData)
+		if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", completeData); err != nil {
+			return nil
+		}
 		flusher.Flush()
 	}
 

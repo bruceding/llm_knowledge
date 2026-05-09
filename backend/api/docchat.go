@@ -75,7 +75,10 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 		"type":      "session",
 		"sessionId": session.SessionID,
 	})
-	fmt.Fprintf(c.Response(), "data: %s\n\n", sessionData)
+	if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", sessionData); err != nil {
+		session.SSEDisconnect()
+		return nil
+	}
 	flusher.Flush()
 
 	ctx := c.Request().Context()
@@ -210,7 +213,10 @@ func (h *DocChatHandler) Reconnect(c echo.Context) error {
 		"sessionId":  session.SessionID,
 		"reconnected": true,
 	})
-	fmt.Fprintf(c.Response(), "data: %s\n\n", sessionData)
+	if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", sessionData); err != nil {
+		session.SSEDisconnect()
+		return nil
+	}
 	flusher.Flush()
 
 	// Keep SSE open for multi-turn (same as Stream)
