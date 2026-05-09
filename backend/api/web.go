@@ -194,6 +194,11 @@ type fxtwitterResponse struct {
 // fetchXTwitterViaAPI fetches tweet data using the fxtwitter API
 // which works without JavaScript rendering
 func fetchXTwitterViaAPI(urlStr string) (*fxtwitterTweet, error) {
+	return fetchXTwitterViaAPIWithClient(urlStr, &http.Client{Timeout: 15 * time.Second})
+}
+
+// fetchXTwitterViaAPIWithClient fetches tweet data with a configurable HTTP client (for testing)
+func fetchXTwitterViaAPIWithClient(urlStr string, client *http.Client) (*fxtwitterTweet, error) {
 	screenName, statusID, ok := extractXTwitterPath(urlStr)
 	if !ok {
 		return nil, fmt.Errorf("invalid X/Twitter URL format")
@@ -201,7 +206,6 @@ func fetchXTwitterViaAPI(urlStr string) (*fxtwitterTweet, error) {
 
 	apiURL := fmt.Sprintf("https://api.fxtwitter.com/%s/status/%s", screenName, statusID)
 
-	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(apiURL)
 	if err != nil {
 		return nil, fmt.Errorf("fxtwitter API request failed: %w", err)

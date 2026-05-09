@@ -1,14 +1,17 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"encoding/json"
+	"net/url"
+
 	"github.com/PuerkitoBio/goquery"
 )
 
@@ -1279,4 +1282,115 @@ func TestSlugify(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFetchXTwitterViaAPIMock tests JSON deserialization with a mock fxtwitter server.
+// This catches struct/JSON mismatches that unit tests constructing Go structs directly miss.
+func TestFetchXTwitterViaAPIMock(t *testing.T) {
+	// Simulate a realistic fxtwitter API response with entityMap as array
+	mockResponse := `{
+		"code": 200,
+		"message": "OK",
+		"tweet": {
+			"url": "https://x.com/testuser/status/123456",
+			"id": "123456",
+			"text": "Hello world https://t.co/abc",
+			"created_at": "Fri May 08 12:00:00 +0000 2026",
+			"author": {
+				"screen_name": "testuser",
+				"name": "Test User"
+			},
+			"article": {
+				"title": "Test Article Title",
+				"preview_text": "A preview",
+				"content": {
+					"blocks": [
+						{"text": "First paragraph", "type": "unstyled", "entityRanges": [], "inlineStyleRanges": [], "data": {}},
+						{"text": "A Heading", "type": "header-two", "entityRanges": [], "inlineStyleRanges": [], "data": {}},
+						{"text": "List item", "type": "unordered-list-item", "entityRanges": [], "inlineStyleRanges": [], "data": {}},
+						{"text": "Bold text here", "type": "unstyled", "entityRanges": [{"key": 0, "offset": 0, "length": 4}], "inlineStyleRanges": [{"offset": 0, "length": 4, "style": "Bold"}], "data": {}},
+						{"text": "code here", "type": "code-block", "entityRanges": [], "inlineStyleRanges": [], "data": {"language": "go"}}
+					],
+					"entityMap": []
+				}
+			}
+		}
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write([]byte(mockResponse))
+	}))
+	defer server.Close()
+
+	// Override the API URL by using the test server's client with a custom transport
+	// that redirects requests to our test server
+	client := server.Client()
+	// We need to make the client send requests to our test server instead of api.fxtwitter.com
+	// Use a transport that rewrites the URL
+	client.Transport = &urlRewriterTransport{
+		newURL: server.URL,
+		orig:   http.DefaultTransport,
+	}
+
+	tweet, err := fetchXTwitterViaAPIWithClient("https://x.com/testuser/status/123456", client)
+	if err != nil {
+		t.Fatalf("fetchXTwitterViaAPIWithClient failed: %v", err)
+	}
+
+	// Verify deserialization
+	if tweet.ID != "123456" {
+		t.Errorf("tweet.ID = %q, want %q", tweet.ID, "123456")
+	}
+	if tweet.Author.ScreenName != "testuser" {
+		t.Errorf("author.ScreenName = %q, want %q", tweet.Author.ScreenName, "testuser")
+	}
+	if tweet.Article == nil {
+		t.Fatal("expected article to be non-nil")
+	}
+	if tweet.Article.Title != "Test Article Title" {
+		t.Errorf("article.Title = %q, want %q", tweet.Article.Title, "Test Article Title")
+	}
+	if len(tweet.Article.Content.Blocks) != 5 {
+		t.Fatalf("expected 5 blocks, got %d", len(tweet.Article.Content.Blocks))
+	}
+
+	// Verify block types
+	if tweet.Article.Content.Blocks[0].Type != "unstyled" {
+		t.Errorf("block[0].Type = %q, want unstyled", tweet.Article.Content.Blocks[0].Type)
+	}
+	if tweet.Article.Content.Blocks[1].Type != "header-two" {
+		t.Errorf("block[1].Type = %q, want header-two", tweet.Article.Content.Blocks[1].Type)
+	}
+	if tweet.Article.Content.Blocks[3].InlineStyleRanges[0].Style != "Bold" {
+		t.Errorf("block[3].InlineStyleRanges[0].Style = %q, want Bold", tweet.Article.Content.Blocks[3].InlineStyleRanges[0].Style)
+	}
+
+	// Verify code-block language extraction via markdown conversion
+	md := xTwitterArticleToMarkdown(tweet)
+	if !strings.Contains(md, "```go") {
+		t.Errorf("expected markdown to contain code block with language 'go', got:\n%s", md)
+	}
+	if !strings.Contains(md, "## A Heading") {
+		t.Errorf("expected markdown to contain '## A Heading', got:\n%s", md)
+	}
+	if !strings.Contains(md, "**Bold**") {
+		t.Errorf("expected markdown to contain bold text '**Bold**', got:\n%s", md)
+	}
+
+	t.Logf("Generated markdown:\n%s", md)
+}
+
+// urlRewriterTransport redirects requests to a test server
+type urlRewriterTransport struct {
+	newURL string
+	orig   http.RoundTripper
+}
+
+func (t *urlRewriterTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Rewrite the URL to point to the test server
+	newReq := req.Clone(req.Context())
+	newReq.URL, _ = url.Parse(t.newURL + req.URL.Path)
+	return t.orig.RoundTrip(newReq)
 }
