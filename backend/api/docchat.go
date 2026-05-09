@@ -101,7 +101,10 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 			}
 
 			data, _ := json.Marshal(evt)
-			fmt.Fprintf(c.Response(), "data: %s\n\n", data)
+			if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", data); err != nil {
+				session.SSEDisconnect()
+				return nil
+			}
 			flusher.Flush()
 
 			// Don't disconnect on error_during_execution (interrupt) - keep SSE for multi-turn
@@ -228,7 +231,10 @@ func (h *DocChatHandler) Reconnect(c echo.Context) error {
 			}
 
 			data, _ := json.Marshal(evt)
-			fmt.Fprintf(c.Response(), "data: %s\n\n", data)
+			if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", data); err != nil {
+				session.SSEDisconnect()
+				return nil
+			}
 			flusher.Flush()
 
 			// Don't disconnect on error_during_execution (interrupt) - keep SSE for multi-turn
