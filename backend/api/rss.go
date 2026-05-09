@@ -1146,22 +1146,30 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		var headerCells []string
 		var bodyRows [][]string
 
+		// tableCellText extracts text from a cell, replacing newlines with <br>
+		// so markdown table rows stay on a single line
+		tableCellText := func(cell *goquery.Selection) string {
+			text := strings.TrimSpace(cell.Text())
+			text = strings.ReplaceAll(text, "\n", "<br>")
+			return text
+		}
+
 		// Extract header cells from <thead> or first <tr>
 		if hasThead {
 			thead.Find("tr th, tr td").Each(func(i int, cell *goquery.Selection) {
-				headerCells = append(headerCells, strings.TrimSpace(cell.Text()))
+				headerCells = append(headerCells, tableCellText(cell))
 			})
 		} else {
 			// Check if first row has th elements
 			firstRow := s.Find("tr").First()
 			if firstRow.Length() > 0 {
 				firstRow.Find("th").Each(func(i int, cell *goquery.Selection) {
-					headerCells = append(headerCells, strings.TrimSpace(cell.Text()))
+					headerCells = append(headerCells, tableCellText(cell))
 				})
 				// If no th found, check for td (some tables use td for headers)
 				if len(headerCells) == 0 {
 					firstRow.Find("td").Each(func(i int, cell *goquery.Selection) {
-						headerCells = append(headerCells, strings.TrimSpace(cell.Text()))
+						headerCells = append(headerCells, tableCellText(cell))
 					})
 				}
 			}
@@ -1173,7 +1181,7 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 			s.Find("tbody tr").Each(func(i int, row *goquery.Selection) {
 				var cells []string
 				row.Find("td, th").Each(func(j int, cell *goquery.Selection) {
-					cells = append(cells, strings.TrimSpace(cell.Text()))
+					cells = append(cells, tableCellText(cell))
 				})
 				if len(cells) > 0 {
 					bodyRows = append(bodyRows, cells)
@@ -1185,7 +1193,7 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 			allRows.Slice(1, allRows.Length()).Each(func(i int, row *goquery.Selection) {
 				var cells []string
 				row.Find("td, th").Each(func(j int, cell *goquery.Selection) {
-					cells = append(cells, strings.TrimSpace(cell.Text()))
+					cells = append(cells, tableCellText(cell))
 				})
 				if len(cells) > 0 {
 					bodyRows = append(bodyRows, cells)
