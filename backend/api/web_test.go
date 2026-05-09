@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1109,21 +1108,7 @@ func TestXTwitterArticleToMarkdown(t *testing.T) {
 		PreviewText: "Markdown has become the dominant file format...",
 	}
 
-	tweet.Article.Content.Blocks = []struct {
-		Text         string                 `json:"text"`
-		Type         string                 `json:"type"`
-		Data         map[string]interface{} `json:"data"`
-		EntityRanges []struct {
-			Key    json.Number `json:"key"`
-			Offset int         `json:"offset"`
-			Length int         `json:"length"`
-		} `json:"entityRanges"`
-		InlineStyleRanges []struct {
-			Offset int    `json:"offset"`
-			Length int    `json:"length"`
-			Style  string `json:"style"`
-		} `json:"inlineStyleRanges"`
-	}{
+	tweet.Article.Content.Blocks = []fxtwitterBlock{
 		{
 			Text: "Markdown has become the dominant file format used by agents.",
 			Type: "unstyled",
@@ -1288,7 +1273,7 @@ func TestSlugify(t *testing.T) {
 // This catches struct/JSON mismatches that unit tests constructing Go structs directly miss.
 // Uses a snapshot of the real API response from https://x.com/trq212/status/2052809885763747935
 func TestFetchXTwitterViaAPIMock(t *testing.T) {
-	// Realistic fxtwitter API response (truncated to 5 blocks, entityMap as array as returned by the real API)
+	// Realistic fxtwitter API response snapshot with images, links, and media entities
 	mockResponse := `{
 		"code": 200,
 		"message": "OK",
@@ -1304,16 +1289,39 @@ func TestFetchXTwitterViaAPIMock(t *testing.T) {
 			"article": {
 				"title": "Using Claude Code: The Unreasonable Effectiveness of HTML",
 				"preview_text": "Markdown has become the dominant file format used by agents to communicate with us.",
+				"cover_media": {
+					"media_id": "2052796450510348288",
+					"media_info": {
+						"original_img_url": "https://pbs.twimg.com/media/HHz_ftzaIAAwkQs.jpg",
+						"original_img_width": 1600,
+						"original_img_height": 800
+					},
+					"alt_text": "Cover image"
+				},
 				"content": {
 					"blocks": [
 						{"text": "Markdown has become the dominant file format used by agents.", "type": "unstyled", "key": "c0raq", "entityRanges": [], "inlineStyleRanges": [], "data": {}},
 						{"text": "Why HTML?", "type": "header-two", "key": "f9k7p", "entityRanges": [], "inlineStyleRanges": [], "data": {}},
-						{"text": "Information Density", "type": "header-three", "key": "dmn82", "entityRanges": [], "inlineStyleRanges": [], "data": {}},
-						{"text": "Tabular data using tables", "type": "unordered-list-item", "key": "5cj3a", "entityRanges": [], "inlineStyleRanges": [], "data": {}},
-						{"text": "Bold text here", "type": "unstyled", "key": "9xk1m", "entityRanges": [{"key": 0, "offset": 0, "length": 4}], "inlineStyleRanges": [{"offset": 0, "length": 4, "style": "Bold"}], "data": {}}
+						{"text": " ", "type": "atomic", "key": "7abc", "entityRanges": [{"key": 1, "offset": 0, "length": 1}], "inlineStyleRanges": [], "data": {}},
+						{"text": "Check examples here", "type": "unstyled", "key": "amnk6", "entityRanges": [{"key": 0, "offset": 6, "length": 8}], "inlineStyleRanges": [], "data": {}},
+						{"text": "Bold text here", "type": "unstyled", "key": "9xk1m", "entityRanges": [], "inlineStyleRanges": [{"offset": 0, "length": 4, "style": "Bold"}], "data": {}}
 					],
-					"entityMap": [{"key": "0", "value": {"type": "LINK", "data": {"url": "https://thariqs.github.io/html-effectiveness"}}}]
-				}
+					"entityMap": [
+						{"key": "0", "value": {"type": "LINK", "data": {"url": "https://thariqs.github.io/html-effectiveness"}}},
+						{"key": "1", "value": {"type": "MEDIA", "data": {"entityKey": "8dd12f48-26f5-40d8-a0ec-8b5d8629da0d", "mediaItems": [{"localMediaId": "2", "mediaCategory": "DraftTweetImage", "mediaId": "2052796642479439872"}]}}}
+					]
+				},
+				"media_entities": [
+					{
+						"media_id": "2052796642479439872",
+						"media_info": {
+							"original_img_url": "https://pbs.twimg.com/media/HHz_q48aAAAaCfW.jpg",
+							"original_img_width": 1520,
+							"original_img_height": 800,
+							"alt_text": ""
+						}
+					}
+				]
 			}
 		}
 	}`
@@ -1368,6 +1376,36 @@ func TestFetchXTwitterViaAPIMock(t *testing.T) {
 		t.Errorf("block[4].InlineStyleRanges[0].Style = %q, want Bold", tweet.Article.Content.Blocks[4].InlineStyleRanges[0].Style)
 	}
 
+	// Verify entityMap deserialization
+	if len(tweet.Article.Content.EntityMap) != 2 {
+		t.Fatalf("expected 2 entityMap entries, got %d", len(tweet.Article.Content.EntityMap))
+	}
+	if tweet.Article.Content.EntityMap[0].Value.Type != "LINK" {
+		t.Errorf("entityMap[0].Type = %q, want LINK", tweet.Article.Content.EntityMap[0].Value.Type)
+	}
+	if tweet.Article.Content.EntityMap[1].Value.Type != "MEDIA" {
+		t.Errorf("entityMap[1].Type = %q, want MEDIA", tweet.Article.Content.EntityMap[1].Value.Type)
+	}
+
+	// Verify media_entities deserialization
+	if len(tweet.Article.MediaEntities) != 1 {
+		t.Fatalf("expected 1 media entity, got %d", len(tweet.Article.MediaEntities))
+	}
+	if tweet.Article.MediaEntities[0].MediaID != "2052796642479439872" {
+		t.Errorf("mediaEntities[0].MediaID = %q, want 2052796642479439872", tweet.Article.MediaEntities[0].MediaID)
+	}
+	if tweet.Article.MediaEntities[0].MediaInfo.OriginalImgURL != "https://pbs.twimg.com/media/HHz_q48aAAAaCfW.jpg" {
+		t.Errorf("mediaEntities[0].OriginalImgURL = %q, unexpected", tweet.Article.MediaEntities[0].MediaInfo.OriginalImgURL)
+	}
+
+	// Verify cover_media deserialization
+	if tweet.Article.CoverMedia == nil {
+		t.Fatal("expected cover_media to be non-nil")
+	}
+	if tweet.Article.CoverMedia.MediaInfo.OriginalImgURL != "https://pbs.twimg.com/media/HHz_ftzaIAAwkQs.jpg" {
+		t.Errorf("cover_media.OriginalImgURL = %q, unexpected", tweet.Article.CoverMedia.MediaInfo.OriginalImgURL)
+	}
+
 	// Verify markdown conversion
 	md := xTwitterArticleToMarkdown(tweet)
 	if !strings.Contains(md, "## Why HTML?") {
@@ -1375,6 +1413,12 @@ func TestFetchXTwitterViaAPIMock(t *testing.T) {
 	}
 	if !strings.Contains(md, "**Bold**") {
 		t.Errorf("expected markdown to contain bold text '**Bold**', got:\n%s", md)
+	}
+	if !strings.Contains(md, "![image](https://pbs.twimg.com/media/HHz_q48aAAAaCfW.jpg)") {
+		t.Errorf("expected markdown to contain image, got:\n%s", md)
+	}
+	if !strings.Contains(md, "[examples](https://thariqs.github.io/html-effectiveness)") {
+		t.Errorf("expected markdown to contain link, got:\n%s", md)
 	}
 
 	t.Logf("Generated markdown:\n%s", md)

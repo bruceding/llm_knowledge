@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -160,28 +161,43 @@ type fxtwitterArticle struct {
 	Title       string `json:"title"`
 	PreviewText string `json:"preview_text"`
 	Content     struct {
-		Blocks []struct {
-			Text         string                 `json:"text"`
-			Type         string                 `json:"type"`
-			Data         map[string]interface{} `json:"data"`
-			EntityRanges []struct {
-				Key    json.Number `json:"key"`
-				Offset int         `json:"offset"`
-				Length int         `json:"length"`
-			} `json:"entityRanges"`
-			InlineStyleRanges []struct {
-				Offset int    `json:"offset"`
-				Length int    `json:"length"`
-				Style  string `json:"style"`
-			} `json:"inlineStyleRanges"`
-		} `json:"blocks"`
-		EntityMap json.RawMessage `json:"entityMap"`
+		Blocks    []fxtwitterBlock          `json:"blocks"`
+		EntityMap []fxtwitterEntityMapEntry `json:"entityMap"`
 	} `json:"content"`
 	CoverMedia *struct {
 		MediaInfo struct {
 			OriginalImgURL string `json:"original_img_url"`
 		} `json:"media_info"`
+		AltText string `json:"alt_text"`
 	} `json:"cover_media"`
+	MediaEntities []fxtwitterMediaEntity `json:"media_entities"`
+}
+
+// fxtwitterEntityRange represents an entity reference within a block
+type fxtwitterEntityRange struct {
+	Key    json.Number `json:"key"`
+	Offset int         `json:"offset"`
+	Length int         `json:"length"`
+}
+
+// fxtwitterEntityMapEntry represents an entry in the article entityMap array
+type fxtwitterEntityMapEntry struct {
+	Key   string `json:"key"`
+	Value struct {
+		Type string                 `json:"type"`
+		Data map[string]interface{} `json:"data"`
+	} `json:"value"`
+}
+
+// fxtwitterMediaEntity represents an image/media item in the article
+type fxtwitterMediaEntity struct {
+	MediaID   string `json:"media_id"`
+	MediaInfo struct {
+		OriginalImgURL    string `json:"original_img_url"`
+		OriginalImgWidth  int    `json:"original_img_width"`
+		OriginalImgHeight int    `json:"original_img_height"`
+		AltText           string `json:"alt_text"`
+	} `json:"media_info"`
 }
 
 // fxtwitterResponse represents the response from api.fxtwitter.com
@@ -189,6 +205,19 @@ type fxtwitterResponse struct {
 	Code    int            `json:"code"`
 	Message string         `json:"message"`
 	Tweet   fxtwitterTweet `json:"tweet"`
+}
+
+// fxtwitterBlock represents a content block in a Draft.js article
+type fxtwitterBlock struct {
+	Text              string                 `json:"text"`
+	Type              string                 `json:"type"`
+	Data              map[string]interface{} `json:"data"`
+	EntityRanges      []fxtwitterEntityRange `json:"entityRanges"`
+	InlineStyleRanges []struct {
+		Offset int    `json:"offset"`
+		Length int    `json:"length"`
+		Style  string `json:"style"`
+	} `json:"inlineStyleRanges"`
 }
 
 // fetchXTwitterViaAPI fetches tweet data using the fxtwitter API
@@ -239,22 +268,9 @@ func fetchXTwitterViaAPIWithClient(urlStr string, client *http.Client) (*fxtwitt
 	return &fxResp.Tweet, nil
 }
 
-// convertArticleBlockToMarkdown converts a single fxtwitter article block to markdown
-func convertArticleBlockToMarkdown(block struct {
-	Text         string                 `json:"text"`
-	Type         string                 `json:"type"`
-	Data         map[string]interface{} `json:"data"`
-	EntityRanges []struct {
-		Key    json.Number `json:"key"`
-		Offset int         `json:"offset"`
-		Length int         `json:"length"`
-	} `json:"entityRanges"`
-	InlineStyleRanges []struct {
-		Offset int    `json:"offset"`
-		Length int    `json:"length"`
-		Style  string `json:"style"`
-	} `json:"inlineStyleRanges"`
-}) string {
+// convertArticleBlockToMarkdown converts a single fxtwitter article block to markdown.
+// articleRef is needed to resolve entity references (images, links) from entityMap and mediaEntities.
+func convertArticleBlockToMarkdown(block fxtwitterBlock, article *fxtwitterArticle) string {
 	text := block.Text
 
 	switch block.Type {
@@ -283,12 +299,15 @@ func convertArticleBlockToMarkdown(block struct {
 		}
 		return fmt.Sprintf("```%s\n%s\n```\n\n", language, text)
 	case "atomic":
-		// Media/iframe placeholder — skip, we handle images separately
-		return ""
+		// Image/media block — resolve via entityRanges -> entityMap -> mediaEntities
+		return resolveAtomicBlock(block, article)
 	case "unstyled":
-		// Apply inline styles (bold, italic)
+		// Apply inline styles (bold, italic) and entity links
 		if len(block.InlineStyleRanges) > 0 {
 			text = applyInlineStyles(text, block.InlineStyleRanges)
+		}
+		if len(block.EntityRanges) > 0 {
+			text = applyEntityLinks(text, block, article)
 		}
 		return text + "\n\n"
 	default:
@@ -358,9 +377,18 @@ func xTwitterArticleToMarkdown(tweet *fxtwitterTweet) string {
 			sb.WriteString("\n\n")
 		}
 
+		// Cover image
+		if tweet.Article.CoverMedia != nil && tweet.Article.CoverMedia.MediaInfo.OriginalImgURL != "" {
+			altText := tweet.Article.CoverMedia.AltText
+			if altText == "" {
+				altText = "cover"
+			}
+			sb.WriteString(fmt.Sprintf("![%s](%s)\n\n", altText, tweet.Article.CoverMedia.MediaInfo.OriginalImgURL))
+		}
+
 		// Article blocks
 		for _, block := range tweet.Article.Content.Blocks {
-			md := convertArticleBlockToMarkdown(block)
+			md := convertArticleBlockToMarkdown(block, tweet.Article)
 			if md != "" {
 				sb.WriteString(md)
 			}
@@ -372,6 +400,102 @@ func xTwitterArticleToMarkdown(tweet *fxtwitterTweet) string {
 	}
 
 	return cleanExcessiveWhitespace(sb.String())
+}
+
+// resolveAtomicBlock resolves an atomic (image/media) block to markdown
+func resolveAtomicBlock(block fxtwitterBlock, article *fxtwitterArticle) string {
+	if article == nil || len(block.EntityRanges) == 0 {
+		return ""
+	}
+
+	// Look up entity in entityMap by key
+	for _, er := range block.EntityRanges {
+		keyStr := er.Key.String()
+		for _, em := range article.Content.EntityMap {
+			if em.Key == keyStr && em.Value.Type == "MEDIA" {
+				return resolveMediaEntity(em, article)
+			}
+		}
+	}
+	return ""
+}
+
+// resolveMediaEntity resolves a MEDIA entity to a markdown image
+func resolveMediaEntity(em fxtwitterEntityMapEntry, article *fxtwitterArticle) string {
+	// Extract mediaId from entity data
+	mediaItems, ok := em.Value.Data["mediaItems"].([]interface{})
+	if !ok || len(mediaItems) == 0 {
+		return ""
+	}
+	firstItem, ok := mediaItems[0].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	mediaID, _ := firstItem["mediaId"].(string)
+	if mediaID == "" {
+		return ""
+	}
+
+	// Look up mediaID in mediaEntities to get the image URL
+	for _, me := range article.MediaEntities {
+		if me.MediaID == mediaID {
+			altText := me.MediaInfo.AltText
+			if altText == "" {
+				altText = "image"
+			}
+			return fmt.Sprintf("![%s](%s)\n\n", altText, me.MediaInfo.OriginalImgURL)
+		}
+	}
+	return ""
+}
+
+// applyEntityLinks resolves LINK entities in text to markdown links
+func applyEntityLinks(text string, block fxtwitterBlock, article *fxtwitterArticle) string {
+	if article == nil || len(article.Content.EntityMap) == 0 {
+		return text
+	}
+
+	// Collect link entities for this block, sorted by offset descending
+	type linkRange struct {
+		offset int
+		length int
+		url    string
+	}
+	var links []linkRange
+	for _, er := range block.EntityRanges {
+		keyStr := er.Key.String()
+		for _, em := range article.Content.EntityMap {
+			if em.Key == keyStr && em.Value.Type == "LINK" {
+				url, _ := em.Value.Data["url"].(string)
+				if url != "" {
+					links = append(links, linkRange{offset: er.Offset, length: er.Length, url: url})
+				}
+			}
+		}
+	}
+
+	// Sort by offset descending (process from end to preserve offsets)
+	sort.Slice(links, func(i, j int) bool {
+		return links[i].offset > links[j].offset
+	})
+
+	for _, l := range links {
+		start := l.offset
+		end := l.offset + l.length
+		if end > len(text) {
+			end = len(text)
+		}
+		if start > len(text) {
+			start = len(text)
+		}
+		if start >= end {
+			continue
+		}
+		linkText := text[start:end]
+		replacement := fmt.Sprintf("[%s](%s)", linkText, l.url)
+		text = text[:start] + replacement + text[end:]
+	}
+	return text
 }
 
 // xTwitterPublishedTime parses the created_at field from fxtwitter
@@ -413,6 +537,38 @@ func resolveURL(imgURL, baseURL string) string {
 	}
 
 	return base.ResolveReference(img).String()
+}
+
+// downloadInlineImages scans markdown for remote image URLs, downloads them
+// to the assets directory, and replaces URLs with local relative paths.
+func downloadInlineImages(md string, assetsDir string) (string, int) {
+	// Match ![alt](url) patterns with http/https URLs
+	re := regexp.MustCompile(`!\[([^\]]*)\]\((https?://[^\)]+)\)`)
+	matches := re.FindAllStringSubmatch(md, -1)
+	if len(matches) == 0 {
+		return md, 0
+	}
+
+	// Deduplicate URLs
+	urlToPath := make(map[string]string)
+	for _, m := range matches {
+		imgURL := m[2]
+		if _, exists := urlToPath[imgURL]; exists {
+			continue
+		}
+		ext := getImageExtension(imgURL)
+		fileName := fmt.Sprintf("img_%d%s", len(urlToPath)+1, ext)
+		localPath := filepath.Join(assetsDir, fileName)
+		if err := downloadImage(imgURL, localPath); err == nil {
+			urlToPath[imgURL] = filepath.Join("assets", fileName)
+		}
+	}
+
+	// Replace URLs in markdown
+	for remoteURL, localRef := range urlToPath {
+		md = strings.ReplaceAll(md, remoteURL, localRef)
+	}
+	return md, len(urlToPath)
 }
 
 // downloadImage downloads an image and saves it to the specified path
@@ -905,6 +1061,10 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 
 	// Convert article to markdown
 	content := xTwitterArticleToMarkdown(tweet)
+
+	// Download inline images from markdown and replace with local paths
+	content, downloadedInlineImages := downloadInlineImages(content, assetsDir)
+	downloadedImages += downloadedInlineImages
 
 	// Published time
 	publishedTime := xTwitterPublishedTime(tweet)
