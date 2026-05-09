@@ -39,14 +39,6 @@ type InteractiveSession struct {
 	onSessionID    func(oldID, newID string) // optional callback when real session_id arrives (for pool map + DB update)
 }
 
-// IsSessionIDReady returns true if the session_id is a real Claude session ID
-// (received from system.init), as opposed to a local fallback ID.
-func (s *InteractiveSession) IsSessionIDReady() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.SessionID != "" && !strings.HasPrefix(s.SessionID, "local-")
-}
-
 // SessionPool manages all active sessions
 type SessionPool struct {
 	sessions  map[string]*InteractiveSession

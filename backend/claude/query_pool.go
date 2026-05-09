@@ -565,7 +565,10 @@ func StartResumedSession(ctx context.Context, claudeBin string, dataDir string, 
 	// Start reading events — session_id will be auto-captured from system.init
 	go session.readEvents()
 
-	// Wait briefly for session_id
+	// Wait briefly for session_id. For resumed sessions, system.init typically
+	// hasn't fired yet (it arrives when the first user message is sent), so
+	// timeout here is the expected path — a local-xxx fallback ID is used and
+	// updated later via the onSessionID callback.
 	if err := waitForInit(session, 5*time.Second); err != nil {
 		log.Printf("[session] Warning: %v, using fallback ID", err)
 		session.mu.Lock()
