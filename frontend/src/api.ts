@@ -1,4 +1,4 @@
-import type { Document, UpdateDocRequest, SSEEvent, UserSettings, Conversation, Message, LoginResponse, RegisterResponse, CaptchaResponse } from './types'
+import type { Document, UpdateDocRequest, SSEEvent, UserSettings, Conversation, Message, LoginResponse, RegisterResponse, CaptchaResponse, IMAPConfigInput, IMAPConfigResponse, IMAPTestResult, NewsletterSyncResult } from './types'
 
 const API_BASE = '/api'
 
@@ -535,4 +535,42 @@ export async function changePassword(currentPassword: string, newPassword: strin
   })
   const data = await res.json()
   if (!res.ok) throw new Error(data.error || 'Password change failed')
+}
+
+// Newsletter IMAP API
+export async function getIMAPConfig(): Promise<IMAPConfigResponse> {
+  const res = await fetch(`${API_BASE}/imap/config`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch IMAP config')
+  return res.json()
+}
+
+export async function updateIMAPConfig(config: IMAPConfigInput): Promise<IMAPConfigResponse> {
+  const res = await fetch(`${API_BASE}/imap/config`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify(config),
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Failed to update IMAP config')
+  return data
+}
+
+export async function deleteIMAPConfig(): Promise<void> {
+  const res = await fetch(`${API_BASE}/imap/config`, { method: 'DELETE', headers: getHeaders() })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || 'Failed to delete IMAP config')
+  }
+}
+
+export async function testIMAPConnection(): Promise<IMAPTestResult> {
+  const res = await fetch(`${API_BASE}/imap/test`, { method: 'POST', headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to test IMAP connection')
+  return res.json()
+}
+
+export async function syncNewsletter(): Promise<NewsletterSyncResult> {
+  const res = await fetch(`${API_BASE}/imap/sync`, { method: 'POST', headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to sync newsletters')
+  return res.json()
 }

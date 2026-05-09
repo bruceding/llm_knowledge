@@ -119,3 +119,17 @@ type Captcha struct {
 	ExpiresAt time.Time `gorm:"not null"`
 	CreatedAt time.Time
 }
+
+type IMAPConfig struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	UserID        uint      `gorm:"uniqueIndex;not null" json:"userId"`
+	Host          string    `json:"host"`
+	Port          int       `gorm:"default:993" json:"port"`
+	Username      string    `json:"username"`
+	EncryptedPass string    `json:"-"`
+	FolderName    string    `gorm:"default:Newsletter" json:"folderName"`
+	AutoSync      bool      `gorm:"default:false" json:"autoSync"`
+	LastSyncAt    time.Time `json:"lastSyncAt"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}

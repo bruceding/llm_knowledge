@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { uploadPDF, uploadPDFUrl, clipWeb, addRSSFeed, listRSSFeeds, deleteRSSFeed, syncRSSFeed } from '../api'
+import { uploadPDF, uploadPDFUrl, clipWeb, addRSSFeed, listRSSFeeds, deleteRSSFeed, syncRSSFeed, getIMAPConfig, syncNewsletter } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
 
 export default function ImportView() {
@@ -28,11 +28,17 @@ export default function ImportView() {
   const [addingRss, setAddingRss] = useState(false)
   const [syncingFeedId, setSyncingFeedId] = useState<number | null>(null)
 
+  // Newsletter state
+  const [newsletterConfigured, setNewsletterConfigured] = useState(false)
+  const [newsletterLastSync, setNewsletterLastSync] = useState<string | null>(null)
+  const [syncingNewsletter, setSyncingNewsletter] = useState(false)
+
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Load RSS feeds on mount
   useEffect(() => {
     loadRSSFeeds()
+    loadNewsletterConfig()
   }, [])
 
   const loadRSSFeeds = async () => {
@@ -41,6 +47,49 @@ export default function ImportView() {
       setRssFeeds(feeds)
     } catch (err) {
       console.error('Failed to load RSS feeds:', err)
+    }
+  }
+
+  const loadNewsletterConfig = async () => {
+    try {
+      const res = await getIMAPConfig()
+      setNewsletterConfigured(res.configured)
+      if (res.configured && res.config) {
+        setNewsletterLastSync(res.config.lastSyncAt)
+      }
+    } catch (err) {
+      console.error('Failed to load newsletter config:', err)
+    }
+  }
+
+  const handleSyncNewsletter = async () => {
+    setSyncingNewsletter(true)
+    setError(null)
+
+    try {
+      const result = await syncNewsletter()
+      if (result.error) {
+        setError(result.error)
+      } else if (result.newArticles > 0) {
+        setUploadResult({
+          id: 0,
+          path: '',
+          message: result.message,
+          pages: result.newArticles,
+        })
+      } else {
+        setUploadResult({
+          id: 0,
+          path: '',
+          message: result.message,
+          pages: 0,
+        })
+      }
+      await loadNewsletterConfig()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to sync newsletters')
+    } finally {
+      setSyncingNewsletter(false)
     }
   }
 
@@ -429,6 +478,41 @@ export default function ImportView() {
                     </li>
                   ))}
                 </ul>
+              </div>
+            )}
+          </div>
+
+          {/* Newsletter */}
+          <h3 className="text-lg font-semibold text-gray-700 mt-6">{t('import.newsletter')}</h3>
+          <div className="border border-gray-200 rounded-lg p-6">
+            <p className="text-gray-600 mb-4 text-sm">{t('import.newsletterHint')}</p>
+
+            {!newsletterConfigured ? (
+              <div className="text-center py-4">
+                <p className="text-gray-500 mb-3 text-sm">{t('import.newsletterNotConfigured')}</p>
+                <a
+                  href="/settings"
+                  className="inline-block px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm"
+                >
+                  {t('import.goToSettings')}
+                </a>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm text-gray-600">
+                    {t('import.lastSync')}: {newsletterLastSync && newsletterLastSync !== '0001-01-01T00:00:00Z'
+                      ? new Date(newsletterLastSync).toLocaleString()
+                      : t('import.never')}
+                  </div>
+                  <button
+                    onClick={handleSyncNewsletter}
+                    disabled={syncingNewsletter}
+                    className="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500 text-sm"
+                  >
+                    {syncingNewsletter ? t('import.syncing') : t('import.syncNewsletter')}
+                  </button>
+                </div>
               </div>
             )}
           </div>

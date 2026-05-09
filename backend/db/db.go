@@ -28,7 +28,7 @@ func Init(path string) error {
 		&User{}, &Session{}, &Captcha{},
 		&Document{}, &Tag{}, &DocumentTag{},
 		&Conversation{}, &ConversationMessage{},
-		&UserSettings{}, &RSSFeed{}, &DocNote{},
+		&UserSettings{}, &RSSFeed{}, &DocNote{}, &IMAPConfig{},
 	)
 	if err != nil {
 		return err
