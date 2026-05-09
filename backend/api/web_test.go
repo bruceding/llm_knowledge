@@ -1436,3 +1436,95 @@ func (t *urlRewriterTransport) RoundTrip(req *http.Request) (*http.Response, err
 	newReq.URL, _ = url.Parse(t.newURL + req.URL.Path)
 	return t.orig.RoundTrip(newReq)
 }
+
+func TestApplyInlineStylesRuneOffset(t *testing.T) {
+	tests := []struct {
+		name   string
+		text   string
+		ranges []struct {
+			Offset int    `json:"offset"`
+			Length int    `json:"length"`
+			Style  string `json:"style"`
+		}
+		want string
+	}{
+		{
+			name: "ASCII bold",
+			text: "Hello World",
+			ranges: []struct {
+				Offset int    `json:"offset"`
+				Length int    `json:"length"`
+				Style  string `json:"style"`
+			}{{Offset: 0, Length: 5, Style: "Bold"}},
+			want: "**Hello** World",
+		},
+		{
+			name: "Chinese bold",
+			text: "你好世界test",
+			ranges: []struct {
+				Offset int    `json:"offset"`
+				Length int    `json:"length"`
+				Style  string `json:"style"`
+			}{{Offset: 0, Length: 4, Style: "Bold"}},
+			want: "**你好世界**test",
+		},
+		{
+			name: "Emoji bold",
+			text: "🎉🚀hello",
+			ranges: []struct {
+				Offset int    `json:"offset"`
+				Length int    `json:"length"`
+				Style  string `json:"style"`
+			}{{Offset: 0, Length: 2, Style: "Bold"}},
+			want: "**🎉🚀**hello",
+		},
+		{
+			name: "Mixed CJK+ASCII italic mid-text",
+			text: "这是中文and more",
+			ranges: []struct {
+				Offset int    `json:"offset"`
+				Length int    `json:"length"`
+				Style  string `json:"style"`
+			}{{Offset: 4, Length: 3, Style: "Italic"}},
+			want: "这是中文*and* more",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := applyInlineStyles(tt.text, tt.ranges)
+			if got != tt.want {
+				t.Errorf("applyInlineStyles() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyEntityLinksRuneOffset(t *testing.T) {
+	article := &fxtwitterArticle{
+		Content: struct {
+			Blocks    []fxtwitterBlock          `json:"blocks"`
+			EntityMap []fxtwitterEntityMapEntry `json:"entityMap"`
+		}{
+			EntityMap: []fxtwitterEntityMapEntry{
+				{Key: "0", Value: struct {
+					Type string                 `json:"type"`
+					Data map[string]interface{} `json:"data"`
+				}{Type: "LINK", Data: map[string]interface{}{"url": "https://example.com"}}},
+			},
+		},
+	}
+
+	block := fxtwitterBlock{
+		Text: "你好点击这里查看更多",
+		EntityRanges: []fxtwitterEntityRange{
+			{Key: "0", Offset: 2, Length: 4},
+		},
+	}
+
+	got := applyEntityLinks(block.Text, block, article)
+	want := "你好[点击这里](https://example.com)查看更多"
+	if got != want {
+		t.Errorf("applyEntityLinks() = %q, want %q", got, want)
+	}
+}

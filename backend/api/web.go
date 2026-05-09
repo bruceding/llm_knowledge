@@ -8,6 +8,7 @@ import (
 	"io"
 	"llm-knowledge/db"
 	"llm-knowledge/ingest"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +21,8 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/labstack/echo/v4"
 )
+
+var inlineImageRe = regexp.MustCompile(`!\[([^\]]*)\]\((https?://[^\)]+)\)`)
 
 type WebHandler struct {
 	DataDir   string
@@ -154,6 +157,7 @@ type fxtwitterTweet struct {
 		Name       string `json:"name"`
 	} `json:"author"`
 	Article *fxtwitterArticle `json:"article"`
+	Lang    string            `json:"lang"`
 }
 
 // fxtwitterArticle represents an X Article (long-form post)
@@ -322,12 +326,15 @@ type inlineStyleRange struct {
 	Style  string
 }
 
-// applyInlineStyles applies bold/italic markdown formatting based on style ranges
+// applyInlineStyles applies bold/italic markdown formatting based on style ranges.
+// Draft.js offset/length are in Unicode characters (runes), not bytes.
 func applyInlineStyles(text string, ranges []struct {
 	Offset int    `json:"offset"`
 	Length int    `json:"length"`
 	Style  string `json:"style"`
 }) string {
+	runes := []rune(text)
+
 	// Convert to simpler type for sorting
 	sorted := make([]inlineStyleRange, len(ranges))
 	for i, r := range ranges {
@@ -342,27 +349,31 @@ func applyInlineStyles(text string, ranges []struct {
 	for _, r := range sorted {
 		start := r.Offset
 		end := r.Offset + r.Length
-		if end > len(text) {
-			end = len(text)
+		if end > len(runes) {
+			end = len(runes)
 		}
-		if start > len(text) {
-			start = len(text)
+		if start > len(runes) {
+			start = len(runes)
 		}
 		if start >= end {
 			continue
 		}
 
-		snippet := text[start:end]
+		snippet := string(runes[start:end])
+		var wrapped string
 		switch r.Style {
 		case "Bold":
-			text = text[:start] + "**" + snippet + "**" + text[end:]
+			wrapped = "**" + snippet + "**"
 		case "Italic":
-			text = text[:start] + "*" + snippet + "*" + text[end:]
+			wrapped = "*" + snippet + "*"
 		case "CODE":
-			text = text[:start] + "`" + snippet + "`" + text[end:]
+			wrapped = "`" + snippet + "`"
+		default:
+			continue
 		}
+		runes = append(runes[:start], append([]rune(wrapped), runes[end:]...)...)
 	}
-	return text
+	return string(runes)
 }
 
 // xTwitterArticleToMarkdown converts fxtwitter article data to markdown
@@ -479,23 +490,24 @@ func applyEntityLinks(text string, block fxtwitterBlock, article *fxtwitterArtic
 		return links[i].offset > links[j].offset
 	})
 
+	runes := []rune(text)
 	for _, l := range links {
 		start := l.offset
 		end := l.offset + l.length
-		if end > len(text) {
-			end = len(text)
+		if end > len(runes) {
+			end = len(runes)
 		}
-		if start > len(text) {
-			start = len(text)
+		if start > len(runes) {
+			start = len(runes)
 		}
 		if start >= end {
 			continue
 		}
-		linkText := text[start:end]
+		linkText := string(runes[start:end])
 		replacement := fmt.Sprintf("[%s](%s)", linkText, l.url)
-		text = text[:start] + replacement + text[end:]
+		runes = append(runes[:start], append([]rune(replacement), runes[end:]...)...)
 	}
-	return text
+	return string(runes)
 }
 
 // xTwitterPublishedTime parses the created_at field from fxtwitter
@@ -542,8 +554,7 @@ func resolveURL(imgURL, baseURL string) string {
 // downloadInlineImages scans markdown for remote image URLs, downloads them
 // to the assets directory, and replaces URLs with local relative paths.
 func downloadInlineImages(md string, assetsDir string) (string, int) {
-	// Match ![alt](url) patterns with http/https URLs
-	re := regexp.MustCompile(`!\[([^\]]*)\]\((https?://[^\)]+)\)`)
+	re := inlineImageRe
 	matches := re.FindAllStringSubmatch(md, -1)
 	if len(matches) == 0 {
 		return md, 0
@@ -925,7 +936,7 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 	// Build markdown content with metadata header
 	mdContent := fmt.Sprintf("---\nsource_url: %s\nsource_type: web\ntitle: %s\ndate: %s\n---\n\n%s",
 		req.URL,
-		originalTitle,
+		yamlQuote(originalTitle),
 		publishedTime.Format("2006-01-02"),
 		content)
 
@@ -982,6 +993,13 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 		"mdPath":   filepath.Join(rawRelPath, "paper.md"),
 		"message":  "Web page saved successfully",
 	})
+}
+
+// yamlQuote wraps a string in YAML double quotes, escaping internal quotes and backslashes.
+func yamlQuote(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	return "\"" + s + "\""
 }
 
 // uploadXTwitter handles X/Twitter URLs using the fxtwitter API
@@ -1046,25 +1064,11 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 		return c.JSON(500, echo.Map{"error": "failed to create directory"})
 	}
 
-	// Download cover image if available
-	downloadedImages := 0
-	if tweet.Article != nil && tweet.Article.CoverMedia != nil {
-		coverURL := tweet.Article.CoverMedia.MediaInfo.OriginalImgURL
-		if coverURL != "" {
-			ext := getImageExtension(coverURL)
-			localPath := filepath.Join(assetsDir, "img_1"+ext)
-			if err := downloadImage(coverURL, localPath); err == nil {
-				downloadedImages++
-			}
-		}
-	}
-
-	// Convert article to markdown
+	// Convert article to markdown (includes cover image and inline images)
 	content := xTwitterArticleToMarkdown(tweet)
 
-	// Download inline images from markdown and replace with local paths
-	content, downloadedInlineImages := downloadInlineImages(content, assetsDir)
-	downloadedImages += downloadedInlineImages
+	// Download all images from markdown (cover + inline) and replace with local paths
+	content, downloadedImages := downloadInlineImages(content, assetsDir)
 
 	// Published time
 	publishedTime := xTwitterPublishedTime(tweet)
@@ -1076,7 +1080,7 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 	mdPath := filepath.Join(dir, "paper.md")
 	mdContent := fmt.Sprintf("---\nsource_url: %s\nsource_type: web\ntitle: %s\ndate: %s\nauthor: %s (@%s)\n---\n\n%s",
 		req.URL,
-		originalTitle,
+		yamlQuote(originalTitle),
 		publishedTime.Format("2006-01-02"),
 		tweet.Author.Name,
 		tweet.Author.ScreenName,
@@ -1102,7 +1106,9 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 	// Save raw JSON for future re-processing
 	jsonPath := filepath.Join(dir, "fxtwitter.json")
 	if jsonData, err := json.MarshalIndent(tweet, "", "  "); err == nil {
-		os.WriteFile(jsonPath, jsonData, 0644)
+		if err := os.WriteFile(jsonPath, jsonData, 0644); err != nil {
+			log.Printf("[web] failed to save fxtwitter.json: %v", err)
+		}
 	}
 
 	// Metadata
@@ -1121,11 +1127,16 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 		SourceType: "web",
 		RawPath:    rawRelPath,
 		SourceURL:  req.URL,
-		Language:   "en",
-		Status:     "inbox",
-		Metadata:   string(metadataJSON),
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
+		Language: detectLanguage(func() string {
+			if tweet.Article != nil && tweet.Article.Title != "" {
+				return tweet.Article.Title + " " + tweet.Article.PreviewText
+			}
+			return tweet.Text
+		}()),
+		Status:    "inbox",
+		Metadata:  string(metadataJSON),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
 	}
 	if err := db.DB.Create(&docRecord).Error; err != nil {
 		return c.JSON(500, echo.Map{"error": "failed to create document"})
