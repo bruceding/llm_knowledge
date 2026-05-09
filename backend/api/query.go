@@ -125,6 +125,7 @@ func (h *QueryHandler) Message(c echo.Context) error {
 	var err error
 
 	qs = h.Pool.Get(req.ConversationID)
+	contextLost := false
 	if qs != nil {
 		// Active session exists, reuse it
 	} else if conv.SessionID != "" {
@@ -137,6 +138,7 @@ func (h *QueryHandler) Message(c echo.Context) error {
 			if err != nil {
 				return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create session"})
 			}
+			contextLost = true
 		}
 	} else {
 		// Create new session
@@ -163,8 +165,33 @@ func (h *QueryHandler) Message(c echo.Context) error {
 		imageData = append(imageData, img)
 	}
 
+	// Build the actual message to send; if context was lost, prepend history
+	messageToSend := req.Message
+	if contextLost {
+		var historyMsgs []db.ConversationMessage
+		if err := db.DB.Where("conversation_id = ? AND role IN ? AND id != ?", req.ConversationID, []string{"user", "assistant"}, userMsg.ID).
+			Order("created_at DESC").Limit(20).Find(&historyMsgs).Error; err == nil && len(historyMsgs) > 0 {
+			// Reverse to chronological order (queried DESC for limit)
+			for i, j := 0, len(historyMsgs)-1; i < j; i, j = i+1, j-1 {
+				historyMsgs[i], historyMsgs[j] = historyMsgs[j], historyMsgs[i]
+			}
+			var sb strings.Builder
+			sb.WriteString("[以下是本对话的历史消息]\n")
+			for _, hm := range historyMsgs {
+				if hm.Role == "user" {
+					sb.WriteString(fmt.Sprintf("用户: %s\n", hm.Content))
+				} else {
+					sb.WriteString(fmt.Sprintf("助手: %s\n", hm.Content))
+				}
+			}
+			sb.WriteString("\n[用户新消息]\n")
+			sb.WriteString(req.Message)
+			messageToSend = sb.String()
+		}
+	}
+
 	// Send question to session with message ID for saving assistant reply
-	_, err = qs.Ask(req.Message, userMsg.ID, imageData)
+	_, err = qs.Ask(messageToSend, userMsg.ID, imageData)
 	if err != nil {
 		log.Printf("[query] Failed to ask question: %v", err)
 		// Session might be dead, try to recreate
@@ -177,16 +204,17 @@ func (h *QueryHandler) Message(c echo.Context) error {
 		if sid := qs.SessionID(); sid != newSessionID {
 			db.DB.Model(&db.Conversation{}).Where("id = ?", req.ConversationID).Update("session_id", sid)
 		}
-		_, err = qs.Ask(req.Message, userMsg.ID, imageData)
+		_, err = qs.Ask(messageToSend, userMsg.ID, imageData)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to ask question"})
 		}
 	}
 
 	return c.JSON(http.StatusOK, echo.Map{
-		"status":       "sent",
-		"messageId":    userMsg.ID,
-		"sessionId":    qs.SessionID(),
+		"status":      "sent",
+		"messageId":   userMsg.ID,
+		"sessionId":   qs.SessionID(),
+		"contextLost": contextLost,
 	})
 }
 
@@ -257,21 +285,8 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 		fmt.Fprintf(c.Response(), "data: %s\n\n", data)
 		flusher.Flush()
 
-		// On result, save assistant message to DB (only if has content)
-		if evt.Type == "result" && evt.Subtype != "error_during_execution" && evt.ResultMessageID > 0 && evt.ResultFullContent != "" {
-			assistantMsg := db.ConversationMessage{
-				ConversationID: convID,
-				Role:           "assistant",
-				Content:        evt.ResultFullContent,
-				Images:         "[]",
-				CreatedAt:      time.Now(),
-			}
-			if err := db.DB.Create(&assistantMsg).Error; err != nil {
-				log.Printf("[query] Failed to save assistant message: %v", err)
-			}
-			// Update conversation timestamp
-			db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("updated_at", time.Now())
-		}
+		// Note: assistant message saving is handled by routeEvents in query_pool.go
+		// so it persists even when SSE disconnects. No need to save here.
 
 		// On interrupt (error_during_execution), don't save empty content
 		// Frontend will handle showing "[Stopped]"

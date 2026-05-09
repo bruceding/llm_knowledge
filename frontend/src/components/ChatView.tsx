@@ -116,6 +116,11 @@ export default function ChatView() {
   // Load conversation history when switching
   useEffect(() => {
     if (urlConversationId && urlConversationId !== currentConversationId) {
+      // Reset streaming state for the new conversation (the old one continues in the background)
+      isStreamingRef.current = false
+      setIsStreaming(false)
+      setPendingImages([])
+
       fetchConversationMessages(urlConversationId).then((dbMessages) => {
         if (dbMessages.length > 0) {
           setMessages(dbMessages.map((m) => ({
@@ -132,7 +137,6 @@ export default function ChatView() {
         setMessages([])
       })
       setCurrentConversationId(urlConversationId)
-      setIsStreaming(false)
     }
   }, [urlConversationId, currentConversationId])
 
@@ -146,7 +150,7 @@ export default function ChatView() {
     }
 
     if (event.type === 'assistant') {
-      if (!isStreamingRef.current) return
+      if (!isStreamingRef.current) return // skip if no active turn is streaming
       const msg = event.message
       const blocks = typeof msg === 'object' ? msg?.content : undefined
       if (blocks && blocks.length > 0) {
@@ -173,7 +177,6 @@ export default function ChatView() {
         })
       }
     } else if (event.type === 'result') {
-      if (!isStreamingRef.current) return
       setMessages((prev) => {
         const updated = prev.map(m =>
           m.isStreaming ? { ...m, isStreaming: false, isThinking: false, toolUse: undefined } : m
@@ -192,7 +195,6 @@ export default function ChatView() {
       loadConversations()
       setTimeout(() => inputRef.current?.focus(), 0)
     } else if (event.type === 'error') {
-      if (!isStreamingRef.current) return
       setMessages((prev) => {
         const last = prev[prev.length - 1]
         if (last.role === 'assistant' && last.isStreaming) {
@@ -233,18 +235,47 @@ export default function ChatView() {
 
         const decoder = new TextDecoder()
         let buffer = ''
+        let idleTimer: ReturnType<typeof setTimeout> | null = null
+        const IDLE_TIMEOUT = 90_000 // 90s no data → disconnect and reset
 
-        const pump = (): Promise<void> => reader.read().then(({ done, value }) => {
-          if (controller.signal.aborted) return
-          if (done) {
+        const resetIdleTimer = () => {
+          if (idleTimer) clearTimeout(idleTimer)
+          idleTimer = setTimeout(() => {
+            console.warn('[SSE] Idle timeout (90s), disconnecting')
+            controller.abort()
             sseReadyRef.current = false
             abortRef.current = null
+            if (isStreamingRef.current) {
+              setMessages((prev) => {
+                const last = prev[prev.length - 1]
+                if (last.role === 'assistant' && last.isStreaming) {
+                  return [...prev.slice(0, -1), { ...last, content: last.content || t('chatView.connectionError'), isStreaming: false, isThinking: false, toolUse: undefined }]
+                }
+                return prev
+              })
+              isStreamingRef.current = false
+              setIsStreaming(false)
+            }
+          }, IDLE_TIMEOUT)
+        }
+        resetIdleTimer()
+
+        const pump = (): Promise<void> => reader.read().then(({ done, value }) => {
+          if (controller.signal.aborted) {
+            if (idleTimer) clearTimeout(idleTimer)
+            return
+          }
+          if (done) {
+            if (idleTimer) clearTimeout(idleTimer)
+            sseReadyRef.current = false
+            if (abortRef.current === controller) abortRef.current = null
             if (isStreamingRef.current) {
               isStreamingRef.current = false
               setIsStreaming(false)
             }
             return
           }
+          resetIdleTimer()
           buffer += decoder.decode(value, { stream: true })
           const lines = buffer.split(/\r?\n/)
           buffer = lines.pop() || ''
@@ -392,7 +423,13 @@ export default function ChatView() {
           check()
         })
       }
-      await sendQueryMessage(convId, userContent, imagesToSend.length > 0 ? imagesToSend : undefined)
+      const result = await sendQueryMessage(convId, userContent, imagesToSend.length > 0 ? imagesToSend : undefined)
+      if (result.contextLost) {
+        setMessages((prev) => {
+          const assistantIdx = prev.length - 1
+          return [...prev.slice(0, assistantIdx), { id: Date.now() - 1, role: 'system', content: t('chatView.contextLostWarning'), timestamp: new Date() }, prev[assistantIdx]]
+        })
+      }
     } catch (err) {
       setMessages((prev) => {
         const last = prev[prev.length - 1]

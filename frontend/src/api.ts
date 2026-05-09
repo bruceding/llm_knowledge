@@ -191,7 +191,7 @@ export async function sendQueryMessage(
   message: string,
   images?: string[],
   docId?: number
-): Promise<{ status: string; messageId: number; sessionId: string }> {
+): Promise<{ status: string; messageId: number; sessionId: string; contextLost?: boolean }> {
   const res = await fetch(`${API_BASE}/query/message`, {
     method: 'POST',
     headers: getHeaders(),

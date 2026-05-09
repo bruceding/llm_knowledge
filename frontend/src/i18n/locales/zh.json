@@ -182,6 +182,7 @@
     "lookingUp": "查询中：",
     "sendHint": "按 Enter 发送，Shift+Enter 换行",
     "connectionError": "无法连接服务器，请重试。",
+    "contextLostWarning": "⚠️ 上下文恢复失败，已开启新对话，之前的对话记录可能丢失。",
     "delete": "删除",
     "deleteConfirm": "确定要删除此对话吗？",
     "imageTypeError": "不支持的图片格式。允许: PNG, JPEG, GIF, WebP",

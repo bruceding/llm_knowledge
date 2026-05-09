@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"fmt"
+	"llm-knowledge/db"
 	"log"
 	"strings"
 	"sync"
@@ -45,10 +46,28 @@ func (qs *QuerySession) routeEvents() {
 			qs.currentContent.WriteString(evt.Content)
 		}
 
-		// On result/error, add message save info
+		// On result/error, add message save info and persist assistant reply
 		if evt.Type == "result" || evt.Type == "error" {
 			evt.ResultMessageID = qs.currentMessageID
 			evt.ResultFullContent = qs.currentContent.String()
+
+			// Auto-save assistant message to DB so it persists even if SSE disconnects
+			if evt.Type == "result" && evt.Subtype != "error_during_execution" &&
+				qs.currentMessageID > 0 && qs.currentContent.Len() > 0 {
+				assistantMsg := db.ConversationMessage{
+					ConversationID: qs.convID,
+					Role:           "assistant",
+					Content:        qs.currentContent.String(),
+					Images:         "[]",
+					CreatedAt:      time.Now(),
+				}
+				if err := db.DB.Create(&assistantMsg).Error; err != nil {
+					log.Printf("[query-pool] Failed to auto-save assistant message: %v", err)
+				} else {
+					log.Printf("[query-pool] Auto-saved assistant message for conversation %d", qs.convID)
+					db.DB.Model(&db.Conversation{}).Where("id = ?", qs.convID).Update("updated_at", time.Now())
+				}
+			}
 		}
 
 		// Route to active turn (non-blocking to avoid deadlock when no reader)
@@ -60,9 +79,13 @@ func (qs *QuerySession) routeEvents() {
 			if evt.Type == "result" || evt.Type == "error" {
 				close(qs.turnCh)
 				qs.turnCh = nil
-				qs.currentMessageID = 0
-				qs.currentContent.Reset()
 			}
+		}
+
+		// Always reset on result/error to prevent content accumulation across turns
+		if evt.Type == "result" || evt.Type == "error" {
+			qs.currentMessageID = 0
+			qs.currentContent.Reset()
 		}
 
 		// Fan-out to stream subscribers
