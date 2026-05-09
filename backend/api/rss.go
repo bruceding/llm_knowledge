@@ -993,8 +993,21 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 					break
 				}
 				// Common language class names without prefix
-				if class != "" && !strings.HasPrefix(class, "hljs") {
+				if class != "" && !strings.HasPrefix(class, "hljs") && class != "highlight" {
 					language = class
+				}
+			}
+		}
+		// Fallback: check <pre> tag's own class for language
+		if language == "" {
+			preClasses, _ := s.Attr("class")
+			for _, class := range strings.Split(preClasses, " ") {
+				if strings.HasPrefix(class, "language-") {
+					lang := strings.TrimPrefix(class, "language-")
+					if lang != "" {
+						language = lang
+						break
+					}
 				}
 			}
 		}
@@ -1091,6 +1104,10 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		return "\n---\n\n"
 	case "small":
 		return innerContent
+	case "details":
+		return innerContent + "\n"
+	case "summary":
+		return "**" + innerContent + "**\n\n"
 	case "table":
 		// Detect if this is a layout table (email newsletter style) vs data table
 		// Layout tables typically have: no thead, single column, cellpadding="0", used for spacing

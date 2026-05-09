@@ -122,7 +122,7 @@ func getImageExtension(imgURL string) string {
 func extractContent(doc *goquery.Document) string {
 	// Remove script, style, nav, header, footer, sidebar elements
 	// Also remove navigation links, social icons, and other non-content elements
-	doc.Find("script, style, nav, .Header, .Footer, .NavigationDrawer, aside, .sidebar, .navigation, .menu, .ads").Remove()
+	doc.Find("script, style, nav, header, .Header, .Footer, .NavigationDrawer, aside, .sidebar, .navigation, .menu, .ads").Remove()
 
 	// Remove cookie notices and other non-content
 	doc.Find(".Cookie-notice, .cookie-notice, .js-cookieNotice").Remove()
