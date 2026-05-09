@@ -69,7 +69,8 @@ func TestSanitizeFilename(t *testing.T) {
 }
 
 func TestProcessHTMLToMarkdown_PreTagIndentation(t *testing.T) {
-	// Test that syntax-highlighted HTML with indentation is cleaned up
+	// Test that syntax-highlighted HTML with indentation is cleaned up.
+	// Note: no Go-source indentation inside the raw string — whitespace in <pre> is meaningful.
 	html := `<div class="codehilite"><pre><span></span><code><span class="p">...</span>
 <span class="k">union</span><span class="w"> </span><span class="k">all</span>
 <span class="k">select</span>
@@ -79,19 +80,19 @@ func TestProcessHTMLToMarkdown_PreTagIndentation(t *testing.T) {
 
 	result, _, _ := processHTMLToMarkdown(html, "/tmp", "http://example.com")
 
-	// Check that there's no excessive indentation in the code block
-	if strings.Contains(result, "    union") || strings.Contains(result, "  id") {
-		t.Errorf("Code block should not have leading indentation, got: %s", result)
-	}
-
 	// Check that it's properly formatted as a code block
 	if !strings.Contains(result, "```") {
 		t.Error("Expected code block syntax")
 	}
 
-	// The content should be clean without leading spaces
-	if strings.Contains(result, "\n  ") || strings.Contains(result, "\n    ") {
-		t.Errorf("Content lines should not have leading whitespace, got: %s", result)
+	// Top-level lines (union, select) should have no leading indentation
+	if strings.Contains(result, "    union") {
+		t.Errorf("Top-level code lines should not have excessive indentation, got: %s", result)
+	}
+
+	// Relative indentation (e.g. 2 spaces before "id,") should be preserved
+	if !strings.Contains(result, "  id,") {
+		t.Errorf("Relative indentation should be preserved, got: %s", result)
 	}
 }
 
