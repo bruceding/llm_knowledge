@@ -788,6 +788,25 @@ export default function ChatView() {
                         <div className="animate-spin w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full"></div>
                         <span className="text-gray-500 text-sm">{msg.toolUse}</span>
                       </div>
+                    ) : msg.role === 'assistant' && msg.isStreaming && msg.content ? (
+                      <div>
+                        <div className="prose prose-sm prose-slate max-w-none text-sm [&_p]:my-1 [&_h1]:text-base [&_h2]:text-base [&_h3]:text-sm [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0.5 [&_code]:text-xs [&_pre]:my-1 [&_pre]:bg-gray-800 [&_pre]:text-gray-100 [&_pre]:rounded [&_pre]:p-3 [&_table]:my-1 [&_table]:border [&_table]:border-collapse [&_table]:w-full [&_table]:overflow-x-auto [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-50 [&_th]:px-2 [&_th]:py-1 [&_th]:font-medium [&_th]:text-left [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1 [&_tr:nth-child(even)_td]:bg-gray-50 [&_blockquote]:border-l-3 [&_blockquote]:border-blue-400 [&_blockquote]:pl-3 [&_blockquote]:text-gray-600 [&_strong]:text-gray-900 [&_a]:text-blue-500 [&_a]:underline">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {msg.content}
+                          </ReactMarkdown>
+                        </div>
+                        {msg.toolUse ? (
+                          <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-200">
+                            <div className="animate-spin w-3 h-3 border-2 border-gray-300 border-t-blue-500 rounded-full"></div>
+                            <span className="text-gray-400 text-xs">{msg.toolUse}</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-200">
+                            <div className="animate-spin w-3 h-3 border-2 border-gray-300 border-t-blue-500 rounded-full"></div>
+                            <span className="text-gray-400 text-xs">{t('chatView.thinking')}</span>
+                          </div>
+                        )}
+                      </div>
                     ) : msg.role === 'assistant' ? (
                       <div className="prose prose-sm prose-slate max-w-none text-sm [&_p]:my-1 [&_h1]:text-base [&_h2]:text-base [&_h3]:text-sm [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0.5 [&_code]:text-xs [&_pre]:my-1 [&_pre]:bg-gray-800 [&_pre]:text-gray-100 [&_pre]:rounded [&_pre]:p-3 [&_table]:my-1 [&_table]:border [&_table]:border-collapse [&_table]:w-full [&_table]:overflow-x-auto [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-50 [&_th]:px-2 [&_th]:py-1 [&_th]:font-medium [&_th]:text-left [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1 [&_tr:nth-child(even)_td]:bg-gray-50 [&_blockquote]:border-l-3 [&_blockquote]:border-blue-400 [&_blockquote]:pl-3 [&_blockquote]:text-gray-600 [&_strong]:text-gray-900 [&_a]:text-blue-500 [&_a]:underline">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
