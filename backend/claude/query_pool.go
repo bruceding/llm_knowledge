@@ -218,7 +218,7 @@ func (qs *QuerySession) StreamingContent() string {
 
 // SessionID returns the underlying session's ID.
 func (qs *QuerySession) SessionID() string {
-	return qs.session.SessionID
+	return qs.session.GetSessionID()
 }
 
 // SSEConnect delegates to the underlying session; returns false if limit reached.
@@ -270,7 +270,7 @@ func (p *QuerySessionPool) Close() {
 	log.Printf("[query-pool] QuerySessionPool closed, all sessions terminated")
 }
 
-// cleanupLoop closes sessions after 30 seconds of no active SSE connections.
+// cleanupLoop closes sessions after 120 seconds of no active SSE connections.
 func (p *QuerySessionPool) cleanupLoop() {
 	for {
 		select {
@@ -282,8 +282,8 @@ func (p *QuerySessionPool) cleanupLoop() {
 		for convID, qs := range p.sessions {
 			sseCount, lastDisconnect := qs.SSEState()
 			if sseCount == 0 && !lastDisconnect.IsZero() &&
-				lastDisconnect.Add(30*time.Second).Before(time.Now()) {
-				log.Printf("[query-pool] Closing session for conversation %d after 30s SSE disconnect", convID)
+				lastDisconnect.Add(120*time.Second).Before(time.Now()) {
+				log.Printf("[query-pool] Closing session for conversation %d after 120s SSE disconnect", convID)
 				qs.Close()
 				delete(p.sessions, convID)
 			}
@@ -361,6 +361,8 @@ func (p *QuerySessionPool) Remove(convID uint) {
 
 // StartSession creates a new InteractiveSession with system prompt.
 // Extracted from SessionPool.StartSession for reuse.
+// No init message is sent — the first real user message triggers system.init,
+// so session creation returns immediately without waiting for Claude CLI to boot.
 func StartSession(ctx context.Context, claudeBin string, dataDir string, systemPrompt string) (*InteractiveSession, error) {
 	args := []string{
 		"--print",
@@ -391,6 +393,7 @@ func StartSession(ctx context.Context, claudeBin string, dataDir string, systemP
 		eventCh:       make(chan StreamEvent, 100),
 		ctx:           ctx,
 		cancel:        cancel,
+		initDone:      make(chan struct{}),
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -406,25 +409,27 @@ func StartSession(ctx context.Context, claudeBin string, dataDir string, systemP
 		}
 	}()
 
-	// Send init message to trigger init event
-	initMsg := "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"用户准备提问，请等待。\"}}\n"
-	session.stdin.Write([]byte(initMsg))
-
+	// Start reading events — session_id will be auto-captured from system.init
+	// when the first real user message is sent via Ask(). No init message needed.
 	go session.readEvents()
 
-	// Wait for session_id from system init event
+	// Wait briefly for session_id from system.init event.
+	// If the first user message hasn't been sent yet, this will timeout and
+	// a fallback ID is used; the real ID will be captured later by readEvents.
 	if err := waitForInit(session, 5*time.Second); err != nil {
 		log.Printf("[session] Warning: %v, using fallback ID", err)
-		session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
+		session.mu.Lock()
+		if session.SessionID == "" {
+			session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
+		}
+		session.mu.Unlock()
 	}
-
-	// Drain the init message's response so it doesn't leak into user conversations
-	drainInitResponse(session)
 
 	return session, nil
 }
 
 // StartResumedSession creates a new InteractiveSession that resumes a previous conversation.
+// No init message is sent — the first real user message triggers system.init.
 func StartResumedSession(ctx context.Context, claudeBin string, dataDir string, prevSessionID string, systemPrompt string) (*InteractiveSession, error) {
 	args := []string{
 		"--resume", prevSessionID,
@@ -456,6 +461,7 @@ func StartResumedSession(ctx context.Context, claudeBin string, dataDir string, 
 		eventCh:       make(chan StreamEvent, 100),
 		ctx:           ctx,
 		cancel:        cancel,
+		initDone:      make(chan struct{}),
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -471,36 +477,18 @@ func StartResumedSession(ctx context.Context, claudeBin string, dataDir string, 
 		}
 	}()
 
-	// Send init message
-	initMsg := "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"继续对话。\"}}\n"
-	session.stdin.Write([]byte(initMsg))
-
+	// Start reading events — session_id will be auto-captured from system.init
 	go session.readEvents()
 
-	// Wait for session_id
+	// Wait briefly for session_id
 	if err := waitForInit(session, 5*time.Second); err != nil {
 		log.Printf("[session] Warning: %v, using fallback ID", err)
-		session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
+		session.mu.Lock()
+		if session.SessionID == "" {
+			session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
+		}
+		session.mu.Unlock()
 	}
-
-	// Drain the init message's response
-	drainInitResponse(session)
 
 	return session, nil
-}
-
-// drainInitResponse discards all events from the init message until a result event,
-// preventing the init response from leaking into user conversations.
-func drainInitResponse(session *InteractiveSession) {
-	for {
-		select {
-		case evt := <-session.eventCh:
-			if evt.Type == "result" || evt.Type == "error" {
-				return
-			}
-		case <-time.After(10 * time.Second):
-			log.Printf("[session] Warning: timed out draining init response")
-			return
-		}
-	}
 }

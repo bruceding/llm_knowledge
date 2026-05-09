@@ -294,24 +294,27 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
 	}
 
-	// Create session BEFORE flushing SSE headers so the frontend only receives
-	// 200 OK when the backend is truly ready to handle messages.
-	// Use context.Background() for session creation — request context would kill
-	// the Claude subprocess via exec.CommandContext when cancelled.
-	// We still use the request context below in the select to detect client disconnect.
-	bgCtx := context.Background()
-	systemPrompt := h.buildSystemPrompt(0)
-	qs, err := h.Pool.GetOrCreate(bgCtx, convID, systemPrompt)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create session"})
+	// Check if an active session already exists in the pool
+	qs := h.Pool.Get(convID)
+	if qs == nil && conv.SessionID != "" {
+		// No active session but conversation has a previous session_id — try resume.
+		// Resume is faster than creating a new session because Claude CLI caches context.
+		bgCtx := context.Background()
+		systemPrompt := h.buildSystemPrompt(0)
+		resumedQs, err := h.Pool.ResumeSession(bgCtx, convID, conv.SessionID, systemPrompt)
+		if err != nil {
+			log.Printf("[query] Resume failed for conversation %d (%v), will create new session", convID, err)
+		} else {
+			qs = resumedQs
+			// Update session_id in database if changed
+			if newSID := qs.SessionID(); newSID != conv.SessionID {
+				db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
+			}
+		}
 	}
 
-	// Mark SSE connection (reject if too many concurrent connections)
-	if !qs.SSEConnect() {
-		return c.JSON(http.StatusServiceUnavailable, echo.Map{"error": "too many concurrent SSE connections"})
-	}
-
-	// Set SSE headers — only after session is ready
+	// Flush SSE headers immediately so the frontend sees the connection open quickly.
+	// If no session was found/resumed, we create one below.
 	c.Response().Header().Set("Content-Type", "text/event-stream")
 	c.Response().Header().Set("Cache-Control", "no-cache")
 	c.Response().Header().Set("Connection", "keep-alive")
@@ -319,25 +322,66 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 
 	flusher, ok := c.Response().Writer.(http.Flusher)
 	if !ok {
-		qs.SSEDisconnect()
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "streaming not supported"})
 	}
-	flusher.Flush()
+
+	writeSSE := func(data map[string]interface{}) {
+		jsonData, _ := json.Marshal(data)
+		fmt.Fprintf(c.Response(), "data: %s\n\n", jsonData)
+		flusher.Flush()
+	}
+
+	if qs == nil {
+		// No session yet — notify frontend that we're initializing
+		writeSSE(echo.Map{
+			"type":           "session_initializing",
+			"conversationId": convID,
+		})
+
+		// Create session (starts Claude CLI process, but no longer blocks on init msg + drain)
+		bgCtx := context.Background()
+		systemPrompt := h.buildSystemPrompt(0)
+		var err error
+		qs, err = h.Pool.GetOrCreate(bgCtx, convID, systemPrompt)
+		if err != nil {
+			writeSSE(echo.Map{
+				"type":           "error",
+				"conversationId": convID,
+				"error":          "failed to create session",
+			})
+			return nil
+		}
+
+		// Update session_id in database
+		if newSID := qs.SessionID(); newSID != conv.SessionID {
+			db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
+		}
+	}
+
+	// Always notify frontend that session is ready (either existing or just created)
+	writeSSE(echo.Map{
+		"type":           "session_ready",
+		"conversationId": convID,
+	})
+
+	// Mark SSE connection (reject if too many concurrent connections)
+	if !qs.SSEConnect() {
+		writeSSE(echo.Map{
+			"type":           "error",
+			"conversationId": convID,
+			"error":          "too many concurrent SSE connections",
+		})
+		return nil
+	}
+	defer qs.SSEDisconnect()
 
 	// Capture streaming content BEFORE subscribing to avoid duplication.
-	// If we subscribe first, events between subscribe and content snapshot
-	// would be sent both in "full" and through the channel.
 	if content := qs.StreamingContent(); len(content) > 0 {
-		data, _ := json.Marshal(echo.Map{
+		writeSSE(echo.Map{
 			"type":           "full",
 			"conversationId": convID,
 			"content":        content,
 		})
-		if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", data); err != nil {
-			qs.SSEDisconnect()
-			return nil
-		}
-		flusher.Flush()
 	}
 
 	// Subscribe to session events AFTER capturing content
@@ -350,7 +394,6 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 		case evt, ok := <-eventCh:
 			if !ok {
 				// Channel closed (session terminated)
-				qs.SSEDisconnect()
 				return nil
 			}
 			// Skip system hook events
@@ -361,20 +404,17 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 			// Send event to SSE; check write error to detect client disconnect
 			data, _ := json.Marshal(evt)
 			if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", data); err != nil {
-				qs.SSEDisconnect()
 				return nil
 			}
 			flusher.Flush()
 
 			// Stop on error (but not error_during_execution which is from interrupt)
 			if evt.Type == "error" && evt.Subtype != "error_during_execution" {
-				qs.SSEDisconnect()
 				return nil
 			}
 
 		case <-c.Request().Context().Done():
 			// Client disconnected
-			qs.SSEDisconnect()
 			return nil
 		}
 	}
