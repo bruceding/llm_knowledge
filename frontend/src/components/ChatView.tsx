@@ -207,6 +207,18 @@ export default function ChatView() {
       return
     }
 
+    if (event.type === 'session_initializing') {
+      // Backend is creating a new Claude CLI session
+      setConnectionError(null)
+      return
+    }
+
+    if (event.type === 'session_ready') {
+      // Backend session is ready to accept messages
+      sseReadyRef.current = true
+      return
+    }
+
     if (event.type === 'full') {
       // SSE reconnect: replace streaming message with accumulated content
       setMessages((prev) => {
@@ -315,7 +327,8 @@ export default function ChatView() {
           setConnectionError(t('chatView.connectionError'))
           return
         }
-        sseReadyRef.current = true
+        // SSE connection is open, but session may still be initializing.
+        // Wait for 'session_ready' event to set sseReadyRef = true.
         const reader = res.body?.getReader()
         if (!reader) throw new Error('No response body')
 

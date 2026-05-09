@@ -218,7 +218,7 @@ func (qs *QuerySession) StreamingContent() string {
 
 // SessionID returns the underlying session's ID.
 func (qs *QuerySession) SessionID() string {
-	return qs.session.SessionID
+	return qs.session.GetSessionID()
 }
 
 // SSEConnect delegates to the underlying session; returns false if limit reached.
@@ -270,7 +270,7 @@ func (p *QuerySessionPool) Close() {
 	log.Printf("[query-pool] QuerySessionPool closed, all sessions terminated")
 }
 
-// cleanupLoop closes sessions after 30 seconds of no active SSE connections.
+// cleanupLoop closes sessions after 120 seconds of no active SSE connections.
 func (p *QuerySessionPool) cleanupLoop() {
 	for {
 		select {
@@ -282,8 +282,8 @@ func (p *QuerySessionPool) cleanupLoop() {
 		for convID, qs := range p.sessions {
 			sseCount, lastDisconnect := qs.SSEState()
 			if sseCount == 0 && !lastDisconnect.IsZero() &&
-				lastDisconnect.Add(30*time.Second).Before(time.Now()) {
-				log.Printf("[query-pool] Closing session for conversation %d after 30s SSE disconnect", convID)
+				lastDisconnect.Add(120*time.Second).Before(time.Now()) {
+				log.Printf("[query-pool] Closing session for conversation %d after 120s SSE disconnect", convID)
 				qs.Close()
 				delete(p.sessions, convID)
 			}
@@ -300,7 +300,76 @@ func (p *QuerySessionPool) Get(convID uint) *QuerySession {
 	return p.sessions[convID]
 }
 
+// SessionSource indicates how a session was obtained by the pool.
+type SessionSource string
+
+const (
+	SourceExisting SessionSource = "existing" // reused from pool
+	SourceResumed  SessionSource = "resumed"  // resumed via --resume
+	SourceCreated  SessionSource = "created"  // created fresh
+)
+
+// GetOrResume retrieves an existing session, resumes a previous one, or creates
+// a new one. This is an atomic operation under the pool's write lock, preventing
+// concurrent resume attempts for the same conversation.
+// The onSessionID callback is registered to update the database when the real
+// session_id arrives asynchronously.
+func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSessionID string, systemPrompt string, onRealSessionID func(convID uint, newSID string)) (*QuerySession, SessionSource, error) {
+	p.mu.RLock()
+	qs, exists := p.sessions[convID]
+	p.mu.RUnlock()
+
+	if exists {
+		return qs, SourceExisting, nil
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if qs, exists = p.sessions[convID]; exists {
+		return qs, SourceExisting, nil
+	}
+
+	var session *InteractiveSession
+	var err error
+	source := SourceCreated
+
+	// Try resume first if a previous session_id is available and looks real
+	if prevSessionID != "" && !strings.HasPrefix(prevSessionID, "local-") {
+		session, err = StartResumedSession(ctx, p.claudeBin, p.dataDir, prevSessionID, systemPrompt)
+		if err != nil {
+			log.Printf("[query-pool] Resume failed for conversation %d (%v), creating fresh session", convID, err)
+			session = nil // fall through to create new
+		} else {
+			source = SourceResumed
+		}
+	}
+
+	if session == nil {
+		session, err = StartSession(ctx, p.claudeBin, p.dataDir, systemPrompt)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to start session: %w", err)
+		}
+	}
+
+	// Register callback to update the database when real session_id arrives.
+	// This handles the case where waitForInit timed out and a fallback ID was used.
+	session.onSessionID = func(oldID, newID string) {
+		log.Printf("[query-pool] session_id updated for conversation %d: %s -> %s", convID, oldID, newID)
+		if onRealSessionID != nil {
+			onRealSessionID(convID, newID)
+		}
+	}
+
+	qs = newQuerySession(session, convID)
+	p.sessions[convID] = qs
+	log.Printf("[query-pool] Created session %s for conversation %d (source=%s)", session.GetSessionID(), convID, source)
+	return qs, source, nil
+}
+
 // GetOrCreate retrieves an existing session or creates a new one.
+// Prefer GetOrResume which also tries --resume when a previous session exists.
 func (p *QuerySessionPool) GetOrCreate(ctx context.Context, convID uint, systemPrompt string) (*QuerySession, error) {
 	p.mu.RLock()
 	qs, exists := p.sessions[convID]
@@ -323,9 +392,17 @@ func (p *QuerySessionPool) GetOrCreate(ctx context.Context, convID uint, systemP
 		return nil, fmt.Errorf("failed to start session: %w", err)
 	}
 
+	// Register callback to update the database when real session_id arrives
+	session.onSessionID = func(oldID, newID string) {
+		log.Printf("[query-pool] session_id updated for conversation %d: %s -> %s", convID, oldID, newID)
+		// Use only convID in WHERE: local-xxx was never written to DB,
+		// so WHERE session_id = oldID would match zero rows.
+		db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newID)
+	}
+
 	qs = newQuerySession(session, convID)
 	p.sessions[convID] = qs
-	log.Printf("[query-pool] Created new session %s for conversation %d", session.SessionID, convID)
+	log.Printf("[query-pool] Created new session %s for conversation %d", session.GetSessionID(), convID)
 	return qs, nil
 }
 
@@ -339,9 +416,17 @@ func (p *QuerySessionPool) ResumeSession(ctx context.Context, convID uint, prevS
 		return nil, fmt.Errorf("failed to resume session: %w", err)
 	}
 
+	// Register callback to update the database when real session_id arrives
+	session.onSessionID = func(oldID, newID string) {
+		log.Printf("[query-pool] session_id updated for conversation %d: %s -> %s", convID, oldID, newID)
+		// Use only convID in WHERE: local-xxx was never written to DB,
+		// so WHERE session_id = oldID would match zero rows.
+		db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newID)
+	}
+
 	qs := newQuerySession(session, convID)
 	p.sessions[convID] = qs
-	log.Printf("[query-pool] Resumed session %s (from %s) for conversation %d", session.SessionID, prevSessionID, convID)
+	log.Printf("[query-pool] Resumed session %s (from %s) for conversation %d", session.GetSessionID(), prevSessionID, convID)
 	return qs, nil
 }
 
@@ -361,6 +446,8 @@ func (p *QuerySessionPool) Remove(convID uint) {
 
 // StartSession creates a new InteractiveSession with system prompt.
 // Extracted from SessionPool.StartSession for reuse.
+// No init message is sent — the first real user message triggers system.init,
+// so session creation returns immediately without waiting for Claude CLI to boot.
 func StartSession(ctx context.Context, claudeBin string, dataDir string, systemPrompt string) (*InteractiveSession, error) {
 	args := []string{
 		"--print",
@@ -391,6 +478,7 @@ func StartSession(ctx context.Context, claudeBin string, dataDir string, systemP
 		eventCh:       make(chan StreamEvent, 100),
 		ctx:           ctx,
 		cancel:        cancel,
+		initDone:      make(chan struct{}),
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -406,25 +494,27 @@ func StartSession(ctx context.Context, claudeBin string, dataDir string, systemP
 		}
 	}()
 
-	// Send init message to trigger init event
-	initMsg := "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"用户准备提问，请等待。\"}}\n"
-	session.stdin.Write([]byte(initMsg))
-
+	// Start reading events — session_id will be auto-captured from system.init
+	// when the first real user message is sent via Ask(). No init message needed.
 	go session.readEvents()
 
-	// Wait for session_id from system init event
+	// Wait briefly for session_id from system.init event.
+	// If the first user message hasn't been sent yet, this will timeout and
+	// a fallback ID is used; the real ID will be captured later by readEvents.
 	if err := waitForInit(session, 5*time.Second); err != nil {
 		log.Printf("[session] Warning: %v, using fallback ID", err)
-		session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
+		session.mu.Lock()
+		if session.SessionID == "" {
+			session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
+		}
+		session.mu.Unlock()
 	}
-
-	// Drain the init message's response so it doesn't leak into user conversations
-	drainInitResponse(session)
 
 	return session, nil
 }
 
 // StartResumedSession creates a new InteractiveSession that resumes a previous conversation.
+// No init message is sent — the first real user message triggers system.init.
 func StartResumedSession(ctx context.Context, claudeBin string, dataDir string, prevSessionID string, systemPrompt string) (*InteractiveSession, error) {
 	args := []string{
 		"--resume", prevSessionID,
@@ -456,6 +546,7 @@ func StartResumedSession(ctx context.Context, claudeBin string, dataDir string, 
 		eventCh:       make(chan StreamEvent, 100),
 		ctx:           ctx,
 		cancel:        cancel,
+		initDone:      make(chan struct{}),
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -471,36 +562,21 @@ func StartResumedSession(ctx context.Context, claudeBin string, dataDir string, 
 		}
 	}()
 
-	// Send init message
-	initMsg := "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"继续对话。\"}}\n"
-	session.stdin.Write([]byte(initMsg))
-
+	// Start reading events — session_id will be auto-captured from system.init
 	go session.readEvents()
 
-	// Wait for session_id
+	// Wait briefly for session_id. For resumed sessions, system.init typically
+	// hasn't fired yet (it arrives when the first user message is sent), so
+	// timeout here is the expected path — a local-xxx fallback ID is used and
+	// updated later via the onSessionID callback.
 	if err := waitForInit(session, 5*time.Second); err != nil {
 		log.Printf("[session] Warning: %v, using fallback ID", err)
-		session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
+		session.mu.Lock()
+		if session.SessionID == "" {
+			session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
+		}
+		session.mu.Unlock()
 	}
-
-	// Drain the init message's response
-	drainInitResponse(session)
 
 	return session, nil
-}
-
-// drainInitResponse discards all events from the init message until a result event,
-// preventing the init response from leaking into user conversations.
-func drainInitResponse(session *InteractiveSession) {
-	for {
-		select {
-		case evt := <-session.eventCh:
-			if evt.Type == "result" || evt.Type == "error" {
-				return
-			}
-		case <-time.After(10 * time.Second):
-			log.Printf("[session] Warning: timed out draining init response")
-			return
-		}
-	}
 }

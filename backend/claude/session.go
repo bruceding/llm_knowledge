@@ -22,19 +22,21 @@ type ImageData struct {
 // InteractiveSession manages a bidirectional stream-json session with Claude CLI
 type InteractiveSession struct {
 	SessionID      string
-	OwnerUserID    uint   // user who created this session (for authorization)
-	OwnerDocID     uint   // document ID this session is for (for authorization)
+	OwnerUserID    uint // user who created this session (for authorization)
+	OwnerDocID     uint // document ID this session is for (for authorization)
 	cmd            *exec.Cmd
 	stdin          io.Writer
 	stdoutScanner  *bufio.Scanner
-	eventCh        chan StreamEvent      // main event channel (closed by readEvents)
-	streamChs      []chan StreamEvent    // subscriber channels for fan-out
+	eventCh        chan StreamEvent   // main event channel (closed by readEvents)
+	streamChs      []chan StreamEvent // subscriber channels for fan-out
 	lastDisconnect time.Time
-	sseCount       int                   // active SSE connections
+	sseCount       int // active SSE connections
 	mu             sync.Mutex
-	closeOnce      sync.Once             // protects Close() from double channel close
+	closeOnce      sync.Once // protects Close() from double channel close
 	ctx            context.Context
 	cancel         context.CancelFunc
+	initDone       chan struct{}             // closed when system.init event is received
+	onSessionID    func(oldID, newID string) // optional callback when real session_id arrives (for pool map + DB update)
 }
 
 // SessionPool manages all active sessions
@@ -70,7 +72,7 @@ func (p *SessionPool) Close() {
 	log.Printf("[session] SessionPool closed, all sessions terminated")
 }
 
-// cleanupLoop closes sessions after 30 seconds of no active SSE connections
+// cleanupLoop closes sessions after 120 seconds of no active SSE connections
 func (p *SessionPool) cleanupLoop() {
 	for {
 		select {
@@ -82,8 +84,8 @@ func (p *SessionPool) cleanupLoop() {
 		for sid, session := range p.sessions {
 			session.mu.Lock()
 			if session.sseCount == 0 && !session.lastDisconnect.IsZero() &&
-				session.lastDisconnect.Add(30*time.Second).Before(time.Now()) {
-				log.Printf("[session] Closing session %s after 30s timeout", sid)
+				session.lastDisconnect.Add(120*time.Second).Before(time.Now()) {
+				log.Printf("[session] Closing session %s after 120s timeout", sid)
 				session.Close()
 				delete(p.sessions, sid)
 			}
@@ -128,16 +130,11 @@ func newScanner(r io.Reader) *bufio.Scanner {
 }
 
 func waitForInit(session *InteractiveSession, timeout time.Duration) error {
-	for {
-		select {
-		case evt := <-session.eventCh:
-			if evt.Type == "system" && evt.Subtype == "init" {
-				session.SessionID = evt.SessionID
-				return nil
-			}
-		case <-time.After(timeout):
-			return fmt.Errorf("timed out waiting for init event")
-		}
+	select {
+	case <-session.initDone:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("timed out waiting for init event")
 	}
 }
 
@@ -166,14 +163,15 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 	}
 
 	session := &InteractiveSession{
-		OwnerUserID: userID,
-		OwnerDocID:  docID,
-		cmd:         cmd,
-		stdin:       stdinPipe,
+		OwnerUserID:   userID,
+		OwnerDocID:    docID,
+		cmd:           cmd,
+		stdin:         stdinPipe,
 		stdoutScanner: newScanner(stdoutPipe),
-		eventCh:     make(chan StreamEvent, 100),
-		ctx:         ctx,
-		cancel:      cancel,
+		eventCh:       make(chan StreamEvent, 100),
+		ctx:           ctx,
+		cancel:        cancel,
+		initDone:      make(chan struct{}),
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -192,21 +190,37 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 		}
 	}()
 
-	// IMPORTANT: Send initial stdin message BEFORE readEvents to trigger init
-	initMsg := "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"用户准备提问，请等待。\"}}\n"
-	session.stdin.Write([]byte(initMsg))
-
-	// Start reading events
+	// Start reading events — session_id will be auto-captured from system.init
+	// when the first real user message is sent. No init message needed.
 	go session.readEvents()
 
-	// Wait for session_id from system init event
-	if err := waitForInit(session, 5*time.Second); err != nil {
+	// Wait for session_id with a generous timeout.
+	// For docchat, the first user message triggers system.init.
+	// If timeout expires, a fallback ID is used; the real ID will be
+	// captured later by readEvents when init eventually arrives.
+	if err := waitForInit(session, 60*time.Second); err != nil {
 		log.Printf("[session] Warning: %v, using fallback ID", err)
-		session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
+		session.mu.Lock()
+		if session.SessionID == "" {
+			session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
+		}
+		session.mu.Unlock()
+	}
+
+	// Register callback to update map key when real session_id arrives
+	sessionID := session.GetSessionID()
+	session.onSessionID = func(oldID, newID string) {
+		p.mu.Lock()
+		if s, ok := p.sessions[oldID]; ok && s == session {
+			delete(p.sessions, oldID)
+			p.sessions[newID] = session
+		}
+		p.mu.Unlock()
+		log.Printf("[session] SessionPool map key updated: %s -> %s", oldID, newID)
 	}
 
 	p.mu.Lock()
-	p.sessions[session.SessionID] = session
+	p.sessions[sessionID] = session
 	p.mu.Unlock()
 
 	log.Printf("[session] Started new session %s", session.SessionID)
@@ -324,6 +338,14 @@ func (s *InteractiveSession) SendInterrupt() error {
 
 // SSEConnect increments SSE connection count; returns false if limit reached
 const maxSSEConnsPerSession = 3
+
+// GetSessionID returns the current session ID in a thread-safe manner.
+// The ID may be a fallback if system.init hasn't been received yet.
+func (s *InteractiveSession) GetSessionID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.SessionID
+}
 
 func (s *InteractiveSession) SSEConnect() bool {
 	s.mu.Lock()
@@ -453,6 +475,27 @@ func (s *InteractiveSession) readEvents() {
 			if rawEvent.IsError {
 				event.Type = "error"
 				event.Error = rawEvent.Result
+			}
+		}
+
+		// Auto-capture session_id from system.init event
+		if rawEvent.Type == "system" && rawEvent.Subtype == "init" && rawEvent.SessionID != "" {
+			s.mu.Lock()
+			oldID := s.SessionID
+			s.SessionID = rawEvent.SessionID
+			callback := s.onSessionID
+			s.mu.Unlock()
+			log.Printf("[session] Got session_id from init event: %s (was: %s)", s.SessionID, oldID)
+			// Notify pool to update map key if callback is set
+			if callback != nil && oldID != rawEvent.SessionID {
+				callback(oldID, rawEvent.SessionID)
+			}
+			// Signal that init is done (non-blocking close)
+			select {
+			case <-s.initDone:
+				// Already closed
+			default:
+				close(s.initDone)
 			}
 		}
 

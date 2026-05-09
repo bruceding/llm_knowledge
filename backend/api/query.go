@@ -123,37 +123,33 @@ func (h *QueryHandler) Message(c echo.Context) error {
 	// Use context.Background() — request context gets cancelled when handler returns,
 	// which would kill the Claude subprocess via exec.CommandContext.
 	ctx := context.Background()
-	var qs *claude.QuerySession
-	var err error
 
-	qs = h.Pool.Get(req.ConversationID)
+	// GetOrResume atomically: reuse existing > resume previous > create new.
+	// It also guards against concurrent resume attempts for the same conversation.
+	// The onRealSessionID callback updates the DB when the real session_id arrives
+	// asynchronously (handles fallback local-xxx IDs).
 	contextLost := false
-	if qs != nil {
-		// Active session exists, reuse it
-	} else if conv.SessionID != "" {
-		// Resume previous session
-		log.Printf("[query] No active session for conversation %d, resuming session %s", req.ConversationID, conv.SessionID)
-		qs, err = h.Pool.ResumeSession(ctx, req.ConversationID, conv.SessionID, systemPrompt)
-		if err != nil {
-			log.Printf("[query] Resume failed (%v), creating fresh session", err)
-			qs, err = h.Pool.GetOrCreate(ctx, req.ConversationID, systemPrompt)
-			if err != nil {
-				return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create session"})
-			}
-			contextLost = true
-		}
-	} else {
-		// Create new session
-		qs, err = h.Pool.GetOrCreate(ctx, req.ConversationID, systemPrompt)
+	qs := h.Pool.Get(req.ConversationID)
+	if qs == nil {
+		var err error
+		var source claude.SessionSource
+		qs, source, err = h.Pool.GetOrResume(ctx, req.ConversationID, conv.SessionID, systemPrompt, func(convID uint, newSID string) {
+			db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
+		})
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create session"})
 		}
+		// If a new session was created (not resumed) and there was a previous real session,
+		// the conversation context was lost — warn the user and inject history.
+		if source == claude.SourceCreated && conv.SessionID != "" {
+			contextLost = true
+		}
 	}
 
-	// Update session_id in conversation if changed
-	newSessionID := qs.SessionID()
-	if newSessionID != conv.SessionID {
-		db.DB.Model(&db.Conversation{}).Where("id = ?", req.ConversationID).Update("session_id", newSessionID)
+	// Only write session_id to DB if it's a real ID (not a local-xxx fallback).
+	// If it's a fallback, the onSessionID callback will update the DB later.
+	if qs.SessionID() != conv.SessionID && !strings.HasPrefix(qs.SessionID(), "local-") {
+		db.DB.Model(&db.Conversation{}).Where("id = ?", req.ConversationID).Update("session_id", qs.SessionID())
 	}
 
 	// Load images if provided
@@ -193,17 +189,19 @@ func (h *QueryHandler) Message(c echo.Context) error {
 	}
 
 	// Send question to session with message ID for saving assistant reply
-	_, err = qs.Ask(messageToSend, userMsg.ID, imageData)
+	_, err := qs.Ask(messageToSend, userMsg.ID, imageData)
 	if err != nil {
 		log.Printf("[query] Failed to ask question: %v", err)
 		// Session might be dead, try to recreate
 		h.Pool.Remove(req.ConversationID)
-		qs, err = h.Pool.GetOrCreate(ctx, req.ConversationID, systemPrompt)
+		qs, _, err = h.Pool.GetOrResume(ctx, req.ConversationID, "", systemPrompt, func(convID uint, newSID string) {
+			db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
+		})
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to recreate session"})
 		}
-		// Update session_id
-		if sid := qs.SessionID(); sid != newSessionID {
+		// Only write real session_id to DB
+		if sid := qs.SessionID(); !strings.HasPrefix(sid, "local-") {
 			db.DB.Model(&db.Conversation{}).Where("id = ?", req.ConversationID).Update("session_id", sid)
 		}
 		_, err = qs.Ask(messageToSend, userMsg.ID, imageData)
@@ -252,18 +250,19 @@ func (h *QueryHandler) ResumeConversation(c echo.Context) error {
 	// Use context.Background() for session creation
 	ctx := context.Background()
 
-	// Atomically: remove old session if exists, then get or create new one
-	// This ensures clean session state when resuming
+	// Remove old session if exists, then get or resume/create atomically
 	h.Pool.Remove(req.ConversationID)
 
-	qs, err := h.Pool.GetOrCreate(ctx, req.ConversationID, systemPrompt)
+	qs, _, err := h.Pool.GetOrResume(ctx, req.ConversationID, conv.SessionID, systemPrompt, func(convID uint, newSID string) {
+		db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
+	})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create session"})
 	}
 
-	// Update session_id in database
+	// Only write real session_id to DB (not local-xxx fallback)
 	newSessionID := qs.SessionID()
-	if newSessionID != conv.SessionID {
+	if newSessionID != conv.SessionID && !strings.HasPrefix(newSessionID, "local-") {
 		db.DB.Model(&db.Conversation{}).Where("id = ?", req.ConversationID).Update("session_id", newSessionID)
 	}
 
@@ -294,24 +293,10 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "conversation not found"})
 	}
 
-	// Create session BEFORE flushing SSE headers so the frontend only receives
-	// 200 OK when the backend is truly ready to handle messages.
-	// Use context.Background() for session creation — request context would kill
-	// the Claude subprocess via exec.CommandContext when cancelled.
-	// We still use the request context below in the select to detect client disconnect.
-	bgCtx := context.Background()
-	systemPrompt := h.buildSystemPrompt(0)
-	qs, err := h.Pool.GetOrCreate(bgCtx, convID, systemPrompt)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create session"})
-	}
+	// Check if an active session already exists in the pool
+	qs := h.Pool.Get(convID)
 
-	// Mark SSE connection (reject if too many concurrent connections)
-	if !qs.SSEConnect() {
-		return c.JSON(http.StatusServiceUnavailable, echo.Map{"error": "too many concurrent SSE connections"})
-	}
-
-	// Set SSE headers — only after session is ready
+	// Flush SSE headers immediately so the frontend sees the connection open quickly.
 	c.Response().Header().Set("Content-Type", "text/event-stream")
 	c.Response().Header().Set("Cache-Control", "no-cache")
 	c.Response().Header().Set("Connection", "keep-alive")
@@ -319,25 +304,70 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 
 	flusher, ok := c.Response().Writer.(http.Flusher)
 	if !ok {
-		qs.SSEDisconnect()
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "streaming not supported"})
 	}
-	flusher.Flush()
+
+	writeSSE := func(data map[string]interface{}) {
+		jsonData, _ := json.Marshal(data)
+		fmt.Fprintf(c.Response(), "data: %s\n\n", jsonData)
+		flusher.Flush()
+	}
+
+	if qs == nil {
+		// No session yet — notify frontend that we're initializing
+		writeSSE(echo.Map{
+			"type":           "session_initializing",
+			"conversationId": convID,
+		})
+
+		// GetOrResume atomically: try resume first, fall back to new session.
+		// This prevents concurrent resume attempts and registers a callback
+		// to update the DB when the real session_id arrives.
+		bgCtx := context.Background()
+		systemPrompt := h.buildSystemPrompt(0)
+		var err error
+		qs, _, err = h.Pool.GetOrResume(bgCtx, convID, conv.SessionID, systemPrompt, func(cid uint, newSID string) {
+			db.DB.Model(&db.Conversation{}).Where("id = ?", cid).Update("session_id", newSID)
+		})
+		if err != nil {
+			writeSSE(echo.Map{
+				"type":           "error",
+				"conversationId": convID,
+				"error":          "failed to create session",
+			})
+			return nil
+		}
+
+		// Only write real session_id to DB (not local-xxx fallback)
+		if newSID := qs.SessionID(); newSID != conv.SessionID && !strings.HasPrefix(newSID, "local-") {
+			db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
+		}
+	}
+
+	// Always notify frontend that session is ready (either existing or just created)
+	writeSSE(echo.Map{
+		"type":           "session_ready",
+		"conversationId": convID,
+	})
+
+	// Mark SSE connection (reject if too many concurrent connections)
+	if !qs.SSEConnect() {
+		writeSSE(echo.Map{
+			"type":           "error",
+			"conversationId": convID,
+			"error":          "too many concurrent SSE connections",
+		})
+		return nil
+	}
+	defer qs.SSEDisconnect()
 
 	// Capture streaming content BEFORE subscribing to avoid duplication.
-	// If we subscribe first, events between subscribe and content snapshot
-	// would be sent both in "full" and through the channel.
 	if content := qs.StreamingContent(); len(content) > 0 {
-		data, _ := json.Marshal(echo.Map{
+		writeSSE(echo.Map{
 			"type":           "full",
 			"conversationId": convID,
 			"content":        content,
 		})
-		if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", data); err != nil {
-			qs.SSEDisconnect()
-			return nil
-		}
-		flusher.Flush()
 	}
 
 	// Subscribe to session events AFTER capturing content
@@ -350,7 +380,6 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 		case evt, ok := <-eventCh:
 			if !ok {
 				// Channel closed (session terminated)
-				qs.SSEDisconnect()
 				return nil
 			}
 			// Skip system hook events
@@ -361,20 +390,17 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 			// Send event to SSE; check write error to detect client disconnect
 			data, _ := json.Marshal(evt)
 			if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", data); err != nil {
-				qs.SSEDisconnect()
 				return nil
 			}
 			flusher.Flush()
 
 			// Stop on error (but not error_during_execution which is from interrupt)
 			if evt.Type == "error" && evt.Subtype != "error_during_execution" {
-				qs.SSEDisconnect()
 				return nil
 			}
 
 		case <-c.Request().Context().Done():
 			// Client disconnected
-			qs.SSEDisconnect()
 			return nil
 		}
 	}
