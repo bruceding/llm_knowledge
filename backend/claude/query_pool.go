@@ -300,18 +300,27 @@ func (p *QuerySessionPool) Get(convID uint) *QuerySession {
 	return p.sessions[convID]
 }
 
+// SessionSource indicates how a session was obtained by the pool.
+type SessionSource string
+
+const (
+	SourceExisting SessionSource = "existing" // reused from pool
+	SourceResumed  SessionSource = "resumed"  // resumed via --resume
+	SourceCreated  SessionSource = "created"  // created fresh
+)
+
 // GetOrResume retrieves an existing session, resumes a previous one, or creates
 // a new one. This is an atomic operation under the pool's write lock, preventing
 // concurrent resume attempts for the same conversation.
 // The onSessionID callback is registered to update the database when the real
 // session_id arrives asynchronously.
-func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSessionID string, systemPrompt string, onRealSessionID func(convID uint, newSID string)) (*QuerySession, error) {
+func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSessionID string, systemPrompt string, onRealSessionID func(convID uint, newSID string)) (*QuerySession, SessionSource, error) {
 	p.mu.RLock()
 	qs, exists := p.sessions[convID]
 	p.mu.RUnlock()
 
 	if exists {
-		return qs, nil
+		return qs, SourceExisting, nil
 	}
 
 	p.mu.Lock()
@@ -319,11 +328,12 @@ func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSes
 
 	// Double-check after acquiring write lock
 	if qs, exists = p.sessions[convID]; exists {
-		return qs, nil
+		return qs, SourceExisting, nil
 	}
 
 	var session *InteractiveSession
 	var err error
+	source := SourceCreated
 
 	// Try resume first if a previous session_id is available and looks real
 	if prevSessionID != "" && !strings.HasPrefix(prevSessionID, "local-") {
@@ -331,13 +341,15 @@ func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSes
 		if err != nil {
 			log.Printf("[query-pool] Resume failed for conversation %d (%v), creating fresh session", convID, err)
 			session = nil // fall through to create new
+		} else {
+			source = SourceResumed
 		}
 	}
 
 	if session == nil {
 		session, err = StartSession(ctx, p.claudeBin, p.dataDir, systemPrompt)
 		if err != nil {
-			return nil, fmt.Errorf("failed to start session: %w", err)
+			return nil, "", fmt.Errorf("failed to start session: %w", err)
 		}
 	}
 
@@ -352,8 +364,8 @@ func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSes
 
 	qs = newQuerySession(session, convID)
 	p.sessions[convID] = qs
-	log.Printf("[query-pool] Created session %s for conversation %d", session.GetSessionID(), convID)
-	return qs, nil
+	log.Printf("[query-pool] Created session %s for conversation %d (source=%s)", session.GetSessionID(), convID, source)
+	return qs, source, nil
 }
 
 // GetOrCreate retrieves an existing session or creates a new one.
@@ -383,7 +395,9 @@ func (p *QuerySessionPool) GetOrCreate(ctx context.Context, convID uint, systemP
 	// Register callback to update the database when real session_id arrives
 	session.onSessionID = func(oldID, newID string) {
 		log.Printf("[query-pool] session_id updated for conversation %d: %s -> %s", convID, oldID, newID)
-		db.DB.Model(&db.Conversation{}).Where("id = ? AND session_id = ?", convID, oldID).Update("session_id", newID)
+		// Use only convID in WHERE: local-xxx was never written to DB,
+		// so WHERE session_id = oldID would match zero rows.
+		db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newID)
 	}
 
 	qs = newQuerySession(session, convID)
@@ -405,7 +419,9 @@ func (p *QuerySessionPool) ResumeSession(ctx context.Context, convID uint, prevS
 	// Register callback to update the database when real session_id arrives
 	session.onSessionID = func(oldID, newID string) {
 		log.Printf("[query-pool] session_id updated for conversation %d: %s -> %s", convID, oldID, newID)
-		db.DB.Model(&db.Conversation{}).Where("id = ? AND session_id = ?", convID, oldID).Update("session_id", newID)
+		// Use only convID in WHERE: local-xxx was never written to DB,
+		// so WHERE session_id = oldID would match zero rows.
+		db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newID)
 	}
 
 	qs := newQuerySession(session, convID)

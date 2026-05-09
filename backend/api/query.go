@@ -132,21 +132,17 @@ func (h *QueryHandler) Message(c echo.Context) error {
 	qs := h.Pool.Get(req.ConversationID)
 	if qs == nil {
 		var err error
-		qs, err = h.Pool.GetOrResume(ctx, req.ConversationID, conv.SessionID, systemPrompt, func(convID uint, newSID string) {
+		var source claude.SessionSource
+		qs, source, err = h.Pool.GetOrResume(ctx, req.ConversationID, conv.SessionID, systemPrompt, func(convID uint, newSID string) {
 			db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
 		})
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create session"})
 		}
-		// If session was created fresh (not resumed), context was lost
-		if conv.SessionID != "" && !strings.HasPrefix(conv.SessionID, "local-") {
-			// Check if the session was actually resumed by comparing session_ids
-			// A resumed session preserves context; a new one doesn't
-			currentSID := qs.SessionID()
-			if currentSID != conv.SessionID && !strings.HasPrefix(currentSID, "local-") {
-				// New session created (resume failed), context is lost
-				contextLost = true
-			}
+		// If a new session was created (not resumed) and there was a previous real session,
+		// the conversation context was lost — warn the user and inject history.
+		if source == claude.SourceCreated && conv.SessionID != "" {
+			contextLost = true
 		}
 	}
 
@@ -198,7 +194,7 @@ func (h *QueryHandler) Message(c echo.Context) error {
 		log.Printf("[query] Failed to ask question: %v", err)
 		// Session might be dead, try to recreate
 		h.Pool.Remove(req.ConversationID)
-		qs, err = h.Pool.GetOrResume(ctx, req.ConversationID, "", systemPrompt, func(convID uint, newSID string) {
+		qs, _, err = h.Pool.GetOrResume(ctx, req.ConversationID, "", systemPrompt, func(convID uint, newSID string) {
 			db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
 		})
 		if err != nil {
@@ -257,7 +253,7 @@ func (h *QueryHandler) ResumeConversation(c echo.Context) error {
 	// Remove old session if exists, then get or resume/create atomically
 	h.Pool.Remove(req.ConversationID)
 
-	qs, err := h.Pool.GetOrResume(ctx, req.ConversationID, conv.SessionID, systemPrompt, func(convID uint, newSID string) {
+	qs, _, err := h.Pool.GetOrResume(ctx, req.ConversationID, conv.SessionID, systemPrompt, func(convID uint, newSID string) {
 		db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
 	})
 	if err != nil {
@@ -330,7 +326,7 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 		bgCtx := context.Background()
 		systemPrompt := h.buildSystemPrompt(0)
 		var err error
-		qs, err = h.Pool.GetOrResume(bgCtx, convID, conv.SessionID, systemPrompt, func(cid uint, newSID string) {
+		qs, _, err = h.Pool.GetOrResume(bgCtx, convID, conv.SessionID, systemPrompt, func(cid uint, newSID string) {
 			db.DB.Model(&db.Conversation{}).Where("id = ?", cid).Update("session_id", newSID)
 		})
 		if err != nil {
