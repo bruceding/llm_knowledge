@@ -36,7 +36,15 @@ type InteractiveSession struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	initDone       chan struct{}             // closed when system.init event is received
-	onSessionID    func(oldID, newID string) // optional callback when real session_id arrives
+	onSessionID    func(oldID, newID string) // optional callback when real session_id arrives (for pool map + DB update)
+}
+
+// IsSessionIDReady returns true if the session_id is a real Claude session ID
+// (received from system.init), as opposed to a local fallback ID.
+func (s *InteractiveSession) IsSessionIDReady() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.SessionID != "" && !strings.HasPrefix(s.SessionID, "local-")
 }
 
 // SessionPool manages all active sessions
@@ -216,6 +224,7 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 			p.sessions[newID] = session
 		}
 		p.mu.Unlock()
+		log.Printf("[session] SessionPool map key updated: %s -> %s", oldID, newID)
 	}
 
 	p.mu.Lock()

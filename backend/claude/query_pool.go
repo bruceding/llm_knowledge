@@ -300,7 +300,64 @@ func (p *QuerySessionPool) Get(convID uint) *QuerySession {
 	return p.sessions[convID]
 }
 
+// GetOrResume retrieves an existing session, resumes a previous one, or creates
+// a new one. This is an atomic operation under the pool's write lock, preventing
+// concurrent resume attempts for the same conversation.
+// The onSessionID callback is registered to update the database when the real
+// session_id arrives asynchronously.
+func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSessionID string, systemPrompt string, onRealSessionID func(convID uint, newSID string)) (*QuerySession, error) {
+	p.mu.RLock()
+	qs, exists := p.sessions[convID]
+	p.mu.RUnlock()
+
+	if exists {
+		return qs, nil
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if qs, exists = p.sessions[convID]; exists {
+		return qs, nil
+	}
+
+	var session *InteractiveSession
+	var err error
+
+	// Try resume first if a previous session_id is available and looks real
+	if prevSessionID != "" && !strings.HasPrefix(prevSessionID, "local-") {
+		session, err = StartResumedSession(ctx, p.claudeBin, p.dataDir, prevSessionID, systemPrompt)
+		if err != nil {
+			log.Printf("[query-pool] Resume failed for conversation %d (%v), creating fresh session", convID, err)
+			session = nil // fall through to create new
+		}
+	}
+
+	if session == nil {
+		session, err = StartSession(ctx, p.claudeBin, p.dataDir, systemPrompt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to start session: %w", err)
+		}
+	}
+
+	// Register callback to update the database when real session_id arrives.
+	// This handles the case where waitForInit timed out and a fallback ID was used.
+	session.onSessionID = func(oldID, newID string) {
+		log.Printf("[query-pool] session_id updated for conversation %d: %s -> %s", convID, oldID, newID)
+		if onRealSessionID != nil {
+			onRealSessionID(convID, newID)
+		}
+	}
+
+	qs = newQuerySession(session, convID)
+	p.sessions[convID] = qs
+	log.Printf("[query-pool] Created session %s for conversation %d", session.GetSessionID(), convID)
+	return qs, nil
+}
+
 // GetOrCreate retrieves an existing session or creates a new one.
+// Prefer GetOrResume which also tries --resume when a previous session exists.
 func (p *QuerySessionPool) GetOrCreate(ctx context.Context, convID uint, systemPrompt string) (*QuerySession, error) {
 	p.mu.RLock()
 	qs, exists := p.sessions[convID]
@@ -323,9 +380,15 @@ func (p *QuerySessionPool) GetOrCreate(ctx context.Context, convID uint, systemP
 		return nil, fmt.Errorf("failed to start session: %w", err)
 	}
 
+	// Register callback to update the database when real session_id arrives
+	session.onSessionID = func(oldID, newID string) {
+		log.Printf("[query-pool] session_id updated for conversation %d: %s -> %s", convID, oldID, newID)
+		db.DB.Model(&db.Conversation{}).Where("id = ? AND session_id = ?", convID, oldID).Update("session_id", newID)
+	}
+
 	qs = newQuerySession(session, convID)
 	p.sessions[convID] = qs
-	log.Printf("[query-pool] Created new session %s for conversation %d", session.SessionID, convID)
+	log.Printf("[query-pool] Created new session %s for conversation %d", session.GetSessionID(), convID)
 	return qs, nil
 }
 
@@ -339,9 +402,15 @@ func (p *QuerySessionPool) ResumeSession(ctx context.Context, convID uint, prevS
 		return nil, fmt.Errorf("failed to resume session: %w", err)
 	}
 
+	// Register callback to update the database when real session_id arrives
+	session.onSessionID = func(oldID, newID string) {
+		log.Printf("[query-pool] session_id updated for conversation %d: %s -> %s", convID, oldID, newID)
+		db.DB.Model(&db.Conversation{}).Where("id = ? AND session_id = ?", convID, oldID).Update("session_id", newID)
+	}
+
 	qs := newQuerySession(session, convID)
 	p.sessions[convID] = qs
-	log.Printf("[query-pool] Resumed session %s (from %s) for conversation %d", session.SessionID, prevSessionID, convID)
+	log.Printf("[query-pool] Resumed session %s (from %s) for conversation %d", session.GetSessionID(), prevSessionID, convID)
 	return qs, nil
 }
 
