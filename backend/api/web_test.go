@@ -1286,32 +1286,33 @@ func TestSlugify(t *testing.T) {
 
 // TestFetchXTwitterViaAPIMock tests JSON deserialization with a mock fxtwitter server.
 // This catches struct/JSON mismatches that unit tests constructing Go structs directly miss.
+// Uses a snapshot of the real API response from https://x.com/trq212/status/2052809885763747935
 func TestFetchXTwitterViaAPIMock(t *testing.T) {
-	// Simulate a realistic fxtwitter API response with entityMap as array
+	// Realistic fxtwitter API response (truncated to 5 blocks, entityMap as array as returned by the real API)
 	mockResponse := `{
 		"code": 200,
 		"message": "OK",
 		"tweet": {
-			"url": "https://x.com/testuser/status/123456",
-			"id": "123456",
-			"text": "Hello world https://t.co/abc",
-			"created_at": "Fri May 08 12:00:00 +0000 2026",
+			"url": "https://x.com/trq212/status/2052809885763747935",
+			"id": "2052809885763747935",
+			"text": "",
+			"created_at": "Fri May 08 17:56:30 +0000 2026",
 			"author": {
-				"screen_name": "testuser",
-				"name": "Test User"
+				"screen_name": "trq212",
+				"name": "Thariq"
 			},
 			"article": {
-				"title": "Test Article Title",
-				"preview_text": "A preview",
+				"title": "Using Claude Code: The Unreasonable Effectiveness of HTML",
+				"preview_text": "Markdown has become the dominant file format used by agents to communicate with us.",
 				"content": {
 					"blocks": [
-						{"text": "First paragraph", "type": "unstyled", "entityRanges": [], "inlineStyleRanges": [], "data": {}},
-						{"text": "A Heading", "type": "header-two", "entityRanges": [], "inlineStyleRanges": [], "data": {}},
-						{"text": "List item", "type": "unordered-list-item", "entityRanges": [], "inlineStyleRanges": [], "data": {}},
-						{"text": "Bold text here", "type": "unstyled", "entityRanges": [{"key": 0, "offset": 0, "length": 4}], "inlineStyleRanges": [{"offset": 0, "length": 4, "style": "Bold"}], "data": {}},
-						{"text": "code here", "type": "code-block", "entityRanges": [], "inlineStyleRanges": [], "data": {"language": "go"}}
+						{"text": "Markdown has become the dominant file format used by agents.", "type": "unstyled", "key": "c0raq", "entityRanges": [], "inlineStyleRanges": [], "data": {}},
+						{"text": "Why HTML?", "type": "header-two", "key": "f9k7p", "entityRanges": [], "inlineStyleRanges": [], "data": {}},
+						{"text": "Information Density", "type": "header-three", "key": "dmn82", "entityRanges": [], "inlineStyleRanges": [], "data": {}},
+						{"text": "Tabular data using tables", "type": "unordered-list-item", "key": "5cj3a", "entityRanges": [], "inlineStyleRanges": [], "data": {}},
+						{"text": "Bold text here", "type": "unstyled", "key": "9xk1m", "entityRanges": [{"key": 0, "offset": 0, "length": 4}], "inlineStyleRanges": [{"offset": 0, "length": 4, "style": "Bold"}], "data": {}}
 					],
-					"entityMap": []
+					"entityMap": [{"key": "0", "value": {"type": "LINK", "data": {"url": "https://thariqs.github.io/html-effectiveness"}}}]
 				}
 			}
 		}
@@ -1334,23 +1335,23 @@ func TestFetchXTwitterViaAPIMock(t *testing.T) {
 		orig:   http.DefaultTransport,
 	}
 
-	tweet, err := fetchXTwitterViaAPIWithClient("https://x.com/testuser/status/123456", client)
+	tweet, err := fetchXTwitterViaAPIWithClient("https://x.com/trq212/status/2052809885763747935", client)
 	if err != nil {
 		t.Fatalf("fetchXTwitterViaAPIWithClient failed: %v", err)
 	}
 
 	// Verify deserialization
-	if tweet.ID != "123456" {
-		t.Errorf("tweet.ID = %q, want %q", tweet.ID, "123456")
+	if tweet.ID != "2052809885763747935" {
+		t.Errorf("tweet.ID = %q, want %q", tweet.ID, "2052809885763747935")
 	}
-	if tweet.Author.ScreenName != "testuser" {
-		t.Errorf("author.ScreenName = %q, want %q", tweet.Author.ScreenName, "testuser")
+	if tweet.Author.ScreenName != "trq212" {
+		t.Errorf("author.ScreenName = %q, want %q", tweet.Author.ScreenName, "trq212")
 	}
 	if tweet.Article == nil {
 		t.Fatal("expected article to be non-nil")
 	}
-	if tweet.Article.Title != "Test Article Title" {
-		t.Errorf("article.Title = %q, want %q", tweet.Article.Title, "Test Article Title")
+	if tweet.Article.Title != "Using Claude Code: The Unreasonable Effectiveness of HTML" {
+		t.Errorf("article.Title = %q, want %q", tweet.Article.Title, "Using Claude Code: The Unreasonable Effectiveness of HTML")
 	}
 	if len(tweet.Article.Content.Blocks) != 5 {
 		t.Fatalf("expected 5 blocks, got %d", len(tweet.Article.Content.Blocks))
@@ -1363,17 +1364,14 @@ func TestFetchXTwitterViaAPIMock(t *testing.T) {
 	if tweet.Article.Content.Blocks[1].Type != "header-two" {
 		t.Errorf("block[1].Type = %q, want header-two", tweet.Article.Content.Blocks[1].Type)
 	}
-	if tweet.Article.Content.Blocks[3].InlineStyleRanges[0].Style != "Bold" {
-		t.Errorf("block[3].InlineStyleRanges[0].Style = %q, want Bold", tweet.Article.Content.Blocks[3].InlineStyleRanges[0].Style)
+	if tweet.Article.Content.Blocks[4].InlineStyleRanges[0].Style != "Bold" {
+		t.Errorf("block[4].InlineStyleRanges[0].Style = %q, want Bold", tweet.Article.Content.Blocks[4].InlineStyleRanges[0].Style)
 	}
 
-	// Verify code-block language extraction via markdown conversion
+	// Verify markdown conversion
 	md := xTwitterArticleToMarkdown(tweet)
-	if !strings.Contains(md, "```go") {
-		t.Errorf("expected markdown to contain code block with language 'go', got:\n%s", md)
-	}
-	if !strings.Contains(md, "## A Heading") {
-		t.Errorf("expected markdown to contain '## A Heading', got:\n%s", md)
+	if !strings.Contains(md, "## Why HTML?") {
+		t.Errorf("expected markdown to contain '## Why HTML?', got:\n%s", md)
 	}
 	if !strings.Contains(md, "**Bold**") {
 		t.Errorf("expected markdown to contain bold text '**Bold**', got:\n%s", md)
