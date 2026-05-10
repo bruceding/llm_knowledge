@@ -109,6 +109,16 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 			}
 			flusher.Flush()
 
+			// Send [DONE] after result/error to give frontend a clear turn-end signal.
+			// The SSE connection stays open for subsequent turns.
+			if evt.Type == "result" || (evt.Type == "error" && evt.Subtype != "error_during_execution") {
+				if _, err := fmt.Fprintf(c.Response(), "data: [DONE]\n\n"); err != nil {
+					session.SSEDisconnect()
+					return nil
+				}
+				flusher.Flush()
+			}
+
 			// Don't disconnect on error_during_execution (interrupt) - keep SSE for multi-turn
 			if evt.Type == "error" && evt.Subtype != "error_during_execution" {
 				session.SSEDisconnect()
@@ -243,6 +253,16 @@ func (h *DocChatHandler) Reconnect(c echo.Context) error {
 				return nil
 			}
 			flusher.Flush()
+
+			// Send [DONE] after result/error to give frontend a clear turn-end signal.
+			// The SSE connection stays open for subsequent turns.
+			if evt.Type == "result" || (evt.Type == "error" && evt.Subtype != "error_during_execution") {
+				if _, err := fmt.Fprintf(c.Response(), "data: [DONE]\n\n"); err != nil {
+					session.SSEDisconnect()
+					return nil
+				}
+				flusher.Flush()
+			}
 
 			// Don't disconnect on error_during_execution (interrupt) - keep SSE for multi-turn
 			if evt.Type == "error" && evt.Subtype != "error_during_execution" {

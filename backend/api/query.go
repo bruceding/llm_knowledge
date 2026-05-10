@@ -395,6 +395,15 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 			}
 			flusher.Flush()
 
+			// Send [DONE] after result/error to give frontend a clear turn-end signal.
+			// The SSE connection stays open for subsequent turns.
+			if evt.Type == "result" || (evt.Type == "error" && evt.Subtype != "error_during_execution") {
+				if _, err := fmt.Fprintf(c.Response(), "data: [DONE]\n\n"); err != nil {
+					return nil
+				}
+				flusher.Flush()
+			}
+
 			// Stop on error (but not error_during_execution which is from interrupt)
 			if evt.Type == "error" && evt.Subtype != "error_during_execution" {
 				return nil

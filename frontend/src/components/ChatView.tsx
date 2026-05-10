@@ -387,8 +387,17 @@ export default function ChatView() {
           buffer = lines.pop() || ''
           for (const line of lines) {
             if (line.startsWith('data: ')) {
+              const payload = line.slice(6)
+              if (payload === '[DONE]') {
+                // Backend sent explicit turn-end signal
+                if (isStreamingRef.current) {
+                  isStreamingRef.current = false
+                  setIsStreaming(false)
+                }
+                continue
+              }
               try {
-                const event: SSEEvent = JSON.parse(line.slice(6))
+                const event: SSEEvent = JSON.parse(payload)
                 // Defensive check: skip events from wrong conversation
                 if (event.conversationId && event.conversationId !== sseConversationId) {
                   console.warn(`[SSE] Received event from wrong conversation ${event.conversationId}, expected ${sseConversationId}`)

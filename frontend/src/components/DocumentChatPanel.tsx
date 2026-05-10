@@ -211,8 +211,16 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       buffer = lines.pop() || ''
       for (const line of lines) {
         if (line.startsWith('data: ')) {
+          const payload = line.slice(6)
+          if (payload === '[DONE]') {
+            // Backend sent explicit turn-end signal
+            setMessages(prev => prev.map(m =>
+              m.isStreaming ? { ...m, isStreaming: false, isThinking: false } : m
+            ))
+            continue
+          }
           try {
-            const data = JSON.parse(line.slice(6))
+            const data = JSON.parse(payload)
             handleSSEEvent(data)
           } catch { /* ignore parse errors */ }
         }
