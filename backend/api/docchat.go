@@ -219,6 +219,15 @@ func streamSSEEvents(ctx context.Context, sp *claude.StreamProcessor, eventCh ch
 				return nil
 			}
 
+			// Forward session_update directly (bypasses StreamProcessor)
+			if evt.Type == "session_update" && evt.SessionID != "" {
+				writeSSE(echo.Map{
+					"type":      "session",
+					"sessionId": evt.SessionID,
+				})
+				continue
+			}
+
 			sseEvent := sp.Process(evt)
 
 			for sp.HasPendingEvents() {
@@ -237,14 +246,6 @@ func streamSSEEvents(ctx context.Context, sp *claude.StreamProcessor, eventCh ch
 
 			if sseEvent.Type == "" {
 				continue
-			}
-
-			// Forward session_update directly (not processed by StreamProcessor)
-			if evt.Type == "session_update" && evt.SessionID != "" {
-				writeSSE(echo.Map{
-					"type":      "session",
-					"sessionId": evt.SessionID,
-				})
 			}
 
 			switch sseEvent.Type {
