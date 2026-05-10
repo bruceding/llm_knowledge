@@ -135,7 +135,7 @@ func cleanTitle(title string) string {
 	return title
 }
 
-func parseHTML(html string) (*goquery.Document, error) {
+func ParseHTML(html string) (*goquery.Document, error) {
 	return goquery.NewDocumentFromReader(strings.NewReader(html))
 }
 
@@ -679,7 +679,7 @@ func getImageExtension(imgURL string) string {
 }
 
 // extractContent extracts clean text content from HTML for markdown
-func extractContent(doc *goquery.Document) string {
+func ExtractContent(doc *goquery.Document) string {
 	// Remove script, style, nav, header, footer, sidebar elements
 	// Also remove navigation links, social icons, and other non-content elements
 	doc.Find("script, style, nav, header, .Header, .Footer, .NavigationDrawer, aside, .sidebar, .navigation, .menu, .ads").Remove()
@@ -892,7 +892,7 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 	}
 
 	// Parse HTML
-	doc, err := parseHTML(html)
+	doc, err := ParseHTML(html)
 	if err != nil {
 		return c.JSON(500, echo.Map{"error": "failed to parse HTML"})
 	}
@@ -908,7 +908,7 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 		publishedTime = time.Now()
 	}
 
-	content := extractContent(doc)
+	content := ExtractContent(doc)
 
 	return h.saveWebDocument(c, req, originalTitle, doc, publishedTime, content, webSaveConfig{
 		Language:     detectLanguage(content),
@@ -1003,7 +1003,7 @@ func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, origi
 				s.SetAttr("src", imgMap[src])
 			}
 		})
-		content = extractContent(doc)
+		content = ExtractContent(doc)
 	}
 
 	// Save modified HTML to index.html
@@ -1268,7 +1268,7 @@ func (h *WebHandler) uploadWeChat(c echo.Context, req WebUploadRequest) error {
 	}
 
 	// Parse HTML
-	doc, err := parseHTML(html)
+	doc, err := ParseHTML(html)
 	if err != nil {
 		return c.JSON(500, echo.Map{"error": "failed to parse HTML"})
 	}
@@ -1288,7 +1288,7 @@ func (h *WebHandler) uploadWeChat(c echo.Context, req WebUploadRequest) error {
 		publishedTime = time.Now()
 	}
 
-	content := extractContent(doc)
+	content := ExtractContent(doc)
 
 	return h.saveWebDocument(c, req, originalTitle, doc, publishedTime, content, webSaveConfig{
 		Author:       author,

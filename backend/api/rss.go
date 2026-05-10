@@ -942,32 +942,67 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		if isInsideLink(s) {
 			return innerContent
 		}
-		return "# " + innerContent + "\n\n"
+		trimmed := strings.TrimSpace(innerContent)
+		if trimmed == "" {
+			return ""
+		}
+		// WeChat uses h1/h2 as decorative containers for long paragraphs.
+		// Treat as paragraph if content exceeds 80 chars (not a real heading).
+		if len([]rune(trimmed)) > 80 {
+			return trimmed + "\n\n"
+		}
+		return "# " + trimmed + "\n\n"
 	case "h2":
 		if isInsideLink(s) {
 			return innerContent
 		}
-		return "## " + innerContent + "\n\n"
+		trimmed := strings.TrimSpace(innerContent)
+		if trimmed == "" {
+			return ""
+		}
+		if len([]rune(trimmed)) > 80 {
+			return trimmed + "\n\n"
+		}
+		return "## " + trimmed + "\n\n"
 	case "h3":
 		if isInsideLink(s) {
 			return innerContent
 		}
-		return "### " + innerContent + "\n\n"
+		trimmed := strings.TrimSpace(innerContent)
+		if trimmed == "" {
+			return ""
+		}
+		if len([]rune(trimmed)) > 80 {
+			return trimmed + "\n\n"
+		}
+		return "### " + trimmed + "\n\n"
 	case "h4":
 		if isInsideLink(s) {
 			return innerContent
 		}
-		return "#### " + innerContent + "\n\n"
+		trimmed := strings.TrimSpace(innerContent)
+		if trimmed == "" {
+			return ""
+		}
+		return "#### " + trimmed + "\n\n"
 	case "h5":
 		if isInsideLink(s) {
 			return innerContent
 		}
-		return "##### " + innerContent + "\n\n"
+		trimmed := strings.TrimSpace(innerContent)
+		if trimmed == "" {
+			return ""
+		}
+		return "##### " + trimmed + "\n\n"
 	case "h6":
 		if isInsideLink(s) {
 			return innerContent
 		}
-		return "###### " + innerContent + "\n\n"
+		trimmed := strings.TrimSpace(innerContent)
+		if trimmed == "" {
+			return ""
+		}
+		return "###### " + trimmed + "\n\n"
 	case "strong", "b":
 		return "**" + innerContent + "**"
 	case "em", "i":

@@ -691,7 +691,7 @@ func TestWebClippingXArticle(t *testing.T) {
 	}
 
 	// Extract content using the same logic as production
-	content := extractContent(doc)
+	content := ExtractContent(doc)
 
 	t.Logf("Extracted content length: %d", len(content))
 	if len(content) > 0 {
@@ -815,7 +815,7 @@ func TestExtractContentXTwitterMock(t *testing.T) {
 </body>
 </html>`
 
-	doc, err := parseHTML(mockHTML)
+	doc, err := ParseHTML(mockHTML)
 	if err != nil {
 		t.Fatalf("Failed to parse mock HTML: %v", err)
 	}
@@ -844,7 +844,7 @@ func TestExtractContentXTwitterMock(t *testing.T) {
 	t.Logf("og:title: %q", ogTitle)
 
 	// === Content extraction ===
-	content := extractContent(doc)
+	content := ExtractContent(doc)
 	t.Logf("Extracted content length: %d chars", len(content))
 
 	if len(content) == 0 {
@@ -1630,7 +1630,7 @@ func TestPreprocessWeChatImages(t *testing.T) {
 		</div>
 	</body></html>`
 
-	doc, err := parseHTML(mockHTML)
+	doc, err := ParseHTML(mockHTML)
 	if err != nil {
 		t.Fatalf("Failed to parse mock HTML: %v", err)
 	}
@@ -1713,7 +1713,7 @@ func TestWeChatContentExtraction(t *testing.T) {
 </body>
 </html>`
 
-	doc, err := parseHTML(mockHTML)
+	doc, err := ParseHTML(mockHTML)
 	if err != nil {
 		t.Fatalf("Failed to parse mock HTML: %v", err)
 	}
@@ -1722,7 +1722,7 @@ func TestWeChatContentExtraction(t *testing.T) {
 	preprocessWeChatImages(doc)
 
 	// Extract content
-	content := extractContent(doc)
+	content := ExtractContent(doc)
 	if len(content) == 0 {
 		t.Fatal("Expected non-empty content from WeChat mock HTML")
 	}
@@ -1771,7 +1771,7 @@ func TestWebClippingWeChatArticle(t *testing.T) {
 		t.Skipf("Failed to fetch WeChat URL (network issue): %v", err)
 	}
 
-	doc, err := parseHTML(html)
+	doc, err := ParseHTML(html)
 	if err != nil {
 		t.Fatalf("Failed to parse HTML: %v", err)
 	}
@@ -1780,7 +1780,7 @@ func TestWebClippingWeChatArticle(t *testing.T) {
 	preprocessWeChatImages(doc)
 
 	// Extract content
-	content := extractContent(doc)
+	content := ExtractContent(doc)
 	if len(content) == 0 {
 		t.Error("Expected non-empty content from WeChat article")
 	}
