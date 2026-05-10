@@ -198,10 +198,10 @@ export default function ChatView() {
           return [...prev.slice(0, -1), { ...last, content: last.content + (event.text || ''), isThinking: false }]
         }
         return [...prev, {
-          id: Date.now().toString(),
+          id: Date.now(),
           role: 'assistant' as const,
           content: event.text || '',
-          timestamp: new Date().toISOString(),
+          timestamp: new Date(),
           isStreaming: true,
         }]
       })
