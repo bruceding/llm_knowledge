@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1820,5 +1819,5 @@ func TestWebClippingWeChatArticle(t *testing.T) {
 	if err := os.WriteFile(htmlFile, []byte(html), 0644); err != nil {
 		t.Fatalf("Failed to write HTML file: %v", err)
 	}
-	fmt.Printf("[debug] WeChat HTML saved to: %s\n", htmlFile)
+	t.Logf("[debug] WeChat HTML saved to: %s", htmlFile)
 }

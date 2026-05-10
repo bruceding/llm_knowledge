@@ -691,12 +691,12 @@ func extractContent(doc *goquery.Document) string {
 	var contentNode *goquery.Selection
 	// Try multiple selectors in order of specificity
 	selectors := []string{
-		"#js_content",       // WeChat articles (mp.weixin.qq.com)
 		".Article",          // Go blog
 		".Blog-content",     // Go blog alternative
 		".u-rich-text-blog", // Claude blog
 		"article",
 		"main",
+		"#js_content",       // WeChat articles (mp.weixin.qq.com)
 		".content",
 		".post",
 		"#content",
@@ -911,7 +911,7 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 	content := extractContent(doc)
 
 	return h.saveWebDocument(c, req, originalTitle, doc, publishedTime, content, webSaveConfig{
-		Language:     "en",
+		Language:     detectLanguage(content),
 		ImageHeaders: func(imgURL string) map[string]string { return nil },
 		SuccessMsg:   "Web page saved successfully",
 		Metadata:     map[string]string{"published": publishedTime.Format(time.RFC3339)},
