@@ -579,6 +579,8 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 		markdown, imgCount, imgErrors := processHTMLToMarkdown(filteredHTML, assetsDir, viewURL)
 		downloadErrors += imgErrors
 
+		markdown = cleanNewsletterMarkdown(markdown, subject)
+
 		var content strings.Builder
 		content.WriteString(fmt.Sprintf("# %s\n\n", subject))
 		content.WriteString(fmt.Sprintf("**From:** %s\n", fromName))
@@ -863,6 +865,74 @@ func filterDecorativeImages(htmlContent string) string {
 		return htmlContent
 	}
 	return result
+}
+
+// cleanNewsletterMarkdown post-processes markdown converted from newsletter HTML:
+// 1. Removes duplicate title (subject is already in the header)
+// 2. Strips footer noise (unsubscribe, manage preferences, etc.)
+// 3. Unwraps tracking redirect URLs to reveal real links
+func cleanNewsletterMarkdown(md, subject string) string {
+	// Remove duplicate title at the beginning of content section.
+	// The header already has "# subject", so any "# subject" in the markdown body is redundant.
+	if subject != "" {
+		escapedSubject := regexp.QuoteMeta(subject)
+		dupTitleRe := regexp.MustCompile(`(?m)^#{1,3}\s+` + escapedSubject + `\s*\n*`)
+		md = dupTitleRe.ReplaceAllString(md, "")
+	}
+
+	// Strip footer noise: unsubscribe, manage preferences, privacy policy, etc.
+	footerPatterns := []string{
+		`(?i)unsubscribe`,
+		`(?i)取消订阅`,
+		`(?i)管理订阅偏好`,
+		`(?i)manage\s+your\s+email\s+settings`,
+		`(?i)manage\s+preferences`,
+		`(?i)manage\s+subscription`,
+		`(?i)update\s+your\s+preferences`,
+		`(?i)email\s+settings`,
+		`(?i)view\s+email\s+in\s+browser`,
+	}
+	for _, pat := range footerPatterns {
+		re := regexp.MustCompile(pat)
+		if re.MatchString(md) {
+			loc := re.FindStringIndex(md)
+			if loc != nil {
+				cutStart := loc[0]
+				for cutStart > 0 && md[cutStart-1] != '\n' {
+					cutStart--
+				}
+				md = md[:cutStart]
+			}
+			break
+		}
+	}
+
+	// Unwrap tracking redirect URLs
+	// Pattern: https://tracking-domain.com/CL0/https:%2F%2Freal-url.com/path/...
+	trackingRe := regexp.MustCompile(`https?://[^\s)]+\.us-east-1\.resend-links\.com/CL0/(https?(?:%3A%2F%2F|:%2F%2F)[^\s)]+)`)
+	md = trackingRe.ReplaceAllStringFunc(md, func(match string) string {
+		sub := trackingRe.FindStringSubmatch(match)
+		if len(sub) >= 2 {
+			decoded := strings.ReplaceAll(sub[1], "%2F", "/")
+			decoded = strings.ReplaceAll(decoded, "%3A", ":")
+			return decoded
+		}
+		return match
+	})
+
+	// Generic tracking wrapper: any URL containing /CL0/http followed by encoded real URL
+	genericTrackingRe := regexp.MustCompile(`https?://[^\s)]+/CL0/(https?(?:%3A%2F%2F|:%2F%2F)[^\s)]+)`)
+	md = genericTrackingRe.ReplaceAllStringFunc(md, func(match string) string {
+		sub := genericTrackingRe.FindStringSubmatch(match)
+		if len(sub) >= 2 {
+			decoded := strings.ReplaceAll(sub[1], "%2F", "/")
+			decoded = strings.ReplaceAll(decoded, "%3A", ":")
+			return decoded
+		}
+		return match
+	})
+
+	return md
 }
 
 func (h *NewsletterHandler) StartAutoSyncScheduler() {
