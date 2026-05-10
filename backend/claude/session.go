@@ -202,16 +202,15 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 	}
 	session.mu.Unlock()
 
-	// Register callback to update map key when real session_id arrives
+	// Register callback to add real session_id as alias when it arrives.
+	// Keep the old local-xxx key so reconnects with the stale ID still work
+	// (the frontend may not have received the session_update event yet).
 	sessionID := session.GetSessionID()
 	session.onSessionID = func(oldID, newID string) {
 		p.mu.Lock()
-		if s, ok := p.sessions[oldID]; ok && s == session {
-			delete(p.sessions, oldID)
-			p.sessions[newID] = session
-		}
+		p.sessions[newID] = session
 		p.mu.Unlock()
-		log.Printf("[session] SessionPool map key updated: %s -> %s", oldID, newID)
+		log.Printf("[session] SessionPool added alias: %s (keeping old key %s)", newID, oldID)
 	}
 
 	p.mu.Lock()

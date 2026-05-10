@@ -270,10 +270,8 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     fetch(`/api/doc-chat/reconnect?sessionId=${sid}`, { headers, signal: controller.signal })
       .then(res => {
         if (!res.ok) {
-          // Session expired - clear history and start fresh
-          setMessages([])
-          setSessionId('')
-          sessionIdRef.current = ''
+          // Session not found — start new session but preserve messages
+          // so the user doesn't lose visible chat history.
           startNewSession()
           return
         }
@@ -282,7 +280,6 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       .catch(err => {
         if (err.name !== 'AbortError') {
           setConnecting(false)
-          // Reconnect failed, try new session
           startNewSession()
         }
       })
