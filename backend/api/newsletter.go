@@ -741,6 +741,10 @@ func extractViewInBrowserLink(htmlContent string) string {
 		"view it in your browser",
 		"read online",
 		"open in browser",
+		"view on",
+		"read on",
+		"see online",
+		"在网页中查看",
 	}
 
 	var viewURL string

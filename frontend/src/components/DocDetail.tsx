@@ -90,11 +90,11 @@ export default function DocDetail() {
   // Publish state
   const [publishing, setPublishing] = useState(false)
 
-  // Keyboard shortcut: 'o' to open original URL for web/rss documents
+  // Keyboard shortcut: 'o' to open original URL for web/rss/newsletter documents
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'o' || !document?.sourceUrl) return
-      if (document.sourceType !== 'web' && document.sourceType !== 'rss') return
+      if (document.sourceType !== 'web' && document.sourceType !== 'rss' && document.sourceType !== 'newsletter') return
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
       e.preventDefault()
       window.open(document.sourceUrl, '_blank')
