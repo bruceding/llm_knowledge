@@ -29,6 +29,7 @@ type InteractiveSession struct {
 	stdoutScanner  *bufio.Scanner
 	eventCh        chan StreamEvent   // main event channel (closed by readEvents)
 	streamChs      []chan StreamEvent // subscriber channels for fan-out
+	streamingContent strings.Builder  // accumulated text for SSE reconnect recovery
 	lastDisconnect time.Time
 	sseCount       int // active SSE connections
 	mu             sync.Mutex
@@ -242,18 +243,27 @@ func (p *SessionPool) HasSession(sessionId string) bool {
 	return exists
 }
 
-// SendUserMessage writes a message to stdin
-// Format: {"type":"user","message":{"role":"user","content":"..."}}
+// SendUserMessage writes a message to stdin using json.Marshal for robust encoding.
 func (s *InteractiveSession) SendUserMessage(content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Escape quotes and newlines in content
-	escapedContent := strings.ReplaceAll(content, "\"", "\\\"")
-	escapedContent = strings.ReplaceAll(escapedContent, "\n", "\\n")
-	msg := fmt.Sprintf("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"%s\"}}\n", escapedContent)
+	msg := map[string]interface{}{
+		"type":    "user",
+		"message": map[string]interface{}{
+			"role":    "user",
+			"content": content,
+		},
+	}
 
-	_, err := s.stdin.Write([]byte(msg))
+	jsonData, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("[session] Failed to marshal message: %v", err)
+		return err
+	}
+	jsonData = append(jsonData, '\n')
+
+	_, err = s.stdin.Write(jsonData)
 	if err != nil {
 		log.Printf("[session] Failed to send message: %v", err)
 		return err
@@ -317,15 +327,26 @@ func (s *InteractiveSession) SendUserMessageWithImages(content string, images []
 	return nil
 }
 
-// SendInterrupt sends a control_request interrupt to stdin to stop the current turn.
-// The session remains alive and can continue accepting new messages.
+// SendInterrupt sends a control_request interrupt using json.Marshal.
 func (s *InteractiveSession) SendInterrupt() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	msg := fmt.Sprintf("{\"type\":\"control_request\",\"request_id\":\"%d\",\"request\":{\"subtype\":\"interrupt\"}}\n", time.Now().UnixNano())
+	msg := map[string]interface{}{
+		"type":       "control_request",
+		"request_id": fmt.Sprintf("%d", time.Now().UnixNano()),
+		"request":    map[string]interface{}{
+			"subtype": "interrupt",
+		},
+	}
 
-	_, err := s.stdin.Write([]byte(msg))
+	jsonData, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	jsonData = append(jsonData, '\n')
+
+	_, err = s.stdin.Write(jsonData)
 	if err != nil {
 		log.Printf("[session] Failed to send interrupt: %v", err)
 		return err
@@ -411,6 +432,13 @@ func (s *InteractiveSession) Unsubscribe(ch chan StreamEvent) {
 	s.mu.Unlock()
 }
 
+// StreamingContent returns accumulated text for SSE reconnect recovery.
+func (s *InteractiveSession) StreamingContent() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.streamingContent.String()
+}
+
 // Close terminates the session (safe to call multiple times)
 func (s *InteractiveSession) Close() {
 	s.closeOnce.Do(func() {
@@ -423,7 +451,9 @@ func (s *InteractiveSession) Close() {
 	})
 }
 
-// readEvents parses stdout JSON events and fans out to subscribers
+// readEvents parses stdout JSON events and fans out to subscribers.
+// All events (including system) are sent to streamChs; StreamProcessor in SSE
+// handlers filters them. streamingContent is accumulated for SSE reconnect recovery.
 func (s *InteractiveSession) readEvents() {
 	for s.stdoutScanner.Scan() {
 		line := s.stdoutScanner.Bytes()
@@ -434,6 +464,7 @@ func (s *InteractiveSession) readEvents() {
 			Subtype   string          `json:"subtype"`
 			SessionID string          `json:"session_id"`
 			Message   json.RawMessage `json:"message"`
+			Event     json.RawMessage `json:"event"`   // stream_event sub-event payload
 			Content   string          `json:"content"`
 			Result    string          `json:"result"`
 			IsError   bool            `json:"is_error"`
@@ -451,6 +482,7 @@ func (s *InteractiveSession) readEvents() {
 			Content:   rawEvent.Content,
 			Result:    rawEvent.Result,
 			Error:     rawEvent.Error,
+			Event:     rawEvent.Event,
 		}
 
 		// Extract content from assistant message
@@ -458,13 +490,28 @@ func (s *InteractiveSession) readEvents() {
 			var msg Message
 			if err := json.Unmarshal(rawEvent.Message, &msg); err == nil {
 				event.Message = &msg
-				// Extract text content for backwards compatibility
 				for _, block := range msg.Content {
 					if block.Type == "text" && block.Text != "" {
 						event.Content = block.Text
 						break
 					}
 				}
+			}
+			// Accumulate assistant text for SSE reconnect recovery
+			s.mu.Lock()
+			if event.Content != "" {
+				s.streamingContent.WriteString(event.Content)
+			}
+			s.mu.Unlock()
+		}
+
+		// Accumulate stream_event text deltas for reconnect recovery
+		if rawEvent.Type == "stream_event" && rawEvent.Event != nil {
+			delta := ExtractTextDelta(rawEvent.Event)
+			if delta != "" {
+				s.mu.Lock()
+				s.streamingContent.WriteString(delta)
+				s.mu.Unlock()
 			}
 		}
 
@@ -475,6 +522,10 @@ func (s *InteractiveSession) readEvents() {
 				event.Type = "error"
 				event.Error = rawEvent.Result
 			}
+			// Reset streamingContent on turn end
+			s.mu.Lock()
+			s.streamingContent.Reset()
+			s.mu.Unlock()
 		}
 
 		// Auto-capture session_id from system.init event
@@ -485,44 +536,29 @@ func (s *InteractiveSession) readEvents() {
 			callback := s.onSessionID
 			s.mu.Unlock()
 			log.Printf("[session] Got session_id from init event: %s (was: %s)", s.SessionID, oldID)
-			// Notify pool to update map key if callback is set
 			if callback != nil && oldID != rawEvent.SessionID {
 				callback(oldID, rawEvent.SessionID)
 			}
-			// Signal that init is done (non-blocking close)
 			select {
 			case <-s.initDone:
-				// Already closed
 			default:
 				close(s.initDone)
 			}
 		}
 
 		// Send to main channel (non-blocking to avoid deadlock when no consumer)
-		// docchat handlers use Subscribe() instead of direct eventCh consumption,
-		// so eventCh may have no reader after waitForInit() drains it.
-		// Note: system events are sent to eventCh for waitForInit/session_id capture,
-		// but are filtered out from subscriber fan-out below.
 		select {
 		case s.eventCh <- event:
 		default:
-			// No consumer (docchat path uses Subscribe); drop to avoid deadlock
 		}
 
-		// Skip system events in subscriber fan-out — they are process-internal
-		// metadata (init, hooks, etc.) and should not be sent to SSE subscribers.
-		if event.Type == "system" {
-			continue
-		}
-
-		// Fan-out to subscribers (non-blocking to avoid deadlock)
-		// For critical events (error/result), log warning if dropped
+		// Fan-out to all subscribers — system/stream_event/result/assistant all pass through.
+		// StreamProcessor in SSE handlers filters and converts events for frontend.
 		s.mu.Lock()
 		for _, ch := range s.streamChs {
 			select {
 			case ch <- event:
 			default:
-				// Skip slow subscriber, but warn for critical events
 				if event.Type == "error" || event.Type == "result" {
 					log.Printf("[session] WARNING: critical event %s dropped for slow subscriber on session %s", event.Type, s.SessionID)
 				}
@@ -535,11 +571,9 @@ func (s *InteractiveSession) readEvents() {
 		log.Printf("[session] Scanner error: %v", err)
 	}
 
-	// Wait for command to finish
 	s.cmd.Wait()
 	log.Printf("[session] Claude process ended for session %s", s.SessionID)
 
-	// Close subscriber channels so Stream handlers can detect session termination
 	s.mu.Lock()
 	for _, ch := range s.streamChs {
 		close(ch)

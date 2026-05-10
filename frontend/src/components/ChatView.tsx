@@ -5,54 +5,28 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { createConversation, sendQueryMessage, interruptQuery, fetchConversations, fetchConversationMessages, fetchQueryStatus, deleteConversation, uploadImage, getAuthHeaders } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
-import type { SSEEvent, ContentBlock } from '../types'
+import type { SSEEvent } from '../types'
 
-// Format a tool_use content block into a human-readable description
-function formatToolBlock(block: ContentBlock): string {
-  const name = block.name || 'Tool'
+// Format tool name + JSON input string into a human-readable description
+function formatToolName(name: string, inputJson: string): string {
   try {
+    const input = JSON.parse(inputJson) as Record<string, string>
     switch (name) {
       case 'Read':
-        return `Reading ${(block.input as Record<string, string>)?.file_path || (block.input as Record<string, string>)?.path || 'file'}`
+        return `Reading ${input.file_path || input.path || 'file'}`
       case 'Glob':
-        return `Searching ${(block.input as Record<string, string>)?.pattern || 'files'}`
+        return `Searching ${input.pattern || 'files'}`
       case 'Grep':
-        return `Searching for "${(block.input as Record<string, string>)?.pattern || ''}" in ${(block.input as Record<string, string>)?.path || 'files'}`
+        return `Searching for "${input.pattern || ''}" in ${input.path || 'files'}`
       case 'LS':
-        return `Listing ${(block.input as Record<string, string>)?.path || 'directory'}`
+        return `Listing ${input.path || 'directory'}`
       default:
         return `Using ${name}`
     }
   } catch {
-    return `Using ${name}`
+    // inputJson may be partial (streaming), show raw
+    return inputJson ? `Using ${name}` : name
   }
-}
-
-// Extract display info from message content blocks
-function extractFromContentBlocks(blocks: ContentBlock[]): {
-  text: string
-  isThinking: boolean
-  toolUse?: string
-} {
-  let text = ''
-  let isThinking = false
-  let toolUse: string | undefined
-
-  for (const block of blocks) {
-    switch (block.type) {
-      case 'text':
-        if (block.text) text += block.text
-        break
-      case 'thinking':
-        isThinking = true
-        break
-      case 'tool_use':
-        toolUse = formatToolBlock(block)
-        break
-    }
-  }
-
-  return { text, isThinking, toolUse }
 }
 
 interface Message {
@@ -201,26 +175,35 @@ export default function ChatView() {
   // Handle SSE events
   const handleSSEEvent = useCallback((event: SSEEvent) => {
     if (event.type === 'session_expired') {
-      // Session expired, need to reconnect
       isStreamingRef.current = false
       setIsStreaming(false)
       return
     }
 
     if (event.type === 'session_initializing') {
-      // Backend is creating a new Claude CLI session
       setConnectionError(null)
       return
     }
 
     if (event.type === 'session_ready') {
-      // Backend session is ready to accept messages
       sseReadyRef.current = true
       return
     }
 
+    // Streaming text delta (Claude/Qwen models)
+    if (event.type === 'delta') {
+      setMessages((prev) => {
+        const last = prev[prev.length - 1]
+        if (last.role === 'assistant' && last.isStreaming) {
+          return [...prev.slice(0, -1), { ...last, content: last.content + (event.text || ''), isThinking: false }]
+        }
+        return prev
+      })
+      return
+    }
+
+    // Full content replacement (GLM non-streaming / SSE reconnect extension)
     if (event.type === 'full') {
-      // SSE reconnect: replace streaming message with accumulated content
       setMessages((prev) => {
         const last = prev[prev.length - 1]
         if (last.role === 'assistant' && last.isStreaming) {
@@ -231,52 +214,56 @@ export default function ChatView() {
       return
     }
 
-    if (event.type === 'assistant') {
-      if (!isStreamingRef.current) return // skip if no active turn is streaming
-      const msg = event.message
-      const blocks = typeof msg === 'object' ? msg?.content : undefined
-      if (blocks && blocks.length > 0) {
-        const { text, isThinking, toolUse } = extractFromContentBlocks(blocks)
-        setMessages((prev) => {
-          const last = prev[prev.length - 1]
-          if (last.role === 'assistant' && last.isStreaming) {
-            return [...prev.slice(0, -1), {
-              ...last,
-              content: last.content + text,
-              isThinking: isThinking && !text,
-              toolUse: toolUse && !text ? toolUse : undefined,
-            }]
-          }
-          return prev
-        })
-      } else if (event.content) {
-        setMessages((prev) => {
-          const last = prev[prev.length - 1]
-          if (last.role === 'assistant' && last.isStreaming) {
-            return [...prev.slice(0, -1), { ...last, content: last.content + event.content, isThinking: false, toolUse: undefined }]
-          }
-          return prev
-        })
-      }
-    } else if (event.type === 'result') {
+    // Tool use events
+    if (event.type === 'tool_start') {
+      const toolDesc = formatToolName(event.toolName || 'Tool', event.toolInput || '')
       setMessages((prev) => {
-        const updated = prev.map(m =>
-          m.isStreaming ? { ...m, isStreaming: false, isThinking: false, toolUse: undefined } : m
-        )
-        // If interrupted (error_during_execution) and no content, show "[Stopped]"
-        if (event.subtype === 'error_during_execution') {
-          const last = updated[updated.length - 1]
-          if (last.role === 'assistant' && !last.content) {
-            return [...updated.slice(0, -1), { ...last, content: '[已停止]' }]
-          }
+        const last = prev[prev.length - 1]
+        if (last.role === 'assistant' && last.isStreaming) {
+          return [...prev.slice(0, -1), { ...last, toolUse: toolDesc }]
         }
-        return updated
+        return prev
       })
+      return
+    }
+
+    if (event.type === 'tool_input') {
+      const toolDesc = formatToolName(event.toolName || 'Tool', event.toolInput || '')
+      setMessages((prev) => {
+        const last = prev[prev.length - 1]
+        if (last.role === 'assistant' && last.isStreaming && last.toolUse) {
+          return [...prev.slice(0, -1), { ...last, toolUse: toolDesc }]
+        }
+        return prev
+      })
+      return
+    }
+
+    if (event.type === 'tool_end') {
+      setMessages((prev) => {
+        const last = prev[prev.length - 1]
+        if (last.role === 'assistant' && last.isStreaming) {
+          return [...prev.slice(0, -1), { ...last, toolUse: undefined }]
+        }
+        return prev
+      })
+      return
+    }
+
+    // Turn end signal — replaces [DONE] hack and result event
+    if (event.type === 'done') {
+      setMessages((prev) => prev.map(m =>
+        m.isStreaming ? { ...m, isStreaming: false, isThinking: false, toolUse: undefined } : m
+      ))
       isStreamingRef.current = false
       setIsStreaming(false)
       loadConversations()
       setTimeout(() => inputRef.current?.focus(), 0)
-    } else if (event.type === 'error') {
+      return
+    }
+
+    // Error
+    if (event.type === 'error') {
       setMessages((prev) => {
         const last = prev[prev.length - 1]
         if (last.role === 'assistant' && last.isStreaming) {
@@ -388,14 +375,6 @@ export default function ChatView() {
           for (const line of lines) {
             if (line.startsWith('data: ')) {
               const payload = line.slice(6)
-              if (payload === '[DONE]') {
-                // Backend sent explicit turn-end signal
-                if (isStreamingRef.current) {
-                  isStreamingRef.current = false
-                  setIsStreaming(false)
-                }
-                continue
-              }
               try {
                 const event: SSEEvent = JSON.parse(payload)
                 // Defensive check: skip events from wrong conversation

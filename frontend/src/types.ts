@@ -79,24 +79,25 @@ export interface SSEMessage {
 }
 
 export interface SSEEvent {
-  type: 'conversation' | 'document' | 'assistant' | 'result' | 'error' | 'complete' | 'progress' | 'session_expired' | 'session_initializing' | 'session_ready' | 'system' | 'user' | 'full'
-  subtype?: string
+  type: 'conversation' | 'document' | 'error' | 'complete' | 'progress' | 'session_expired' | 'session_initializing' | 'session_ready' | 'full' | 'delta' | 'done' | 'tool_start' | 'tool_input' | 'tool_end' | 'session'
   conversationId?: number
-  docId?: number
-  title?: string
-  targetLang?: string
   content?: string
+  text?: string
   error?: string
-  filePath?: string
   message?: SSEMessage | string
   sessionId?: string
-  resultMessageId?: number
-  resultFullContent?: string
+  reconnected?: boolean
+  toolId?: string
+  toolName?: string
+  toolInput?: string
   // PDF translation progress
   translatedPdf?: string
   dualPdf?: string
-  // Markdown translation result
+  targetLang?: string
+  title?: string
   path?: string
+  // PDF translation progress fields
+  filePath?: string
 }
 
 // User settings types
