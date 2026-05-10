@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,7 +26,7 @@ func TestWebHandlerExists(t *testing.T) {
 }
 
 func TestFetchHTML(t *testing.T) {
-	html, err := fetchHTML("https://go.dev/blog/type-construction-and-cycle-detection")
+	html, err := fetchHTML("https://go.dev/blog/type-construction-and-cycle-detection", nil)
 	if err != nil {
 		t.Fatalf("Failed to fetch HTML: %v", err)
 	}
@@ -1527,4 +1528,297 @@ func TestApplyEntityLinksRuneOffset(t *testing.T) {
 	if got != want {
 		t.Errorf("applyEntityLinks() = %q, want %q", got, want)
 	}
+}
+
+// --- WeChat article clipping tests ---
+
+func TestIsWeChatURL(t *testing.T) {
+	tests := []struct {
+		url    string
+		expect bool
+	}{
+		{"https://mp.weixin.qq.com/s/9qPD3gXj3HLmrKC64Q6fbQ", true},
+		{"https://mp.weixin.qq.com/s?__biz=MzI2&mid=123&idx=1&sn=abc", true},
+		{"http://mp.weixin.qq.com/s/some-article", true},
+		{"https://go.dev/blog/some-article", false},
+		{"https://x.com/user/status/123", false},
+		{"https://example.com", false},
+		{"not-a-url", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			result := isWeChatURL(tt.url)
+			if result != tt.expect {
+				t.Errorf("isWeChatURL(%q) = %v, want %v", tt.url, result, tt.expect)
+			}
+		})
+	}
+}
+
+func TestFetchHTMLWithHeaders(t *testing.T) {
+	var receivedReferer, receivedUA string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedReferer = r.Header.Get("Referer")
+		receivedUA = r.Header.Get("User-Agent")
+		w.WriteHeader(200)
+		w.Write([]byte("<html><body>test content</body></html>"))
+	}))
+	defer server.Close()
+
+	headers := map[string]string{
+		"Referer":    "https://mp.weixin.qq.com",
+		"User-Agent": "Mozilla/5.0 MicroMessenger/7.0.20",
+	}
+
+	html, err := fetchHTML(server.URL, headers)
+	if err != nil {
+		t.Fatalf("fetchHTML failed: %v", err)
+	}
+
+	if html != "<html><body>test content</body></html>" {
+		t.Errorf("unexpected HTML content: %q", html)
+	}
+
+	if receivedReferer != "https://mp.weixin.qq.com" {
+		t.Errorf("Referer header not sent: got %q", receivedReferer)
+	}
+
+	if !strings.Contains(receivedUA, "MicroMessenger") {
+		t.Errorf("User-Agent should contain MicroMessenger: got %q", receivedUA)
+	}
+}
+
+func TestDownloadImageWithHeaders(t *testing.T) {
+	var receivedReferer string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedReferer = r.Header.Get("Referer")
+		// Return a small PNG header
+		pngData := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+		w.WriteHeader(200)
+		w.Write(pngData)
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	savePath := filepath.Join(tmpDir, "test.png")
+
+	headers := map[string]string{
+		"Referer": "https://mp.weixin.qq.com",
+	}
+
+	err := downloadImage(server.URL, savePath, headers)
+	if err != nil {
+		t.Fatalf("downloadImage failed: %v", err)
+	}
+
+	if receivedReferer != "https://mp.weixin.qq.com" {
+		t.Errorf("Referer not sent in image download: got %q", receivedReferer)
+	}
+
+	if _, err := os.Stat(savePath); os.IsNotExist(err) {
+		t.Error("Image file was not created")
+	}
+}
+
+func TestPreprocessWeChatImages(t *testing.T) {
+	mockHTML := `<html><body>
+		<div id="js_content" class="rich_media_content">
+			<p>Article text here.</p>
+			<img data-src="https://mmbiz.qpic.cn/mmbiz_png/abc123/640" src="" alt="diagram"/>
+			<img data-src="https://mmbiz.qpic.cn/mmbiz_jpg/def456/640" src="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==" alt="photo"/>
+			<img data-src="https://mmbiz.qpic.cn/mmbiz_png/wx_lazy/640?wx_lazy=1" src="https://mmbiz.qpic.cn/mmbiz_png/wx_lazy/0?wx_lazy=1" alt="lazy-real"/>
+			<img src="https://example.com/normal.png" alt="normal image"/>
+		</div>
+	</body></html>`
+
+	doc, err := parseHTML(mockHTML)
+	if err != nil {
+		t.Fatalf("Failed to parse mock HTML: %v", err)
+	}
+
+	preprocessWeChatImages(doc)
+
+	// Verify data-src was always copied to src and data-src removed
+	doc.Find("img").Each(func(i int, s *goquery.Selection) {
+		src, _ := s.Attr("src")
+		alt, _ := s.Attr("alt")
+		dataSrc, hasDataSrc := s.Attr("data-src")
+
+		if alt == "diagram" {
+			if src != "https://mmbiz.qpic.cn/mmbiz_png/abc123/640" {
+				t.Errorf("diagram img src should be data-src value, got %q", src)
+			}
+			if hasDataSrc {
+				t.Errorf("diagram img data-src should be removed, got %q", dataSrc)
+			}
+		}
+		if alt == "photo" {
+			if src != "https://mmbiz.qpic.cn/mmbiz_jpg/def456/640" {
+				t.Errorf("photo img src should replace base64 placeholder, got %q", src)
+			}
+			if hasDataSrc {
+				t.Errorf("photo img data-src should be removed, got %q", dataSrc)
+			}
+		}
+		if alt == "lazy-real" {
+			if src != "https://mmbiz.qpic.cn/mmbiz_png/wx_lazy/640?wx_lazy=1" {
+				t.Errorf("lazy-real img src should prefer data-src over wx_lazy placeholder, got %q", src)
+			}
+			if hasDataSrc {
+				t.Errorf("lazy-real img data-src should be removed, got %q", dataSrc)
+			}
+		}
+		if alt == "normal image" {
+			if src != "https://example.com/normal.png" {
+				t.Errorf("normal img src should be unchanged (no data-src), got %q", src)
+			}
+		}
+	})
+
+	// Verify extractImageURLs picks up the data-src URLs after preprocessing
+	imgURLs := extractImageURLs(doc)
+	if len(imgURLs) != 4 {
+		t.Errorf("Expected 4 image URLs after preprocessing, got %d", len(imgURLs))
+	}
+
+	foundMmbiz := false
+	for _, u := range imgURLs {
+		if strings.Contains(u, "mmbiz.qpic.cn") {
+			foundMmbiz = true
+		}
+	}
+	if !foundMmbiz {
+		t.Error("Expected mmbiz.qpic.cn URLs in extracted image URLs")
+	}
+}
+
+func TestWeChatContentExtraction(t *testing.T) {
+	mockHTML := `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8"/>
+	<meta property="og:title" content="深度学习在自然语言处理中的应用"/>
+	<meta property="article:published_time" content="2026-05-01T08:30:00+08:00"/>
+	<title>深度学习在自然语言处理中的应用 - AI研究院</title>
+</head>
+<body>
+	<div id="js_content" class="rich_media_content">
+		<p>近年来，深度学习技术在自然语言处理领域取得了显著进展。</p>
+		<h2>Transformer架构</h2>
+		<p>Transformer架构是现代NLP的基础。</p>
+		<img data-src="https://mmbiz.qpic.cn/mmbiz_png/abc/640" src="" alt="transformer架构图"/>
+		<h2>应用场景</h2>
+		<p>深度学习在NLP中有多种应用场景。</p>
+	</div>
+	<div id="js_author_name">AI研究院</div>
+</body>
+</html>`
+
+	doc, err := parseHTML(mockHTML)
+	if err != nil {
+		t.Fatalf("Failed to parse mock HTML: %v", err)
+	}
+
+	// Preprocess images
+	preprocessWeChatImages(doc)
+
+	// Extract content
+	content := extractContent(doc)
+	if len(content) == 0 {
+		t.Fatal("Expected non-empty content from WeChat mock HTML")
+	}
+
+	if !strings.Contains(content, "深度学习") {
+		t.Error("Expected '深度学习' in extracted content")
+	}
+
+	if !strings.Contains(content, "Transformer架构") {
+		t.Error("Expected 'Transformer架构' heading in content")
+	}
+
+	// Verify title extraction (og:title should be preferred, without account name suffix)
+	title := extractTitle(doc)
+	if title != "深度学习在自然语言处理中的应用" {
+		t.Errorf("Expected clean title from og:title, got %q", title)
+	}
+
+	// Verify author extraction
+	author := extractWeChatAuthor(doc)
+	if author != "AI研究院" {
+		t.Errorf("Expected author 'AI研究院', got %q", author)
+	}
+
+	// Verify images were preprocessed
+	imgURLs := extractImageURLs(doc)
+	foundMmbiz := false
+	for _, u := range imgURLs {
+		if strings.Contains(u, "mmbiz.qpic.cn") {
+			foundMmbiz = true
+		}
+	}
+	if !foundMmbiz {
+		t.Error("Expected mmbiz.qpic.cn image URLs after preprocessing")
+	}
+
+	t.Logf("Extracted content:\n%s", content)
+}
+
+func TestWebClippingWeChatArticle(t *testing.T) {
+	articleURL := "https://mp.weixin.qq.com/s/9qPD3gXj3HLmrKC64Q6fbQ"
+
+	// Fetch with WeChat headers
+	html, err := fetchHTML(articleURL, weChatHeaders)
+	if err != nil {
+		t.Skipf("Failed to fetch WeChat URL (network issue): %v", err)
+	}
+
+	doc, err := parseHTML(html)
+	if err != nil {
+		t.Fatalf("Failed to parse HTML: %v", err)
+	}
+
+	// Preprocess images
+	preprocessWeChatImages(doc)
+
+	// Extract content
+	content := extractContent(doc)
+	if len(content) == 0 {
+		t.Error("Expected non-empty content from WeChat article")
+	}
+
+	t.Logf("Content length: %d chars", len(content))
+
+	// Verify images were found
+	imgURLs := extractImageURLs(doc)
+	t.Logf("Images found: %d", len(imgURLs))
+	for i, u := range imgURLs {
+		t.Logf("  Image %d: %s", i+1, u)
+	}
+
+	// Verify author extraction
+	author := extractWeChatAuthor(doc)
+	t.Logf("Author: %q", author)
+
+	// Verify title
+	title := extractTitle(doc)
+	t.Logf("Title: %q", title)
+
+	// Verify language detection
+	lang := detectLanguage(content)
+	t.Logf("Detected language: %q", lang)
+
+	// Save debug output for manual inspection
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "wechat_article.md")
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write temp file: %v", err)
+	}
+	t.Logf("Saved markdown to: %s", tmpFile)
+
+	// Save raw HTML for debugging
+	htmlFile := filepath.Join(tmpDir, "wechat_raw.html")
+	if err := os.WriteFile(htmlFile, []byte(html), 0644); err != nil {
+		t.Fatalf("Failed to write HTML file: %v", err)
+	}
+	fmt.Printf("[debug] WeChat HTML saved to: %s\n", htmlFile)
 }
