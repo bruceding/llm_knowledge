@@ -197,7 +197,13 @@ export default function ChatView() {
         if (last.role === 'assistant' && last.isStreaming) {
           return [...prev.slice(0, -1), { ...last, content: last.content + (event.text || ''), isThinking: false }]
         }
-        return prev
+        return [...prev, {
+          id: Date.now().toString(),
+          role: 'assistant' as const,
+          content: event.text || '',
+          timestamp: new Date().toISOString(),
+          isStreaming: true,
+        }]
       })
       return
     }
@@ -267,7 +273,8 @@ export default function ChatView() {
       setMessages((prev) => {
         const last = prev[prev.length - 1]
         if (last.role === 'assistant' && last.isStreaming) {
-          return [...prev.slice(0, -1), { ...last, content: last.content + '\n\nError: ' + (event.error || 'Unknown error'), isStreaming: false, isThinking: false }]
+          const displayContent = last.content || '[已停止]'
+          return [...prev.slice(0, -1), { ...last, content: displayContent, isStreaming: false, isThinking: false }]
         }
         return prev
       })

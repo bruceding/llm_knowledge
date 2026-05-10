@@ -185,7 +185,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     } else if (event.type === 'error') {
       setError((event.error as string) || 'An error occurred')
       setMessages(prev => prev.map(m =>
-        m.isStreaming ? { ...m, isStreaming: false, isThinking: false } : m
+        m.isStreaming ? { ...m, content: m.content || '[已停止]', isStreaming: false, isThinking: false, isToolUse: false, toolDesc: undefined } : m
       ))
     }
   }, [])

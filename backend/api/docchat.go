@@ -278,6 +278,7 @@ func streamSSEEvents(ctx context.Context, sp *claude.StreamProcessor, eventCh ch
 				if evt.Subtype != "error_during_execution" {
 					return nil
 				}
+				sp.Reset()
 			}
 		}
 	}
