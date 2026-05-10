@@ -395,7 +395,7 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 		criteria.Since = cfg.LastSyncAt
 	}
 
-	searchData, err := client.Search(criteria, nil).Wait()
+	searchData, err := client.UIDSearch(criteria, nil).Wait()
 	if err != nil {
 		return NewsletterSyncResult{Error: "search failed: " + err.Error()}
 	}
@@ -405,14 +405,14 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 		return NewsletterSyncResult{Message: "No new newsletters"}
 	}
 
-	fetchOptions := &imap.FetchOptions{
-		Envelope:    true,
-		UID:         true,
-		BodySection: []*imap.FetchItemBodySection{{}},
+	// Phase 1: fetch envelopes only for all UIDs
+	envelopeOptions := &imap.FetchOptions{
+		Envelope: true,
+		UID:      true,
 	}
 
 	uidSet := imap.UIDSetNum(uids...)
-	fetchCmd := client.Fetch(uidSet, fetchOptions)
+	fetchCmd := client.Fetch(uidSet, envelopeOptions)
 
 	type fetchedMsg struct {
 		uid      imap.UID
@@ -433,20 +433,15 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 		}
 
 		if buf.Envelope != nil {
-			var body []byte
-			if len(buf.BodySection) > 0 {
-				body = buf.BodySection[0].Bytes
-			}
 			messages = append(messages, fetchedMsg{
 				uid:      buf.UID,
 				envelope: buf.Envelope,
-				body:     body,
 			})
 		}
 	}
 
 	if err := fetchCmd.Close(); err != nil {
-		return NewsletterSyncResult{Error: "fetch failed: " + err.Error()}
+		return NewsletterSyncResult{Error: "fetch envelopes failed: " + err.Error()}
 	}
 
 	sort.Slice(messages, func(i, j int) bool {
@@ -455,6 +450,42 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 
 	if isFirstSync && len(messages) > 10 {
 		messages = messages[:10]
+	}
+
+	// Phase 2: fetch body only for the selected messages
+	if len(messages) > 0 {
+		topUIDs := make([]imap.UID, len(messages))
+		for i, m := range messages {
+			topUIDs[i] = m.uid
+		}
+		bodySet := imap.UIDSetNum(topUIDs...)
+		bodyOptions := &imap.FetchOptions{
+			UID:         true,
+			BodySection: []*imap.FetchItemBodySection{{}},
+		}
+		bodyCmd := client.Fetch(bodySet, bodyOptions)
+
+		bodyMap := make(map[imap.UID][]byte)
+		for {
+			msgData := bodyCmd.Next()
+			if msgData == nil {
+				break
+			}
+			buf, err := msgData.Collect()
+			if err != nil {
+				continue
+			}
+			if len(buf.BodySection) > 0 {
+				bodyMap[buf.UID] = buf.BodySection[0].Bytes
+			}
+		}
+		if err := bodyCmd.Close(); err != nil {
+			return NewsletterSyncResult{Error: "fetch bodies failed: " + err.Error()}
+		}
+
+		for i := range messages {
+			messages[i].body = bodyMap[messages[i].uid]
+		}
 	}
 
 	total := len(messages)
