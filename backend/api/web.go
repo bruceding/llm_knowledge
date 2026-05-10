@@ -33,9 +33,16 @@ type WebUploadRequest struct {
 	URL string `json:"url"`
 }
 
-func fetchHTML(urlStr string) (string, error) {
+func fetchHTML(urlStr string, headers map[string]string) (string, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(urlStr)
+	req, err := http.NewRequest("GET", urlStr, nil)
+	if err != nil {
+		return "", err
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -51,6 +58,22 @@ func fetchHTML(urlStr string) (string, error) {
 	}
 
 	return string(body), nil
+}
+
+// WeChat article headers for fetching HTML and downloading CDN images
+var weChatHeaders = map[string]string{
+	"Referer":    "https://mp.weixin.qq.com",
+	"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 MicroMessenger/7.0.20",
+}
+
+// isWeChatURL checks if a URL is a WeChat article on mp.weixin.qq.com
+func isWeChatURL(urlStr string) bool {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Host)
+	return host == "mp.weixin.qq.com"
 }
 
 // extractTitle extracts the page title, preferring og:title over <title>
@@ -570,7 +593,7 @@ func downloadInlineImages(md string, assetsDir string) (string, int) {
 		ext := getImageExtension(imgURL)
 		fileName := fmt.Sprintf("img_%d%s", len(urlToPath)+1, ext)
 		localPath := filepath.Join(assetsDir, fileName)
-		if err := downloadImage(imgURL, localPath); err == nil {
+		if err := downloadImage(imgURL, localPath, nil); err == nil {
 			urlToPath[imgURL] = filepath.Join("assets", fileName)
 		}
 	}
@@ -582,10 +605,18 @@ func downloadInlineImages(md string, assetsDir string) (string, int) {
 	return md, len(urlToPath)
 }
 
-// downloadImage downloads an image and saves it to the specified path
-func downloadImage(imgURL, savePath string) error {
+// downloadImage downloads an image and saves it to the specified path.
+// Optional headers can be set for CDN images that require Referer (e.g. WeChat's mmbiz.qpic.cn).
+func downloadImage(imgURL, savePath string, headers map[string]string) error {
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(imgURL)
+	req, err := http.NewRequest("GET", imgURL, nil)
+	if err != nil {
+		return err
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -601,6 +632,34 @@ func downloadImage(imgURL, savePath string) error {
 	}
 
 	return os.WriteFile(savePath, data, 0644)
+}
+
+// preprocessWeChatImages copies data-src to src for all <img> elements.
+// WeChat uses data-src for lazy-loaded images; src is typically empty, a base64 placeholder,
+// or a 1x1 pixel with wx_lazy=1. Always prefer data-src when present.
+func preprocessWeChatImages(doc *goquery.Document) {
+	doc.Find("img").Each(func(i int, s *goquery.Selection) {
+		dataSrc, hasDataSrc := s.Attr("data-src")
+		if !hasDataSrc || dataSrc == "" {
+			return
+		}
+		s.SetAttr("src", dataSrc)
+		s.RemoveAttr("data-src")
+	})
+}
+
+// extractWeChatAuthor extracts the author name from a WeChat article page.
+func extractWeChatAuthor(doc *goquery.Document) string {
+	if author := doc.Find("#js_author_name").Text(); author != "" {
+		return strings.TrimSpace(author)
+	}
+	if author := doc.Find(".rich_media_meta_nickname").Text(); author != "" {
+		return strings.TrimSpace(author)
+	}
+	if author, exists := doc.Find("meta[name='author']").Attr("content"); exists && author != "" {
+		return strings.TrimSpace(author)
+	}
+	return ""
 }
 
 // getImageExtension extracts extension from URL or content-type
@@ -637,6 +696,7 @@ func extractContent(doc *goquery.Document) string {
 		".u-rich-text-blog", // Claude blog
 		"article",
 		"main",
+		"#js_content",       // WeChat articles (mp.weixin.qq.com)
 		".content",
 		".post",
 		"#content",
@@ -819,8 +879,14 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 		return h.uploadXTwitter(c, req)
 	}
 
+	// Check if this is a WeChat URL — needs special handling
+	// because WeChat blocks bare HTTP GET and uses data-src for images
+	if isWeChatURL(req.URL) {
+		return h.uploadWeChat(c, req)
+	}
+
 	// Fetch HTML
-	html, err := fetchHTML(req.URL)
+	html, err := fetchHTML(req.URL, nil)
 	if err != nil {
 		return c.JSON(500, echo.Map{"error": "failed to fetch URL: " + err.Error()})
 	}
@@ -831,15 +897,43 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 		return c.JSON(500, echo.Map{"error": "failed to parse HTML"})
 	}
 
-	// Extract title using extractTitle (prefers og:title over <title> to avoid platform noise)
+	// Extract title (prefers og:title over <title> to avoid platform noise)
 	originalTitle := extractTitle(doc)
 	if originalTitle == "" {
 		originalTitle = "untitled"
 	}
 
-	// Clean title for filesystem (slug)
-	title := slugify(originalTitle)
+	publishedTime := extractPublishedTime(doc)
+	if publishedTime.IsZero() {
+		publishedTime = time.Now()
+	}
 
+	content := extractContent(doc)
+
+	return h.saveWebDocument(c, req, originalTitle, doc, publishedTime, content, webSaveConfig{
+		Language:     detectLanguage(content),
+		ImageHeaders: func(imgURL string) map[string]string { return nil },
+		SuccessMsg:   "Web page saved successfully",
+		Metadata:     map[string]string{"published": publishedTime.Format(time.RFC3339)},
+	})
+}
+
+// webSaveConfig holds platform-specific parameters for saving a web document.
+// The shared pipeline (dedup, collision, dirs, images, HTML/md save, DB, summary) is
+// identical across UploadWeb and uploadWeChat; only these fields vary.
+type webSaveConfig struct {
+	Author       string
+	FetchMethod  string
+	Language     string
+	Metadata     map[string]string
+	ImageHeaders func(imgURL string) map[string]string
+	SuccessMsg   string
+}
+
+// saveWebDocument runs the shared pipeline: dedup, collision, directory creation,
+// image download + localization, HTML/md save, DB record, async summary.
+func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, originalTitle string, doc *goquery.Document, publishedTime time.Time, content string, cfg webSaveConfig) error {
+	title := slugify(originalTitle)
 	userId := GetCurrentUserId(c)
 
 	// Dedup: hard-delete any soft-deleted records with the same source_url for this user
@@ -847,7 +941,7 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 	var staleDocs []db.Document
 	if err := db.DB.Unscoped().Where("source_url = ? AND user_id = ? AND deleted_at IS NOT NULL", req.URL, userId).Find(&staleDocs).Error; err == nil {
 		for _, stale := range staleDocs {
-			db.DB.Unscoped().Delete(&stale) // hard delete
+			db.DB.Unscoped().Delete(&stale)
 			fmt.Printf("[web] Hard-deleted stale soft-deleted record id=%d for re-import: %s\n", stale.ID, req.URL)
 		}
 	}
@@ -881,23 +975,20 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 		return c.JSON(500, echo.Map{"error": "failed to create directory"})
 	}
 
-	// Download images and replace URLs in HTML
+	// Download images and localize URLs
 	imgURLs := extractImageURLs(doc)
 	downloadedImages := 0
 	imgMap := make(map[string]string) // original URL -> local path
 
 	for i, imgURL := range imgURLs {
-		// Resolve relative URLs
 		absoluteURL := resolveURL(imgURL, req.URL)
-
-		// Generate local filename
 		ext := getImageExtension(absoluteURL)
 		localName := fmt.Sprintf("img_%d%s", i+1, ext)
 		localPath := filepath.Join(assetsDir, localName)
 		localRelPath := filepath.Join("assets", localName)
 
-		// Download image
-		if err := downloadImage(absoluteURL, localPath); err == nil {
+		headers := cfg.ImageHeaders(absoluteURL)
+		if err := downloadImage(absoluteURL, localPath, headers); err == nil {
 			imgMap[imgURL] = localRelPath
 			downloadedImages++
 		}
@@ -923,32 +1014,23 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 		return c.JSON(500, echo.Map{"error": "failed to save HTML"})
 	}
 
-	// Extract content and save to paper.md
-	content := extractContent(doc)
-	mdPath := filepath.Join(dir, "paper.md")
-
-	// Extract published time from meta tags
-	publishedTime := extractPublishedTime(doc)
-	if publishedTime.IsZero() {
-		publishedTime = time.Now()
+	// Build markdown frontmatter
+	frontmatter := fmt.Sprintf("source_url: %s\nsource_type: web\ntitle: %s\ndate: %s",
+		req.URL, yamlQuote(originalTitle), publishedTime.Format("2006-01-02"))
+	if cfg.FetchMethod != "" {
+		frontmatter += fmt.Sprintf("\nfetch_method: %s", cfg.FetchMethod)
+	}
+	if cfg.Author != "" {
+		frontmatter += fmt.Sprintf("\nauthor: %s", yamlQuote(cfg.Author))
 	}
 
-	// Build markdown content with metadata header
-	mdContent := fmt.Sprintf("---\nsource_url: %s\nsource_type: web\ntitle: %s\ndate: %s\n---\n\n%s",
-		req.URL,
-		yamlQuote(originalTitle),
-		publishedTime.Format("2006-01-02"),
-		content)
-
+	mdContent := fmt.Sprintf("---\n%s\n---\n\n%s", frontmatter, content)
+	mdPath := filepath.Join(dir, "paper.md")
 	if err := os.WriteFile(mdPath, []byte(mdContent), 0644); err != nil {
 		return c.JSON(500, echo.Map{"error": "failed to save markdown"})
 	}
 
-	// Store original published date in metadata
-	metadata := map[string]string{
-		"published": publishedTime.Format(time.RFC3339),
-	}
-	metadataJSON, _ := json.Marshal(metadata)
+	metadataJSON, _ := json.Marshal(cfg.Metadata)
 
 	docRecord := db.Document{
 		UserID:     userId,
@@ -957,7 +1039,7 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 		SourceType: "web",
 		RawPath:    rawRelPath,
 		SourceURL:  req.URL,
-		Language:   "en",
+		Language:   cfg.Language,
 		Status:     "inbox",
 		Metadata:   string(metadataJSON),
 		CreatedAt:  time.Now(),
@@ -967,7 +1049,6 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 		return c.JSON(500, echo.Map{"error": "failed to create document"})
 	}
 
-	// Capture docID before goroutine
 	docID := docRecord.ID
 
 	// Trigger async summary generation if ClaudeBin is configured
@@ -991,7 +1072,7 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 		"images":   downloadedImages,
 		"htmlPath": filepath.Join(rawRelPath, "index.html"),
 		"mdPath":   filepath.Join(rawRelPath, "paper.md"),
-		"message":  "Web page saved successfully",
+		"message":  cfg.SuccessMsg,
 	})
 }
 
@@ -999,6 +1080,8 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 func yamlQuote(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
 	return "\"" + s + "\""
 }
 
@@ -1166,5 +1249,60 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 		"htmlPath": filepath.Join(rawRelPath, "index.html"),
 		"mdPath":   filepath.Join(rawRelPath, "paper.md"),
 		"message":  "X/Twitter content saved successfully",
+	})
+}
+
+// uploadWeChat handles WeChat article URLs with special headers and DOM preprocessing.
+// WeChat articles have full content in HTML (unlike X/Twitter), but require:
+// 1. Referer + User-Agent headers for HTTP fetching
+// 2. data-src → src migration for lazy-loaded images
+// 3. Referer headers for downloading mmbiz.qpic.cn images
+func (h *WebHandler) uploadWeChat(c echo.Context, req WebUploadRequest) error {
+	// Fetch HTML with WeChat-specific headers
+	html, err := fetchHTML(req.URL, weChatHeaders)
+	if err != nil {
+		log.Printf("[wechat] fetchHTML failed for %s: %v", req.URL, err)
+		return c.JSON(500, echo.Map{"error": "failed to fetch WeChat article"})
+	}
+
+	// Parse HTML
+	doc, err := parseHTML(html)
+	if err != nil {
+		return c.JSON(500, echo.Map{"error": "failed to parse HTML"})
+	}
+
+	// Preprocess: migrate data-src → src for lazy-loaded WeChat images
+	preprocessWeChatImages(doc)
+
+	// Extract title and author
+	originalTitle := extractTitle(doc)
+	if originalTitle == "" {
+		originalTitle = "untitled"
+	}
+	author := extractWeChatAuthor(doc)
+
+	publishedTime := extractPublishedTime(doc)
+	if publishedTime.IsZero() {
+		publishedTime = time.Now()
+	}
+
+	content := extractContent(doc)
+
+	return h.saveWebDocument(c, req, originalTitle, doc, publishedTime, content, webSaveConfig{
+		Author:       author,
+		FetchMethod:  "wechat",
+		Language:     detectLanguage(content),
+		ImageHeaders: func(imgURL string) map[string]string {
+			if strings.Contains(imgURL, "mmbiz.qpic.cn") {
+				return weChatHeaders
+			}
+			return nil
+		},
+		SuccessMsg: "WeChat article saved successfully",
+		Metadata: map[string]string{
+			"published":    publishedTime.Format(time.RFC3339),
+			"author":       author,
+			"fetch_method": "wechat",
+		},
 	})
 }
