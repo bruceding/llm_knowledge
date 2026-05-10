@@ -672,16 +672,10 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 		}
 	}
 
-	// When first sync is truncated, set LastSyncAt to the oldest processed
-	// message's date so the next sync picks up remaining older messages.
-	syncTime := time.Now()
-	if isFirstSync && total > 0 {
-		oldest := messages[len(messages)-1].envelope.Date
-		if !oldest.IsZero() {
-			syncTime = oldest
-		}
-	}
-	db.DB.Model(cfg).Update("last_sync_at", syncTime)
+	// Always set LastSyncAt to now so subsequent syncs only fetch new mail.
+	// Previously this was set to the oldest message date on first sync,
+	// but that caused last_sync_at to show a past date instead of now.
+	db.DB.Model(cfg).Update("last_sync_at", time.Now())
 
 	msg := fmt.Sprintf("Synced %d new newsletters", newArticles)
 	if downloadErrors > 0 {
