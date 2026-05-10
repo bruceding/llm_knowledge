@@ -384,8 +384,12 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 		cfg.FolderName = canonicalName
 	}
 
-	criteria := &imap.SearchCriteria{
-		NotFlag: []imap.Flag{imap.FlagSeen},
+	isFirstSync := cfg.LastSyncAt.IsZero()
+
+	criteria := &imap.SearchCriteria{}
+	if !isFirstSync {
+		// After first sync, only fetch unseen messages
+		criteria.NotFlag = []imap.Flag{imap.FlagSeen}
 	}
 	if !cfg.LastSyncAt.IsZero() {
 		criteria.Since = cfg.LastSyncAt
@@ -400,8 +404,6 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 	if len(uids) == 0 {
 		return NewsletterSyncResult{Message: "No new newsletters"}
 	}
-
-	isFirstSync := cfg.LastSyncAt.IsZero()
 
 	fetchOptions := &imap.FetchOptions{
 		Envelope:    true,
