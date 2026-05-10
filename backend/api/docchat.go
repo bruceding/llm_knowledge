@@ -43,26 +43,11 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 	// Build document context info
 	docInfo := fmt.Sprintf("文档标题: %s。原始文件路径: %s。相关 wiki 文件在 wiki/ 目录下。", doc.Title, doc.RawPath)
 
-	// Start new session with ownership
-	// Use context.Background() — request context gets cancelled when handler returns,
-	// which would kill the Claude subprocess via exec.CommandContext.
-	session, err := h.Pool.StartSession(context.Background(), docInfo, userId, uint(docId))
-	if err != nil {
-		log.Printf("[docchat] Failed to start session: %v", err)
-		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to start session"})
-	}
-
-	// Mark SSE connection (reject if too many concurrent connections)
-	if !session.SSEConnect() {
-		session.Close()
-		return c.JSON(http.StatusServiceUnavailable, echo.Map{"error": "too many concurrent connections"})
-	}
-	defer session.SSEDisconnect()
-
-	// Set SSE headers
+	// Flush SSE headers immediately so the frontend sees the connection open quickly.
 	c.Response().Header().Set("Content-Type", "text/event-stream")
 	c.Response().Header().Set("Cache-Control", "no-cache")
 	c.Response().Header().Set("Connection", "keep-alive")
+	c.Response().WriteHeader(http.StatusOK)
 
 	flusher, ok := c.Response().Writer.(http.Flusher)
 	if !ok {
@@ -75,19 +60,38 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 		flusher.Flush()
 	}
 
+	writeSSE(echo.Map{
+		"type":  "session_initializing",
+		"docId": docId,
+	})
+
+	// Start new session with ownership
+	// Use context.Background() — request context gets cancelled when handler returns,
+	// which would kill the Claude subprocess via exec.CommandContext.
+	session, err := h.Pool.StartSession(context.Background(), docInfo, userId, uint(docId))
+	if err != nil {
+		log.Printf("[docchat] Failed to start session: %v", err)
+		writeSSE(echo.Map{"type": "error", "error": "failed to start session"})
+		return nil
+	}
+
+	// Mark SSE connection (reject if too many concurrent connections)
+	if !session.SSEConnect() {
+		session.Close()
+		writeSSE(echo.Map{"type": "error", "error": "too many concurrent connections"})
+		return nil
+	}
+	defer session.SSEDisconnect()
+
 	// Subscribe to session events (fan-out mechanism)
 	eventCh := session.Subscribe()
 	defer session.Unsubscribe(eventCh)
 
-	// Send session_id first
-	sessionData, _ := json.Marshal(echo.Map{
+	// Send session_id
+	writeSSE(echo.Map{
 		"type":      "session",
 		"sessionId": session.SessionID,
 	})
-	if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", sessionData); err != nil {
-		return nil
-	}
-	flusher.Flush()
 
 	return streamSSEEvents(c.Request().Context(), claude.NewStreamProcessor(), eventCh, writeSSE)
 }
@@ -233,6 +237,14 @@ func streamSSEEvents(ctx context.Context, sp *claude.StreamProcessor, eventCh ch
 
 			if sseEvent.Type == "" {
 				continue
+			}
+
+			// Forward session_update directly (not processed by StreamProcessor)
+			if evt.Type == "session_update" && evt.SessionID != "" {
+				writeSSE(echo.Map{
+					"type":      "session",
+					"sessionId": evt.SessionID,
+				})
 			}
 
 			switch sseEvent.Type {

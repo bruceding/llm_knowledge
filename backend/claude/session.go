@@ -191,22 +191,16 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 		}
 	}()
 
-	// Start reading events — session_id will be auto-captured from system.init
-	// when the first real user message is sent. No init message needed.
+	// In interactive mode (no --print), system.init only fires after the first
+	// user message, so don't block waiting for it. Use a fallback ID immediately;
+	// the real session_id will be captured by readEvents via onSessionID callback.
 	go session.readEvents()
 
-	// Wait for session_id with a generous timeout.
-	// For docchat, the first user message triggers system.init.
-	// If timeout expires, a fallback ID is used; the real ID will be
-	// captured later by readEvents when init eventually arrives.
-	if err := waitForInit(session, 60*time.Second); err != nil {
-		log.Printf("[session] Warning: %v, using fallback ID", err)
-		session.mu.Lock()
-		if session.SessionID == "" {
-			session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
-		}
-		session.mu.Unlock()
+	session.mu.Lock()
+	if session.SessionID == "" {
+		session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
 	}
+	session.mu.Unlock()
 
 	// Register callback to update map key when real session_id arrives
 	sessionID := session.GetSessionID()
@@ -546,6 +540,23 @@ func (s *InteractiveSession) readEvents() {
 			case <-s.initDone:
 			default:
 				close(s.initDone)
+			}
+			// Notify SSE subscribers so frontend can update its sessionId.
+			// This synthetic event uses type "session_update" which the SSE
+			// handler forwards directly (not filtered by StreamProcessor).
+			if oldID != rawEvent.SessionID {
+				updateEvt := StreamEvent{
+					Type:      "session_update",
+					SessionID: rawEvent.SessionID,
+				}
+				s.mu.Lock()
+				for _, ch := range s.streamChs {
+					select {
+					case ch <- updateEvt:
+					default:
+					}
+				}
+				s.mu.Unlock()
 			}
 		}
 

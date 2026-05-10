@@ -288,7 +288,8 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       })
   }, [startNewSession, processSSEStream])
 
-  // Connect when active, disconnect when inactive
+  // Connect when active, disconnect when inactive.
+  // Use a small delay to survive React StrictMode's unmount/remount cycle.
   useEffect(() => {
     if (!active) {
       if (abortRef.current) {
@@ -298,8 +299,9 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       return
     }
 
-    connectSSE()
+    const timer = setTimeout(() => connectSSE(), 50)
     return () => {
+      clearTimeout(timer)
       if (abortRef.current) {
         abortRef.current.abort()
       }
