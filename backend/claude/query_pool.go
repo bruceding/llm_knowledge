@@ -20,6 +20,7 @@ type QuerySession struct {
 	turnCh           chan StreamEvent // active turn's event channel (nil when idle)
 	currentMessageID uint             // user message ID for current turn (for saving assistant reply)
 	currentContent   strings.Builder  // accumulated assistant content for current turn
+	hasStreamDeltas  bool             // true if stream_event text deltas received this turn (prevents double accumulation)
 	mu               sync.Mutex       // protects turnCh, currentMessageID, currentContent, streamChs
 	streamChs        []chan StreamEvent
 	lastAsk          time.Time // last time a question was asked
@@ -42,8 +43,8 @@ func newQuerySession(session *InteractiveSession, convID uint) *QuerySession {
 func (qs *QuerySession) routeEvents() {
 	for evt := range qs.session.Events() {
 		qs.mu.Lock()
-		// Accumulate assistant content for auto-save
-		if evt.Type == "assistant" {
+		// Accumulate assistant content for auto-save (skip if deltas already accumulated)
+		if evt.Type == "assistant" && !qs.hasStreamDeltas {
 			qs.currentContent.WriteString(evt.Content)
 		}
 
@@ -51,6 +52,7 @@ func (qs *QuerySession) routeEvents() {
 		if evt.Type == "stream_event" && evt.Event != nil {
 			delta := ExtractTextDelta(evt.Event)
 			if delta != "" {
+				qs.hasStreamDeltas = true
 				qs.currentContent.WriteString(delta)
 			}
 		}
@@ -95,6 +97,7 @@ func (qs *QuerySession) routeEvents() {
 		if evt.Type == "result" || evt.Type == "error" {
 			qs.currentMessageID = 0
 			qs.currentContent.Reset()
+			qs.hasStreamDeltas = false
 		}
 
 		// Fan-out to stream subscribers — all event types pass through.

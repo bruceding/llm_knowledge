@@ -89,82 +89,7 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 	}
 	flusher.Flush()
 
-	ctx := c.Request().Context()
-	sp := claude.NewStreamProcessor()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case evt, ok := <-eventCh:
-			if !ok {
-				return nil
-			}
-
-			sseEvent := sp.Process(evt)
-
-			for sp.HasPendingEvents() {
-				pending := sp.FlushPending()
-				if pending.Type != "" {
-					writeSSE(echo.Map{
-						"type":      pending.Type,
-						"text":      pending.Delta,
-						"content":   pending.Content,
-						"toolId":    pending.ToolID,
-						"toolName":  pending.ToolName,
-						"toolInput": pending.ToolInput,
-					})
-				}
-			}
-
-			if sseEvent.Type == "" {
-				continue
-			}
-
-			switch sseEvent.Type {
-			case "delta":
-				writeSSE(echo.Map{
-					"type": "delta",
-					"text": sseEvent.Delta,
-				})
-			case "full":
-				writeSSE(echo.Map{
-					"type":    "full",
-					"content": sseEvent.Content,
-				})
-			case "tool_start":
-				writeSSE(echo.Map{
-					"type":      "tool_start",
-					"toolId":    sseEvent.ToolID,
-					"toolName":  sseEvent.ToolName,
-					"toolInput": sseEvent.ToolInput,
-				})
-			case "tool_input":
-				writeSSE(echo.Map{
-					"type":      "tool_input",
-					"toolId":    sseEvent.ToolID,
-					"toolInput": sseEvent.ToolInput,
-				})
-			case "tool_end":
-				writeSSE(echo.Map{
-					"type":   "tool_end",
-					"toolId": sseEvent.ToolID,
-				})
-			case "done":
-				writeSSE(echo.Map{
-					"type": "done",
-				})
-				sp.Reset()
-			case "error":
-				writeSSE(echo.Map{
-					"type":  "error",
-					"error": sseEvent.Content,
-				})
-				if evt.Subtype != "error_during_execution" {
-					return nil
-				}
-			}
-		}
-	}
+	return streamSSEEvents(c.Request().Context(), claude.NewStreamProcessor(), eventCh, writeSSE)
 }
 
 // MessageRequest represents a user message request
@@ -272,10 +197,15 @@ func (h *DocChatHandler) Reconnect(c echo.Context) error {
 	}
 	flusher.Flush()
 
-	// Keep SSE open for multi-turn (same as Stream)
-	ctx := c.Request().Context()
 	sp := claude.NewStreamProcessor()
 	sp.MarkAsStreamedWithContent(session.StreamingContent())
+	return streamSSEEvents(c.Request().Context(), sp, eventCh, writeSSE)
+}
+
+// streamSSEEvents is the shared SSE event loop used by both Stream and Reconnect.
+// It reads raw events from eventCh, converts them via StreamProcessor, and writes
+// clean SSE events to the client via writeSSE.
+func streamSSEEvents(ctx context.Context, sp *claude.StreamProcessor, eventCh chan claude.StreamEvent, writeSSE func(map[string]interface{})) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -327,6 +257,7 @@ func (h *DocChatHandler) Reconnect(c echo.Context) error {
 				writeSSE(echo.Map{
 					"type":      "tool_input",
 					"toolId":    sseEvent.ToolID,
+					"toolName":  sseEvent.ToolName,
 					"toolInput": sseEvent.ToolInput,
 				})
 			case "tool_end":

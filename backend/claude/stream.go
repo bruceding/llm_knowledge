@@ -168,6 +168,7 @@ func (sp *StreamProcessor) Process(evt StreamEvent) SSEEvent {
 					return SSEEvent{
 						Type:      "tool_input",
 						ToolID:    tool.id,
+						ToolName:  tool.name,
 						ToolInput: tool.input,
 					}
 				}

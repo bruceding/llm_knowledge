@@ -440,6 +440,7 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 					"type":           "tool_input",
 					"conversationId": convID,
 					"toolId":         sseEvent.ToolID,
+					"toolName":       sseEvent.ToolName,
 					"toolInput":      sseEvent.ToolInput,
 				})
 			case "tool_end":

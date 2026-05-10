@@ -29,7 +29,8 @@ type InteractiveSession struct {
 	stdoutScanner  *bufio.Scanner
 	eventCh        chan StreamEvent   // main event channel (closed by readEvents)
 	streamChs      []chan StreamEvent // subscriber channels for fan-out
-	streamingContent strings.Builder  // accumulated text for SSE reconnect recovery
+	streamingContent  strings.Builder  // accumulated text for SSE reconnect recovery
+	hasStreamDeltas   bool             // true if stream_event text deltas received this turn
 	lastDisconnect time.Time
 	sseCount       int // active SSE connections
 	mu             sync.Mutex
@@ -497,9 +498,9 @@ func (s *InteractiveSession) readEvents() {
 					}
 				}
 			}
-			// Accumulate assistant text for SSE reconnect recovery
+			// Accumulate assistant text for SSE reconnect recovery (skip if deltas already accumulated)
 			s.mu.Lock()
-			if event.Content != "" {
+			if event.Content != "" && !s.hasStreamDeltas {
 				s.streamingContent.WriteString(event.Content)
 			}
 			s.mu.Unlock()
@@ -510,6 +511,7 @@ func (s *InteractiveSession) readEvents() {
 			delta := ExtractTextDelta(rawEvent.Event)
 			if delta != "" {
 				s.mu.Lock()
+				s.hasStreamDeltas = true
 				s.streamingContent.WriteString(delta)
 				s.mu.Unlock()
 			}
@@ -525,6 +527,7 @@ func (s *InteractiveSession) readEvents() {
 			// Reset streamingContent on turn end
 			s.mu.Lock()
 			s.streamingContent.Reset()
+			s.hasStreamDeltas = false
 			s.mu.Unlock()
 		}
 
