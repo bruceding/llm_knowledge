@@ -853,6 +853,46 @@ func filterDecorativeImages(htmlContent string) string {
 			if strings.Contains(styleLower, "display:none") || strings.Contains(styleLower, "display: none") {
 				shouldRemove = true
 			}
+			if strings.Contains(styleLower, "width:0") || strings.Contains(styleLower, "height:0") ||
+				strings.Contains(styleLower, "width: 0") || strings.Contains(styleLower, "height: 0") {
+				shouldRemove = true
+			}
+		}
+
+		// Remove images with no dimensions that are likely tracking pixels
+		// (src contains tracking/beacon/open/pixel in URL or has alt indicating tracking)
+		src, hasSrc := s.Attr("src")
+		if hasSrc && !shouldRemove {
+			srcLower := strings.ToLower(src)
+			trackingPatterns := []string{"tracking", "beacon", "pixel", "open?", "open/", "emailopen", "mailopen"}
+			for _, pat := range trackingPatterns {
+				if strings.Contains(srcLower, pat) {
+					shouldRemove = true
+					break
+				}
+			}
+			// Also remove if alt text indicates tracking
+			altLower := strings.ToLower(s.AttrOr("alt", ""))
+			if strings.Contains(altLower, "pixel") || strings.Contains(altLower, "tracking") {
+				shouldRemove = true
+			}
+		}
+
+		// Remove images without explicit dimensions AND without alt text (likely decorative/tracking)
+		if !hasWidth && !hasHeight && hasSrc {
+			alt := s.AttrOr("alt", "")
+			if alt == "" {
+				// Check if the image is inside a link that looks like tracking
+				parent := s.Parent()
+				if parent.Length() > 0 && parent.Nodes[0].Data == "a" {
+					href, _ := parent.Attr("href")
+					hrefLower := strings.ToLower(href)
+					if strings.Contains(hrefLower, "unsubscribe") || strings.Contains(hrefLower, "open") ||
+						strings.Contains(hrefLower, "click") || strings.Contains(hrefLower, "track") {
+						shouldRemove = true
+					}
+				}
+			}
 		}
 
 		if shouldRemove {

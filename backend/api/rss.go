@@ -746,6 +746,14 @@ func processHTMLToMarkdown(htmlContent, assetsDir, articleURL string) (string, i
 			alt = "image"
 		}
 
+		// Skip images already saved locally (e.g. cid: attachments replaced by extractHTMLFromEmail)
+		if strings.HasPrefix(src, "assets/") {
+			mdImg := fmt.Sprintf("![%s](%s)", alt, src)
+			s.ReplaceWithHtml(mdImg)
+			imgCount++
+			return
+		}
+
 		localPath, err := downloadImageToAssets(src, assetsDir, articleURL)
 		if err != nil {
 			imgErrors++
