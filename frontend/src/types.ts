@@ -178,6 +178,11 @@ export interface IMAPFoldersResult {
   folders: string[]
 }
 
+export interface NewsletterSyncStatus {
+  running: boolean
+  result?: NewsletterSyncResult
+}
+
 export interface NewsletterSyncResult {
   newArticles: number
   total: number

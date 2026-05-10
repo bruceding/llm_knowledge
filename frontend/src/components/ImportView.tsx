@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { uploadPDF, uploadPDFUrl, clipWeb, addRSSFeed, listRSSFeeds, deleteRSSFeed, syncRSSFeed, getIMAPConfig, syncNewsletter } from '../api'
+import { uploadPDF, uploadPDFUrl, clipWeb, addRSSFeed, listRSSFeeds, deleteRSSFeed, syncRSSFeed, getIMAPConfig, syncNewsletter, getNewsletterSyncStatus } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
 
 type ImportTab = 'pdf' | 'web' | 'rss' | 'newsletter'
@@ -115,21 +115,37 @@ export default function ImportView() {
     setSyncingNewsletter(true)
     setError(null)
     try {
-      const result = await syncNewsletter()
-      if (result.error) {
-        setError(result.error)
-      } else {
-        setUploadResult({
-          id: 0,
-          path: '',
-          message: result.message,
-          pages: result.newArticles,
-        })
+      await syncNewsletter()
+      // Poll for completion
+      const poll = async () => {
+        try {
+          const status = await getNewsletterSyncStatus()
+          if (status.running) {
+            setTimeout(poll, 2000)
+          } else {
+            setSyncingNewsletter(false)
+            if (status.result) {
+              if (status.result.error) {
+                setError(status.result.error)
+              } else {
+                setUploadResult({
+                  id: 0,
+                  path: '',
+                  message: status.result.message,
+                  pages: status.result.newArticles,
+                })
+              }
+            }
+            await loadNewsletterConfig()
+          }
+        } catch {
+          setSyncingNewsletter(false)
+          setError('Failed to check sync status')
+        }
       }
-      await loadNewsletterConfig()
+      setTimeout(poll, 2000)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to sync newsletters')
-    } finally {
+      setError(err instanceof Error ? err.message : 'Failed to start sync')
       setSyncingNewsletter(false)
     }
   }

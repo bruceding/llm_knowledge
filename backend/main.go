@@ -257,6 +257,7 @@ func main() {
 	apiGroup.POST("/imap/test", newsletterH.TestConnection)
 	apiGroup.GET("/imap/folders", newsletterH.ListFolders)
 	apiGroup.POST("/imap/sync", newsletterH.Sync)
+	apiGroup.GET("/imap/sync-status", newsletterH.SyncStatus)
 
 	newsletterH.StartAutoSyncScheduler()
 

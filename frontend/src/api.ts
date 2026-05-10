@@ -1,4 +1,4 @@
-import type { Document, UpdateDocRequest, SSEEvent, UserSettings, Conversation, Message, LoginResponse, RegisterResponse, CaptchaResponse, IMAPConfigInput, IMAPConfigResponse, IMAPTestResult, IMAPFoldersResult, NewsletterSyncResult } from './types'
+import type { Document, UpdateDocRequest, SSEEvent, UserSettings, Conversation, Message, LoginResponse, RegisterResponse, CaptchaResponse, IMAPConfigInput, IMAPConfigResponse, IMAPTestResult, IMAPFoldersResult, NewsletterSyncStatus } from './types'
 
 const API_BASE = '/api'
 
@@ -590,8 +590,14 @@ export async function listIMAPFolders(): Promise<IMAPFoldersResult> {
   return res.json()
 }
 
-export async function syncNewsletter(): Promise<NewsletterSyncResult> {
+export async function syncNewsletter(): Promise<{status: string}> {
   const res = await fetch(`${API_BASE}/imap/sync`, { method: 'POST', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to sync newsletters')
+  return res.json()
+}
+
+export async function getNewsletterSyncStatus(): Promise<NewsletterSyncStatus> {
+  const res = await fetch(`${API_BASE}/imap/sync-status`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to get sync status')
   return res.json()
 }

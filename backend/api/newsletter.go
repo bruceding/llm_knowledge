@@ -99,6 +99,14 @@ type NewsletterSyncResult struct {
 	Error          string `json:"error,omitempty"`
 }
 
+// syncStatus tracks in-progress sync state per user
+type syncStatus struct {
+	Running bool                  `json:"running"`
+	Result  *NewsletterSyncResult `json:"result,omitempty"`
+}
+
+var syncStatuses sync.Map // map[uint]*syncStatus
+
 func toIMAPConfigResponse(cfg *db.IMAPConfig) IMAPConfigResponse {
 	return IMAPConfigResponse{
 		ID:         cfg.ID,
@@ -340,13 +348,47 @@ func (h *NewsletterHandler) ListFolders(c echo.Context) error {
 func (h *NewsletterHandler) Sync(c echo.Context) error {
 	userId := GetCurrentUserId(c)
 
+	// Check if already running
+	if st, ok := syncStatuses.Load(userId); ok {
+		s := st.(*syncStatus)
+		if s.Running {
+			return c.JSON(http.StatusOK, echo.Map{"status": "running"})
+		}
+	}
+
 	var cfg db.IMAPConfig
 	if err := db.DB.Where("user_id = ?", userId).First(&cfg).Error; err != nil {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "IMAP not configured"})
 	}
 
-	result := h.syncInternal(&cfg)
-	return c.JSON(http.StatusOK, result)
+	// Mark as running
+	status := &syncStatus{Running: true}
+	syncStatuses.Store(userId, status)
+
+	go func() {
+		result := h.syncInternal(&cfg)
+		status.Running = false
+		status.Result = &result
+	}()
+
+	return c.JSON(http.StatusOK, echo.Map{"status": "started"})
+}
+
+func (h *NewsletterHandler) SyncStatus(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
+	st, ok := syncStatuses.Load(userId)
+	if !ok {
+		return c.JSON(http.StatusOK, echo.Map{"running": false})
+	}
+	s := st.(*syncStatus)
+	if s.Running {
+		return c.JSON(http.StatusOK, echo.Map{"running": true})
+	}
+	return c.JSON(http.StatusOK, echo.Map{
+		"running": false,
+		"result":  s.Result,
+	})
 }
 
 func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResult {
