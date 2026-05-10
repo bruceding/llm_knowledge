@@ -5,12 +5,12 @@ import { useConfirm } from '../hooks/useConfirm'
 
 type ImportTab = 'pdf' | 'web' | 'rss' | 'newsletter'
 
-const tabConfig: { key: ImportTab; icon: JSX.Element; color: string; activeColor: string; borderColor: string }[] = [
+const tabConfig: { key: ImportTab; icon: React.ReactNode; color: string; activeColor: string }[] = [
   {
     key: 'pdf',
     color: 'text-blue-500',
     activeColor: 'text-blue-600 bg-blue-50 border-blue-500',
-    borderColor: 'border-blue-500',
+
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
@@ -21,7 +21,7 @@ const tabConfig: { key: ImportTab; icon: JSX.Element; color: string; activeColor
     key: 'web',
     color: 'text-green-500',
     activeColor: 'text-green-600 bg-green-50 border-green-500',
-    borderColor: 'border-green-500',
+
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
@@ -32,7 +32,7 @@ const tabConfig: { key: ImportTab; icon: JSX.Element; color: string; activeColor
     key: 'rss',
     color: 'text-orange-500',
     activeColor: 'text-orange-600 bg-orange-50 border-orange-500',
-    borderColor: 'border-orange-500',
+
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 5c7.18 0 13 5.82 13 13M6 11a7 7 0 017 7m-6 0a1 1 0 11-2 0 1 1 0 012 0z" />
@@ -43,7 +43,7 @@ const tabConfig: { key: ImportTab; icon: JSX.Element; color: string; activeColor
     key: 'newsletter',
     color: 'text-purple-500',
     activeColor: 'text-purple-600 bg-purple-50 border-purple-500',
-    borderColor: 'border-purple-500',
+
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
@@ -281,8 +281,6 @@ export default function ImportView() {
     rss: t('import.rssFeeds'),
     newsletter: t('import.newsletter'),
   }
-
-  const getActiveConfig = () => tabConfig.find(c => c.key === activeTab)!
 
   return (
     <>
