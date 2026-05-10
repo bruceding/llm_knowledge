@@ -84,6 +84,7 @@
     "imapUsername": "Username",
     "imapPassword": "Password",
     "imapPasswordHint": "Gmail: use app-specific password. QQ/163: use authorization code.",
+    "imapPasswordLink": "How to generate an App Password →",
     "imapFolder": "Folder Name",
     "imapFolderHint": "Create this folder in your email and set up rules to route newsletters there. Click Browse to pick from server.",
     "browseFolders": "Browse",

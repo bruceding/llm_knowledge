@@ -84,6 +84,7 @@
     "imapUsername": "用户名",
     "imapPassword": "密码",
     "imapPasswordHint": "Gmail 请使用应用专用密码，QQ/163 请使用授权码。",
+    "imapPasswordLink": "如何生成应用专用密码 →",
     "imapFolder": "文件夹名",
     "imapFolderHint": "在邮箱中创建此文件夹，并设置规则将 Newsletter 自动归类到该文件夹。点击浏览从服务器选取。",
     "browseFolders": "浏览",

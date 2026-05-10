@@ -327,7 +327,13 @@ export default function SettingsPage() {
               placeholder={imapConfigured ? '••••••••' : t('settings.imapPassword')}
               className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
-            <p className="text-xs text-gray-500 mt-1">{t('settings.imapPasswordHint')}</p>
+            <div className="flex items-start gap-1.5 mt-1.5 px-2.5 py-2 bg-amber-50 border border-amber-200 rounded-md">
+              <span className="text-amber-500 text-sm leading-none mt-0.5">⚠</span>
+              <p className="text-xs text-amber-700">
+                {t('settings.imapPasswordHint')}{' '}
+                <a href="https://support.google.com/accounts/answer/185833" target="_blank" rel="noopener noreferrer" className="underline hover:text-amber-900">{t('settings.imapPasswordLink')}</a>
+              </p>
+            </div>
           </div>
 
           <div>
