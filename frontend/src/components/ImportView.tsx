@@ -3,22 +3,72 @@ import { useTranslation } from 'react-i18next'
 import { uploadPDF, uploadPDFUrl, clipWeb, addRSSFeed, listRSSFeeds, deleteRSSFeed, syncRSSFeed, getIMAPConfig, syncNewsletter } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
 
+type ImportTab = 'pdf' | 'web' | 'rss' | 'newsletter'
+
+const tabConfig: { key: ImportTab; icon: JSX.Element; color: string; activeColor: string; borderColor: string }[] = [
+  {
+    key: 'pdf',
+    color: 'text-blue-500',
+    activeColor: 'text-blue-600 bg-blue-50 border-blue-500',
+    borderColor: 'border-blue-500',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+      </svg>
+    ),
+  },
+  {
+    key: 'web',
+    color: 'text-green-500',
+    activeColor: 'text-green-600 bg-green-50 border-green-500',
+    borderColor: 'border-green-500',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+      </svg>
+    ),
+  },
+  {
+    key: 'rss',
+    color: 'text-orange-500',
+    activeColor: 'text-orange-600 bg-orange-50 border-orange-500',
+    borderColor: 'border-orange-500',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 5c7.18 0 13 5.82 13 13M6 11a7 7 0 017 7m-6 0a1 1 0 11-2 0 1 1 0 012 0z" />
+      </svg>
+    ),
+  },
+  {
+    key: 'newsletter',
+    color: 'text-purple-500',
+    activeColor: 'text-purple-600 bg-purple-50 border-purple-500',
+    borderColor: 'border-purple-500',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+      </svg>
+    ),
+  },
+]
+
 export default function ImportView() {
   const { t } = useTranslation()
   const { confirm, dialog: confirmDialog } = useConfirm()
+  const [activeTab, setActiveTab] = useState<ImportTab>('pdf')
+
+  // PDF state
   const [dragActive, setDragActive] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<string | null>(null)
   const [uploadResult, setUploadResult] = useState<{ id: number; path: string; message: string; pages: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
-
-  // URL clipping state
-  const [urlInput, setUrlInput] = useState('')
-  const [clippingUrl, setClippingUrl] = useState(false)
-
-  // PDF URL state
   const [pdfUrl, setPdfUrl] = useState('')
   const [uploadingFromUrl, setUploadingFromUrl] = useState(false)
+
+  // Web clipping state
+  const [urlInput, setUrlInput] = useState('')
+  const [clippingUrl, setClippingUrl] = useState(false)
 
   // RSS state
   const [rssUrl, setRssUrl] = useState('')
@@ -35,7 +85,6 @@ export default function ImportView() {
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Load RSS feeds on mount
   useEffect(() => {
     loadRSSFeeds()
     loadNewsletterConfig()
@@ -65,24 +114,16 @@ export default function ImportView() {
   const handleSyncNewsletter = async () => {
     setSyncingNewsletter(true)
     setError(null)
-
     try {
       const result = await syncNewsletter()
       if (result.error) {
         setError(result.error)
-      } else if (result.newArticles > 0) {
-        setUploadResult({
-          id: 0,
-          path: '',
-          message: result.message,
-          pages: result.newArticles,
-        })
       } else {
         setUploadResult({
           id: 0,
           path: '',
           message: result.message,
-          pages: 0,
+          pages: result.newArticles,
         })
       }
       await loadNewsletterConfig()
@@ -93,7 +134,6 @@ export default function ImportView() {
     }
   }
 
-  // Handle drag events
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
@@ -104,12 +144,10 @@ export default function ImportView() {
     }
   }, [])
 
-  // Handle drop
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
     setDragActive(false)
-
     const files = e.dataTransfer.files
     if (files && files.length > 0) {
       const file = files[0]
@@ -121,13 +159,11 @@ export default function ImportView() {
     }
   }, [])
 
-  // Handle file upload
   const handleUpload = async (file: File) => {
     setUploading(true)
     setError(null)
     setUploadResult(null)
     setUploadProgress(`Uploading ${file.name}...`)
-
     try {
       const result = await uploadPDF(file)
       setUploadResult(result)
@@ -140,24 +176,19 @@ export default function ImportView() {
     }
   }
 
-  // Handle file input change
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (files && files.length > 0) {
-      const file = files[0]
-      handleUpload(file)
+      handleUpload(files[0])
     }
   }
 
-  // Handle PDF upload from URL
   const handleUploadFromUrl = async () => {
     if (!pdfUrl.trim()) return
-
     setUploadingFromUrl(true)
     setError(null)
     setUploadResult(null)
     setUploadProgress(`Downloading PDF from URL...`)
-
     try {
       const result = await uploadPDFUrl(pdfUrl)
       setUploadResult(result)
@@ -171,21 +202,18 @@ export default function ImportView() {
     }
   }
 
-  // Handle URL clipping
   const handleClipUrl = async () => {
     if (!urlInput.trim()) return
-
     setClippingUrl(true)
     setError(null)
     setUploadResult(null)
-
     try {
       const result = await clipWeb(urlInput.trim())
       setUploadResult({
         id: result.id,
         path: result.path,
         message: result.message,
-        pages: result.images, // Reuse pages field for image count
+        pages: result.images,
       })
       setUrlInput('')
     } catch (err) {
@@ -195,15 +223,11 @@ export default function ImportView() {
     }
   }
 
-  // Handle adding RSS feed
   const handleAddRss = async () => {
     if (!rssUrl.trim()) return
-
     setAddingRss(true)
     setError(null)
-
     try {
-      // Backend will parse RSS feed title if name is empty
       await addRSSFeed(rssName.trim(), rssUrl.trim(), rssAutoSync)
       setRssUrl('')
       setRssName('')
@@ -216,11 +240,9 @@ export default function ImportView() {
     }
   }
 
-  // Handle syncing RSS feed
   const handleSyncFeed = async (feedId: number) => {
     setSyncingFeedId(feedId)
     setError(null)
-
     try {
       const result = await syncRSSFeed(feedId)
       if (result.newArticles > 0) {
@@ -239,7 +261,6 @@ export default function ImportView() {
     }
   }
 
-  // Handle deleting RSS feed
   const handleDeleteFeed = async (feedId: number) => {
     const confirmed = await confirm({
       title: t('common.delete'),
@@ -254,12 +275,22 @@ export default function ImportView() {
     }
   }
 
+  const tabLabel: Record<ImportTab, string> = {
+    pdf: t('import.uploadPdf'),
+    web: t('import.webClipping'),
+    rss: t('import.rssFeeds'),
+    newsletter: t('import.newsletter'),
+  }
+
+  const getActiveConfig = () => tabConfig.find(c => c.key === activeTab)!
+
   return (
     <>
     <div className="p-6">
-      <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('import.title')}</h2>
-      <p className="text-gray-600 mb-6">{t('import.description')}</p>
+      <h2 className="text-2xl font-bold text-gray-800 mb-2">{t('import.title')}</h2>
+      <p className="text-gray-500 mb-6">{t('import.description')}</p>
 
+      {/* Global notifications */}
       {error && (
         <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 flex items-center justify-between">
           <span>{error}</span>
@@ -270,106 +301,111 @@ export default function ImportView() {
           </button>
         </div>
       )}
-
       {uploadResult && (
         <div className="mb-4 bg-green-50 border border-green-200 rounded-lg p-4 text-green-700">
           <div className="font-medium">{uploadResult.message}</div>
           <div className="text-sm mt-1">
             Document ID: {uploadResult.id}, Pages: {uploadResult.pages}
           </div>
-          <a
-            href={`/documents/${uploadResult.id}`}
-            className="inline-block mt-2 text-green-800 underline hover:text-green-900"
-          >
-            {t('import.viewDocument')}
-          </a>
+          {uploadResult.id > 0 && (
+            <a
+              href={`/documents/${uploadResult.id}`}
+              className="inline-block mt-2 text-green-800 underline hover:text-green-900"
+            >
+              {t('import.viewDocument')}
+            </a>
+          )}
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* PDF Upload */}
-        <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-700">{t('import.uploadPdf')}</h3>
-          <div
-            className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
-              dragActive ? 'border-blue-500 bg-blue-50' : 'border-gray-300'
+      {/* Tab bar */}
+      <div className="flex gap-1 border-b border-gray-200 mb-6">
+        {tabConfig.map(({ key, icon, color, activeColor }) => (
+          <button
+            key={key}
+            onClick={() => setActiveTab(key)}
+            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors rounded-t-lg ${
+              activeTab === key
+                ? `${activeColor} border-b-2`
+                : `text-gray-500 border-transparent hover:text-gray-700 hover:bg-gray-50`
             }`}
-            onDragEnter={handleDrag}
-            onDragLeave={handleDrag}
-            onDragOver={handleDrag}
-            onDrop={handleDrop}
           >
-            {uploading ? (
-              <div className="flex flex-col items-center">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4"></div>
-                <p className="text-gray-600">{uploadProgress}</p>
-              </div>
-            ) : (
-              <>
-                <div className="text-gray-400 mb-4">
-                  <svg
-                    className="mx-auto h-12 w-12"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={1.5}
-                      d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
-                    />
-                  </svg>
-                </div>
-                <p className="text-gray-600 mb-2">{t('import.dragDropHint')}</p>
-                <p className="text-sm text-gray-400">{t('import.pdfSizeLimit')}</p>
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="mt-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-                >
-                  {t('import.selectPdf')}
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".pdf"
-                  onChange={handleFileChange}
-                  className="hidden"
-                />
-              </>
-            )}
-          </div>
+            <span className={activeTab === key ? '' : color}>{icon}</span>
+            {tabLabel[key]}
+          </button>
+        ))}
+      </div>
 
-          {/* PDF URL input */}
-          <div className="border border-gray-200 rounded-lg p-4">
-            <p className="text-gray-600 mb-3 text-sm">{t('import.pdfUrlHint')}</p>
-            <div className="flex gap-2">
-              <input
-                type="url"
-                value={pdfUrl}
-                onChange={(e) => setPdfUrl(e.target.value)}
-                placeholder="https://arxiv.org/pdf/xxxx.pdf"
-                disabled={uploadingFromUrl}
-                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
-              />
-              <button
-                onClick={handleUploadFromUrl}
-                disabled={uploadingFromUrl || !pdfUrl.trim()}
-                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500"
-              >
-                {uploadingFromUrl ? t('import.uploading') : t('import.importFromUrl')}
-              </button>
+      {/* Tab content */}
+      <div className="max-w-2xl">
+        {activeTab === 'pdf' && (
+          <div className="space-y-4">
+            <div
+              className={`border-2 border-dashed rounded-xl p-12 text-center transition-colors ${
+                dragActive ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-gray-400'
+              }`}
+              onDragEnter={handleDrag}
+              onDragLeave={handleDrag}
+              onDragOver={handleDrag}
+              onDrop={handleDrop}
+            >
+              {uploading ? (
+                <div className="flex flex-col items-center">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4"></div>
+                  <p className="text-gray-600">{uploadProgress}</p>
+                </div>
+              ) : (
+                <>
+                  <div className="text-gray-400 mb-4">
+                    <svg className="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                    </svg>
+                  </div>
+                  <p className="text-gray-600 mb-2">{t('import.dragDropHint')}</p>
+                  <p className="text-sm text-gray-400">{t('import.pdfSizeLimit')}</p>
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="mt-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                  >
+                    {t('import.selectPdf')}
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".pdf"
+                    onChange={handleFileChange}
+                    className="hidden"
+                  />
+                </>
+              )}
+            </div>
+
+            <div className="border border-gray-200 rounded-xl p-5">
+              <p className="text-gray-600 mb-3 text-sm">{t('import.pdfUrlHint')}</p>
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={pdfUrl}
+                  onChange={(e) => setPdfUrl(e.target.value)}
+                  placeholder="https://arxiv.org/pdf/xxxx.pdf"
+                  disabled={uploadingFromUrl}
+                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                />
+                <button
+                  onClick={handleUploadFromUrl}
+                  disabled={uploadingFromUrl || !pdfUrl.trim()}
+                  className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500"
+                >
+                  {uploadingFromUrl ? t('import.uploading') : t('import.importFromUrl')}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
-        {/* Web Clipping */}
-        <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-700">{t('import.webClipping')}</h3>
-          <div className="border border-gray-200 rounded-lg p-6">
-            <p className="text-gray-600 mb-4 text-sm">
-              {t('import.webClipHint')}
-            </p>
+        {activeTab === 'web' && (
+          <div className="border border-gray-200 rounded-xl p-6">
+            <p className="text-gray-600 mb-4 text-sm">{t('import.webClipHint')}</p>
             <div className="flex gap-2">
               <input
                 type="url"
@@ -377,7 +413,7 @@ export default function ImportView() {
                 onChange={(e) => setUrlInput(e.target.value)}
                 placeholder="https://example.com/article"
                 disabled={clippingUrl}
-                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 disabled:bg-gray-100"
               />
               <button
                 onClick={handleClipUrl}
@@ -388,69 +424,69 @@ export default function ImportView() {
               </button>
             </div>
           </div>
+        )}
 
-          {/* RSS Feeds */}
-          <h3 className="text-lg font-semibold text-gray-700 mt-6">{t('import.rssFeeds')}</h3>
-          <div className="border border-gray-200 rounded-lg p-6">
-            <p className="text-gray-600 mb-4 text-sm">
-              {t('import.rssHint')}
-            </p>
-            <div className="space-y-3">
-              <input
-                type="text"
-                value={rssName}
-                onChange={(e) => setRssName(e.target.value)}
-                placeholder="Feed name (optional)"
-                disabled={addingRss}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
-              />
-              <input
-                type="url"
-                value={rssUrl}
-                onChange={(e) => setRssUrl(e.target.value)}
-                placeholder="https://example.com/rss"
-                disabled={addingRss}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
-              />
-              <div className="flex items-center gap-2">
+        {activeTab === 'rss' && (
+          <div className="space-y-4">
+            <div className="border border-gray-200 rounded-xl p-6">
+              <p className="text-gray-600 mb-4 text-sm">{t('import.rssHint')}</p>
+              <div className="space-y-3">
                 <input
-                  type="checkbox"
-                  id="autoSync"
-                  checked={rssAutoSync}
-                  onChange={(e) => setRssAutoSync(e.target.checked)}
+                  type="text"
+                  value={rssName}
+                  onChange={(e) => setRssName(e.target.value)}
+                  placeholder="Feed name (optional)"
                   disabled={addingRss}
-                  className="w-4 h-4"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:bg-gray-100"
                 />
-                <label htmlFor="autoSync" className="text-sm text-gray-600">
-                  Auto sync (sync automatically in background)
-                </label>
+                <input
+                  type="url"
+                  value={rssUrl}
+                  onChange={(e) => setRssUrl(e.target.value)}
+                  placeholder="https://example.com/rss"
+                  disabled={addingRss}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:bg-gray-100"
+                />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="autoSync"
+                    checked={rssAutoSync}
+                    onChange={(e) => setRssAutoSync(e.target.checked)}
+                    disabled={addingRss}
+                    className="w-4 h-4"
+                  />
+                  <label htmlFor="autoSync" className="text-sm text-gray-600">
+                    Auto sync (sync automatically in background)
+                  </label>
+                </div>
+                <button
+                  onClick={handleAddRss}
+                  disabled={addingRss || !rssUrl.trim()}
+                  className="w-full px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500"
+                >
+                  {addingRss ? t('import.adding') : t('import.addFeed')}
+                </button>
               </div>
-              <button
-                onClick={handleAddRss}
-                disabled={addingRss || !rssUrl.trim()}
-                className="w-full px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500"
-              >
-                {addingRss ? t('import.adding') : t('import.addFeed')}
-              </button>
             </div>
 
             {rssFeeds.length > 0 && (
-              <div className="mt-6 space-y-2">
-                <h4 className="text-sm font-medium text-gray-700">{t('import.activeFeeds')}</h4>
+              <div className="border border-gray-200 rounded-xl p-6">
+                <h4 className="text-sm font-medium text-gray-700 mb-3">{t('import.activeFeeds')}</h4>
                 <ul className="space-y-2">
                   {rssFeeds.map((feed) => (
                     <li
                       key={feed.id}
-                      className="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg"
+                      className="flex items-center justify-between px-3 py-2.5 bg-gray-50 rounded-lg"
                     >
-                      <div>
+                      <div className="min-w-0 flex-1">
                         <div className="text-sm font-medium text-gray-800">{feed.name}</div>
-                        <div className="text-xs text-gray-500 truncate max-w-xs">{feed.url}</div>
+                        <div className="text-xs text-gray-500 truncate">{feed.url}</div>
                         <div className="text-xs text-gray-400">
-                          {feed.articleCount} articles • Last sync: {feed.lastSyncAt ? new Date(feed.lastSyncAt).toLocaleDateString() : 'Never'}
+                          {feed.articleCount} articles · Last sync: {feed.lastSyncAt ? new Date(feed.lastSyncAt).toLocaleDateString() : 'Never'}
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 ml-3 shrink-0">
                         <button
                           onClick={() => handleSyncFeed(feed.id)}
                           disabled={syncingFeedId === feed.id}
@@ -481,42 +517,44 @@ export default function ImportView() {
               </div>
             )}
           </div>
+        )}
 
-          {/* Newsletter */}
-          <h3 className="text-lg font-semibold text-gray-700 mt-6">{t('import.newsletter')}</h3>
-          <div className="border border-gray-200 rounded-lg p-6">
+        {activeTab === 'newsletter' && (
+          <div className="border border-gray-200 rounded-xl p-6">
             <p className="text-gray-600 mb-4 text-sm">{t('import.newsletterHint')}</p>
-
             {!newsletterConfigured ? (
-              <div className="text-center py-4">
+              <div className="text-center py-6">
+                <div className="text-gray-400 mb-3">
+                  <svg className="mx-auto h-10 w-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                </div>
                 <p className="text-gray-500 mb-3 text-sm">{t('import.newsletterNotConfigured')}</p>
                 <a
                   href="/settings"
-                  className="inline-block px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm"
+                  className="inline-block px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors text-sm"
                 >
                   {t('import.goToSettings')}
                 </a>
               </div>
             ) : (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm text-gray-600">
-                    {t('import.lastSync')}: {newsletterLastSync && newsletterLastSync !== '0001-01-01T00:00:00Z'
-                      ? new Date(newsletterLastSync).toLocaleString()
-                      : t('import.never')}
-                  </div>
-                  <button
-                    onClick={handleSyncNewsletter}
-                    disabled={syncingNewsletter}
-                    className="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500 text-sm"
-                  >
-                    {syncingNewsletter ? t('import.syncing') : t('import.syncNewsletter')}
-                  </button>
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-gray-600">
+                  {t('import.lastSync')}: {newsletterLastSync && newsletterLastSync !== '0001-01-01T00:00:00Z'
+                    ? new Date(newsletterLastSync).toLocaleString()
+                    : t('import.never')}
                 </div>
+                <button
+                  onClick={handleSyncNewsletter}
+                  disabled={syncingNewsletter}
+                  className="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500 text-sm"
+                >
+                  {syncingNewsletter ? t('import.syncing') : t('import.syncNewsletter')}
+                </button>
               </div>
             )}
           </div>
-        </div>
+        )}
       </div>
     </div>
     {confirmDialog}
