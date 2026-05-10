@@ -159,8 +159,8 @@ export default function DocDetail() {
         }
       }
 
-      // Load raw content for RSS/web documents (markdown files)
-      if (doc.sourceType === 'rss' || doc.sourceType === 'web') {
+      // Load raw content for RSS/web/newsletter documents (markdown files)
+      if (doc.sourceType === 'rss' || doc.sourceType === 'web' || doc.sourceType === 'newsletter') {
         if (doc.rawPath) {
           // RSS: rawPath is the .md file directly
           // Web: rawPath is directory, need to load paper.md
@@ -183,7 +183,7 @@ export default function DocDetail() {
         }
 
         // Check markdown translation status for Web/RSS documents
-        if (doc.sourceType === 'rss' || doc.sourceType === 'web') {
+        if (doc.sourceType === 'rss' || doc.sourceType === 'web' || doc.sourceType === 'newsletter') {
           try {
             const mdStatus = await checkMarkdownTranslationStatus(doc.id)
             setMarkdownTranslationStatus(mdStatus)
