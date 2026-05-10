@@ -362,19 +362,23 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 	defer qs.SSEDisconnect()
 
 	// Capture streaming content BEFORE subscribing to avoid duplication.
+	// Initialize StreamProcessor with existing content for SSE reconnect.
+	sp := claude.NewStreamProcessor()
 	if content := qs.StreamingContent(); len(content) > 0 {
 		writeSSE(echo.Map{
 			"type":           "full",
 			"conversationId": convID,
 			"content":        content,
 		})
+		sp.MarkAsStreamedWithContent(content)
 	}
 
 	// Subscribe to session events AFTER capturing content
 	eventCh := qs.Subscribe()
 	defer qs.Unsubscribe(eventCh)
 
-	// Stream events using select to detect client disconnect promptly
+	// Stream events using select to detect client disconnect promptly.
+	// StreamProcessor converts raw events into clean SSE events for frontend.
 	for {
 		select {
 		case evt, ok := <-eventCh:
@@ -382,31 +386,85 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 				// Channel closed (session terminated)
 				return nil
 			}
-			// Skip system events (init, hooks, etc.) — they are process-internal
-			// metadata and should not be sent to SSE subscribers.
-			if evt.Type == "system" {
+
+			sseEvent := sp.Process(evt)
+
+			// Flush pending tool events after each Process call
+			for sp.HasPendingEvents() {
+				pending := sp.FlushPending()
+				if pending.Type != "" {
+					sseData, _ := json.Marshal(echo.Map{
+						"type":           pending.Type,
+						"conversationId": convID,
+						"text":           pending.Delta,
+						"content":        pending.Content,
+						"toolId":         pending.ToolID,
+						"toolName":       pending.ToolName,
+						"toolInput":      pending.ToolInput,
+					})
+					if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", sseData); err != nil {
+						return nil
+					}
+					flusher.Flush()
+				}
+			}
+
+			// Skip empty events (filtered system, de-duplicated assistant)
+			if sseEvent.Type == "" {
 				continue
 			}
 
-			// Send event to SSE; check write error to detect client disconnect
-			data, _ := json.Marshal(evt)
-			if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", data); err != nil {
-				return nil
-			}
-			flusher.Flush()
-
-			// Send [DONE] after result/error to give frontend a clear turn-end signal.
-			// The SSE connection stays open for subsequent turns.
-			if evt.Type == "result" || (evt.Type == "error" && evt.Subtype != "error_during_execution") {
-				if _, err := fmt.Fprintf(c.Response(), "data: [DONE]\n\n"); err != nil {
+			switch sseEvent.Type {
+			case "delta":
+				writeSSE(echo.Map{
+					"type":           "delta",
+					"conversationId": convID,
+					"text":           sseEvent.Delta,
+				})
+			case "full":
+				writeSSE(echo.Map{
+					"type":           "full",
+					"conversationId": convID,
+					"content":        sseEvent.Content,
+				})
+			case "tool_start":
+				writeSSE(echo.Map{
+					"type":           "tool_start",
+					"conversationId": convID,
+					"toolId":         sseEvent.ToolID,
+					"toolName":       sseEvent.ToolName,
+					"toolInput":      sseEvent.ToolInput,
+				})
+			case "tool_input":
+				writeSSE(echo.Map{
+					"type":           "tool_input",
+					"conversationId": convID,
+					"toolId":         sseEvent.ToolID,
+					"toolName":       sseEvent.ToolName,
+					"toolInput":      sseEvent.ToolInput,
+				})
+			case "tool_end":
+				writeSSE(echo.Map{
+					"type":           "tool_end",
+					"conversationId": convID,
+					"toolId":         sseEvent.ToolID,
+				})
+			case "done":
+				writeSSE(echo.Map{
+					"type":           "done",
+					"conversationId": convID,
+				})
+				sp.Reset() // Prepare for next turn
+			case "error":
+				writeSSE(echo.Map{
+					"type":           "error",
+					"conversationId": convID,
+					"error":          sseEvent.Content,
+				})
+				// Fatal errors (non interrupt) close SSE connection
+				if evt.Subtype != "error_during_execution" {
 					return nil
 				}
-				flusher.Flush()
-			}
-
-			// Stop on error (but not error_during_execution which is from interrupt)
-			if evt.Type == "error" && evt.Subtype != "error_during_execution" {
-				return nil
 			}
 
 		case <-c.Request().Context().Done():

@@ -3,57 +3,26 @@ import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { createDocNote, getAuthHeaders } from '../api'
-import type { ContentBlock } from '../types'
 
-// Format a tool_use content block into a human-readable description
-function formatToolBlock(block: ContentBlock): string {
-  const name = block.name || 'Tool'
+// Format tool name + JSON input string into a human-readable description
+function formatToolName(name: string, inputJson: string): string {
   try {
+    const input = JSON.parse(inputJson) as Record<string, string>
     switch (name) {
       case 'Read':
-        return `Reading ${(block.input as Record<string, string>)?.file_path || (block.input as Record<string, string>)?.path || 'file'}`
+        return `Reading ${input.file_path || input.path || 'file'}`
       case 'Glob':
-        return `Searching ${(block.input as Record<string, string>)?.pattern || 'files'}`
+        return `Searching ${input.pattern || 'files'}`
       case 'Grep':
-        return `Searching for "${(block.input as Record<string, string>)?.pattern || ''}" in ${(block.input as Record<string, string>)?.path || 'files'}`
+        return `Searching for "${input.pattern || ''}" in ${input.path || 'files'}`
       case 'LS':
-        return `Listing ${(block.input as Record<string, string>)?.path || 'directory'}`
+        return `Listing ${input.path || 'directory'}`
       default:
         return `Using ${name}`
     }
   } catch {
-    return `Using ${name}`
+    return inputJson ? `Using ${name}` : name
   }
-}
-
-// Extract display info from message content blocks (handles different model outputs)
-function extractFromContentBlocks(blocks: ContentBlock[]): {
-  text: string
-  hasThinking: boolean
-  hasToolUse: boolean
-  toolDesc?: string
-} {
-  let text = ''
-  let hasThinking = false
-  let hasToolUse = false
-  let toolDesc: string | undefined
-
-  for (const block of blocks) {
-    switch (block.type) {
-      case 'text':
-        if (block.text) text += block.text
-        break
-      case 'thinking':
-        hasThinking = true
-        break
-      case 'tool_use':
-        hasToolUse = true
-        toolDesc = formatToolBlock(block)
-        break
-    }
-  }
-
-  return { text, hasThinking, hasToolUse, toolDesc }
 }
 
 interface DocumentChatPanelProps {
@@ -132,61 +101,91 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     if (event.type === 'session') {
       setSessionId(event.sessionId as string)
       setConnecting(false)
-    } else if (event.type === 'assistant') {
-      const msg = event.message as Record<string, unknown> | undefined
-      const blocks = typeof msg === 'object' ? (msg?.content as ContentBlock[]) : undefined
-      if (blocks && blocks.length > 0) {
-        const { text, hasThinking, hasToolUse, toolDesc } = extractFromContentBlocks(blocks)
-        setMessages(prev => {
-          const lastMsg = prev[prev.length - 1]
-          if (lastMsg?.role === 'assistant' && lastMsg.isStreaming) {
-            return prev.map((m, i) =>
-              i === prev.length - 1
-                ? { ...m, content: m.content + text, isThinking: hasThinking && !text, isToolUse: hasToolUse && !text, toolDesc }
-                : m
-            )
-          } else {
-            return [...prev, {
-              id: Date.now().toString(),
-              role: 'assistant',
-              content: text,
-              timestamp: new Date(),
-              isStreaming: true,
-              isThinking: hasThinking && !text,
-              isToolUse: hasToolUse && !text,
-              toolDesc,
-            }]
-          }
-        })
-      } else if (event.content) {
-        setMessages(prev => {
-          const lastMsg = prev[prev.length - 1]
-          if (lastMsg?.role === 'assistant' && lastMsg.isStreaming) {
-            return prev.map((m, i) =>
-              i === prev.length - 1
-                ? { ...m, content: m.content + (event.content as string) }
-                : m
-            )
-          } else {
-            return [...prev, {
-              id: Date.now().toString(),
-              role: 'assistant',
-              content: (event.content as string) || '',
-              timestamp: new Date(),
-              isStreaming: true
-            }]
-          }
-        })
-      }
-    } else if (event.type === 'result') {
+    } else if (event.type === 'delta') {
+      setMessages(prev => {
+        const lastMsg = prev[prev.length - 1]
+        if (lastMsg?.role === 'assistant' && lastMsg.isStreaming) {
+          return prev.map((m, i) =>
+            i === prev.length - 1
+              ? { ...m, content: m.content + (event.text as string || ''), isThinking: false }
+              : m
+          )
+        } else {
+          return [...prev, {
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: (event.text as string) || '',
+            timestamp: new Date(),
+            isStreaming: true,
+          }]
+        }
+      })
+    } else if (event.type === 'full') {
+      setMessages(prev => {
+        const lastMsg = prev[prev.length - 1]
+        if (lastMsg?.role === 'assistant' && lastMsg.isStreaming) {
+          return prev.map((m, i) =>
+            i === prev.length - 1
+              ? { ...m, content: (event.content as string) || '', isThinking: false, isToolUse: false }
+              : m
+          )
+        } else {
+          return [...prev, {
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: (event.content as string) || '',
+            timestamp: new Date(),
+            isStreaming: true,
+          }]
+        }
+      })
+    } else if (event.type === 'tool_start') {
+      const toolDesc = formatToolName((event.toolName as string) || 'Tool', (event.toolInput as string) || '')
+      setMessages(prev => {
+        const lastMsg = prev[prev.length - 1]
+        if (lastMsg?.role === 'assistant' && lastMsg.isStreaming) {
+          return prev.map((m, i) =>
+            i === prev.length - 1
+              ? { ...m, isToolUse: true, toolDesc }
+              : m
+          )
+        }
+        return prev
+      })
+    } else if (event.type === 'tool_input') {
+      const toolDesc = formatToolName((event.toolName as string) || 'Tool', (event.toolInput as string) || '')
+      setMessages(prev => {
+        const lastMsg = prev[prev.length - 1]
+        if (lastMsg?.role === 'assistant' && lastMsg.isStreaming && lastMsg.isToolUse) {
+          return prev.map((m, i) =>
+            i === prev.length - 1
+              ? { ...m, toolDesc }
+              : m
+          )
+        }
+        return prev
+      })
+    } else if (event.type === 'tool_end') {
+      setMessages(prev => {
+        const lastMsg = prev[prev.length - 1]
+        if (lastMsg?.role === 'assistant' && lastMsg.isStreaming) {
+          return prev.map((m, i) =>
+            i === prev.length - 1
+              ? { ...m, isToolUse: false, toolDesc: undefined }
+              : m
+          )
+        }
+        return prev
+      })
+    } else if (event.type === 'done') {
       setMessages(prev => prev.map(m =>
-        m.isStreaming ? { ...m, isStreaming: false, isThinking: false } : m
+        m.isStreaming ? { ...m, isStreaming: false, isThinking: false, isToolUse: false, toolDesc: undefined } : m
       ))
       setTimeout(() => inputRef.current?.focus(), 0)
     } else if (event.type === 'error') {
       setError((event.error as string) || 'An error occurred')
       setMessages(prev => prev.map(m =>
-        m.isStreaming ? { ...m, isStreaming: false, isThinking: false } : m
+        m.isStreaming ? { ...m, content: m.content || '[已停止]', isStreaming: false, isThinking: false, isToolUse: false, toolDesc: undefined } : m
       ))
     }
   }, [])
@@ -212,13 +211,6 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           const payload = line.slice(6)
-          if (payload === '[DONE]') {
-            // Backend sent explicit turn-end signal
-            setMessages(prev => prev.map(m =>
-              m.isStreaming ? { ...m, isStreaming: false, isThinking: false } : m
-            ))
-            continue
-          }
           try {
             const data = JSON.parse(payload)
             handleSSEEvent(data)

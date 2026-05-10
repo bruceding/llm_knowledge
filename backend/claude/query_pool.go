@@ -20,6 +20,7 @@ type QuerySession struct {
 	turnCh           chan StreamEvent // active turn's event channel (nil when idle)
 	currentMessageID uint             // user message ID for current turn (for saving assistant reply)
 	currentContent   strings.Builder  // accumulated assistant content for current turn
+	hasStreamDeltas  bool             // true if stream_event text deltas received this turn (prevents double accumulation)
 	mu               sync.Mutex       // protects turnCh, currentMessageID, currentContent, streamChs
 	streamChs        []chan StreamEvent
 	lastAsk          time.Time // last time a question was asked
@@ -42,40 +43,49 @@ func newQuerySession(session *InteractiveSession, convID uint) *QuerySession {
 func (qs *QuerySession) routeEvents() {
 	for evt := range qs.session.Events() {
 		qs.mu.Lock()
-		// Accumulate assistant content
-		if evt.Type == "assistant" {
+		// Accumulate assistant content for auto-save (skip if deltas already accumulated)
+		if evt.Type == "assistant" && !qs.hasStreamDeltas {
 			qs.currentContent.WriteString(evt.Content)
 		}
 
-		// On result/error, add message save info and persist assistant reply
+		// Accumulate stream_event text deltas for auto-save (covers streaming models)
+		if evt.Type == "stream_event" && evt.Event != nil {
+			delta := ExtractTextDelta(evt.Event)
+			if delta != "" {
+				qs.hasStreamDeltas = true
+				qs.currentContent.WriteString(delta)
+			}
+		}
+
+		// On result/error, add message save info and prepare auto-save data
+		var autoSaveMsg *db.ConversationMessage
+		var autoSaveConvID uint
 		if evt.Type == "result" || evt.Type == "error" {
 			evt.ResultMessageID = qs.currentMessageID
 			evt.ResultFullContent = qs.currentContent.String()
 
-			// Auto-save assistant message to DB so it persists even if SSE disconnects
+			// Prepare auto-save data (DB write happens outside lock)
 			if evt.Type == "result" && evt.Subtype != "error_during_execution" &&
 				qs.currentMessageID > 0 && qs.currentContent.Len() > 0 {
-				assistantMsg := db.ConversationMessage{
+				autoSaveMsg = &db.ConversationMessage{
 					ConversationID: qs.convID,
 					Role:           "assistant",
 					Content:        qs.currentContent.String(),
 					Images:         "[]",
 					CreatedAt:      time.Now(),
 				}
-				if err := db.DB.Create(&assistantMsg).Error; err != nil {
-					log.Printf("[query-pool] Failed to auto-save assistant message: %v", err)
-				} else {
-					log.Printf("[query-pool] Auto-saved assistant message for conversation %d", qs.convID)
-					db.DB.Model(&db.Conversation{}).Where("id = ?", qs.convID).Update("updated_at", time.Now())
-				}
+				autoSaveConvID = qs.convID
 			}
 		}
 
-		// Route to active turn (non-blocking to avoid deadlock when no reader)
+		// Route to active turn (non-blocking)
 		if qs.turnCh != nil {
 			select {
 			case qs.turnCh <- evt:
 			default:
+				if evt.Type == "result" || evt.Type == "error" {
+					log.Printf("[query-pool] WARNING: critical %s event dropped for full turnCh on conversation %d", evt.Type, qs.convID)
+				}
 			}
 			if evt.Type == "result" || evt.Type == "error" {
 				close(qs.turnCh)
@@ -87,28 +97,34 @@ func (qs *QuerySession) routeEvents() {
 		if evt.Type == "result" || evt.Type == "error" {
 			qs.currentMessageID = 0
 			qs.currentContent.Reset()
+			qs.hasStreamDeltas = false
 		}
 
-		// Skip system events (init, hooks, etc.) — they are process-internal
-		// metadata and should not be sent to SSE subscribers.
-		if evt.Type == "system" {
-			qs.mu.Unlock()
-			continue
-		}
-
-		// Fan-out to stream subscribers
+		// Fan-out to stream subscribers — all event types pass through.
+		// StreamProcessor in SSE handlers filters and converts events for frontend.
 		for _, ch := range qs.streamChs {
 			select {
 			case ch <- evt:
 			default:
-				// Skip slow subscriber
+				if evt.Type == "result" || evt.Type == "error" {
+					log.Printf("[query-pool] WARNING: critical %s event dropped for slow subscriber on conversation %d", evt.Type, qs.convID)
+				}
 			}
 		}
 		qs.mu.Unlock()
+
+		// Auto-save to DB outside the lock to avoid blocking event processing
+		if autoSaveMsg != nil {
+			if err := db.DB.Create(autoSaveMsg).Error; err != nil {
+				log.Printf("[query-pool] Failed to auto-save assistant message: %v", err)
+			} else {
+				log.Printf("[query-pool] Auto-saved assistant message for conversation %d", autoSaveConvID)
+				db.DB.Model(&db.Conversation{}).Where("id = ?", autoSaveConvID).Update("updated_at", time.Now())
+			}
+		}
 	}
 
-	// Session event channel closed — clean up all subscriber channels
-	// so Stream handlers can detect session termination
+	// Session event channel closed — clean up subscriber channels
 	qs.mu.Lock()
 	for _, ch := range qs.streamChs {
 		close(ch)

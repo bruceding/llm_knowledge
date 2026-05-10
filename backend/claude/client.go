@@ -16,18 +16,21 @@ type Client struct {
 }
 
 // StreamEvent represents a single event in the streaming response from Claude CLI.
+// This is the internal event type that flows through readEvents/routeEvents.
+// SSE handlers convert it to SSEEvent via StreamProcessor before sending to frontend.
 type StreamEvent struct {
-	Type             string   `json:"type"`                      // system, assistant, tool_use, thinking, result, error
-	Content          string   `json:"content"`                   // Text content of the event (extracted)
-	Subtype          string   `json:"subtype"`                   // subtype for system messages
-	SessionID        string   `json:"session_id,omitempty"`      // Session ID from system events
-	Result           string   `json:"result"`                    // Result text for type "result"
-	Error            string   `json:"error,omitempty"`           // Error message if any
-	ToolName         string   `json:"toolName,omitempty"`        // Tool name for tool_use events
-	ToolInput        string   `json:"toolInput,omitempty"`       // Tool input for tool_use events
-	Message          *Message `json:"message,omitempty"`         // Message for type "assistant"
-	ResultMessageID  uint     `json:"resultMessageId,omitempty"` // User message ID for saving assistant reply (set in result)
-	ResultFullContent string  `json:"resultFullContent,omitempty"` // Accumulated assistant content for saving (set in result)
+	Type             string          `json:"type"`                        // system, assistant, stream_event, result, error
+	Content          string          `json:"content"`                     // Text content of the event (extracted)
+	Subtype          string          `json:"subtype"`                     // subtype for system messages
+	SessionID        string          `json:"session_id,omitempty"`        // Session ID from system events
+	Result           string          `json:"result"`                      // Result text for type "result"
+	Error            string          `json:"error,omitempty"`             // Error message if any
+	ToolName         string          `json:"toolName,omitempty"`          // Tool name for tool_use events
+	ToolInput        string          `json:"toolInput,omitempty"`         // Tool input for tool_use events
+	Message          *Message        `json:"message,omitempty"`           // Message for type "assistant"
+	Event            json.RawMessage `json:"event,omitempty"`             // Raw sub-event payload for stream_event type
+	ResultMessageID  uint            `json:"resultMessageId,omitempty"`   // User message ID for saving assistant reply (set in result)
+	ResultFullContent string         `json:"resultFullContent,omitempty"` // Accumulated assistant content for saving (set in result)
 }
 
 // Message represents the message field in assistant events
@@ -52,6 +55,7 @@ type RawEvent struct {
 	Result  string          `json:"result"`
 	IsError bool            `json:"is_error"`
 	Message json.RawMessage `json:"message"`
+	Event   json.RawMessage `json:"event"`   // stream_event sub-event payload
 }
 
 // Send executes the Claude CLI with streaming JSON output.

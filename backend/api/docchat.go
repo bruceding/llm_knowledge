@@ -57,6 +57,7 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 		session.Close()
 		return c.JSON(http.StatusServiceUnavailable, echo.Map{"error": "too many concurrent connections"})
 	}
+	defer session.SSEDisconnect()
 
 	// Set SSE headers
 	c.Response().Header().Set("Content-Type", "text/event-stream")
@@ -65,8 +66,13 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 
 	flusher, ok := c.Response().Writer.(http.Flusher)
 	if !ok {
-		session.SSEDisconnect()
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "streaming not supported"})
+	}
+
+	writeSSE := func(data map[string]interface{}) {
+		jsonData, _ := json.Marshal(data)
+		fmt.Fprintf(c.Response(), "data: %s\n\n", jsonData)
+		flusher.Flush()
 	}
 
 	// Subscribe to session events (fan-out mechanism)
@@ -79,53 +85,11 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 		"sessionId": session.SessionID,
 	})
 	if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", sessionData); err != nil {
-		session.SSEDisconnect()
 		return nil
 	}
 	flusher.Flush()
 
-	ctx := c.Request().Context()
-	for {
-		select {
-		case <-ctx.Done():
-			session.SSEDisconnect()
-			return nil
-		case evt, ok := <-eventCh:
-			if !ok {
-				session.SSEDisconnect()
-				return nil
-			}
-
-			// Skip system events (init, hooks, etc.) — they are process-internal
-			// metadata and should not be sent to SSE subscribers.
-			if evt.Type == "system" {
-				continue
-			}
-
-			data, _ := json.Marshal(evt)
-			if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", data); err != nil {
-				session.SSEDisconnect()
-				return nil
-			}
-			flusher.Flush()
-
-			// Send [DONE] after result/error to give frontend a clear turn-end signal.
-			// The SSE connection stays open for subsequent turns.
-			if evt.Type == "result" || (evt.Type == "error" && evt.Subtype != "error_during_execution") {
-				if _, err := fmt.Fprintf(c.Response(), "data: [DONE]\n\n"); err != nil {
-					session.SSEDisconnect()
-					return nil
-				}
-				flusher.Flush()
-			}
-
-			// Don't disconnect on error_during_execution (interrupt) - keep SSE for multi-turn
-			if evt.Type == "error" && evt.Subtype != "error_during_execution" {
-				session.SSEDisconnect()
-				return nil
-			}
-		}
-	}
+	return streamSSEEvents(c.Request().Context(), claude.NewStreamProcessor(), eventCh, writeSSE)
 }
 
 // MessageRequest represents a user message request
@@ -200,6 +164,7 @@ func (h *DocChatHandler) Reconnect(c echo.Context) error {
 	if !session.SSEConnect() {
 		return c.JSON(http.StatusServiceUnavailable, echo.Map{"error": "too many concurrent connections"})
 	}
+	defer session.SSEDisconnect()
 
 	// Set SSE headers
 	c.Response().Header().Set("Content-Type", "text/event-stream")
@@ -208,8 +173,13 @@ func (h *DocChatHandler) Reconnect(c echo.Context) error {
 
 	flusher, ok := c.Response().Writer.(http.Flusher)
 	if !ok {
-		session.SSEDisconnect()
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "streaming not supported"})
+	}
+
+	writeSSE := func(data map[string]interface{}) {
+		jsonData, _ := json.Marshal(data)
+		fmt.Fprintf(c.Response(), "data: %s\n\n", jsonData)
+		flusher.Flush()
 	}
 
 	// Subscribe to session events (fan-out mechanism)
@@ -223,51 +193,92 @@ func (h *DocChatHandler) Reconnect(c echo.Context) error {
 		"reconnected": true,
 	})
 	if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", sessionData); err != nil {
-		session.SSEDisconnect()
 		return nil
 	}
 	flusher.Flush()
 
-	// Keep SSE open for multi-turn (same as Stream)
-	ctx := c.Request().Context()
+	sp := claude.NewStreamProcessor()
+	sp.MarkAsStreamedWithContent(session.StreamingContent())
+	return streamSSEEvents(c.Request().Context(), sp, eventCh, writeSSE)
+}
+
+// streamSSEEvents is the shared SSE event loop used by both Stream and Reconnect.
+// It reads raw events from eventCh, converts them via StreamProcessor, and writes
+// clean SSE events to the client via writeSSE.
+func streamSSEEvents(ctx context.Context, sp *claude.StreamProcessor, eventCh chan claude.StreamEvent, writeSSE func(map[string]interface{})) error {
 	for {
 		select {
 		case <-ctx.Done():
-			session.SSEDisconnect()
 			return nil
 		case evt, ok := <-eventCh:
 			if !ok {
-				session.SSEDisconnect()
 				return nil
 			}
 
-			// Skip system events (init, hooks, etc.) — they are process-internal
-			// metadata and should not be sent to SSE subscribers.
-			if evt.Type == "system" {
+			sseEvent := sp.Process(evt)
+
+			for sp.HasPendingEvents() {
+				pending := sp.FlushPending()
+				if pending.Type != "" {
+					writeSSE(echo.Map{
+						"type":      pending.Type,
+						"text":      pending.Delta,
+						"content":   pending.Content,
+						"toolId":    pending.ToolID,
+						"toolName":  pending.ToolName,
+						"toolInput": pending.ToolInput,
+					})
+				}
+			}
+
+			if sseEvent.Type == "" {
 				continue
 			}
 
-			data, _ := json.Marshal(evt)
-			if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", data); err != nil {
-				session.SSEDisconnect()
-				return nil
-			}
-			flusher.Flush()
-
-			// Send [DONE] after result/error to give frontend a clear turn-end signal.
-			// The SSE connection stays open for subsequent turns.
-			if evt.Type == "result" || (evt.Type == "error" && evt.Subtype != "error_during_execution") {
-				if _, err := fmt.Fprintf(c.Response(), "data: [DONE]\n\n"); err != nil {
-					session.SSEDisconnect()
+			switch sseEvent.Type {
+			case "delta":
+				writeSSE(echo.Map{
+					"type": "delta",
+					"text": sseEvent.Delta,
+				})
+			case "full":
+				writeSSE(echo.Map{
+					"type":    "full",
+					"content": sseEvent.Content,
+				})
+			case "tool_start":
+				writeSSE(echo.Map{
+					"type":      "tool_start",
+					"toolId":    sseEvent.ToolID,
+					"toolName":  sseEvent.ToolName,
+					"toolInput": sseEvent.ToolInput,
+				})
+			case "tool_input":
+				writeSSE(echo.Map{
+					"type":      "tool_input",
+					"toolId":    sseEvent.ToolID,
+					"toolName":  sseEvent.ToolName,
+					"toolInput": sseEvent.ToolInput,
+				})
+			case "tool_end":
+				writeSSE(echo.Map{
+					"type":   "tool_end",
+					"toolId": sseEvent.ToolID,
+				})
+			case "done":
+				writeSSE(echo.Map{
+					"type": "done",
+				})
+				sp.Reset()
+			case "error":
+				writeSSE(echo.Map{
+					"type":  "error",
+					"error": sseEvent.Content,
+				})
+				if evt.Subtype != "error_during_execution" {
 					return nil
 				}
-				flusher.Flush()
-			}
-
-			// Don't disconnect on error_during_execution (interrupt) - keep SSE for multi-turn
-			if evt.Type == "error" && evt.Subtype != "error_during_execution" {
-				session.SSEDisconnect()
-				return nil
+				sp.Reset()
 			}
 		}
 	}
