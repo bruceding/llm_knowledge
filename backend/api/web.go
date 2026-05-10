@@ -994,7 +994,8 @@ func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, origi
 		}
 	}
 
-	// Replace image URLs in HTML with local paths
+	// Replace image URLs in HTML with local paths, then re-extract markdown
+	// so that paper.md gets local image paths instead of remote URLs.
 	if len(imgMap) > 0 {
 		doc.Find("img").Each(func(i int, s *goquery.Selection) {
 			src, exists := s.Attr("src")
@@ -1002,6 +1003,7 @@ func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, origi
 				s.SetAttr("src", imgMap[src])
 			}
 		})
+		content = extractContent(doc)
 	}
 
 	// Save modified HTML to index.html
