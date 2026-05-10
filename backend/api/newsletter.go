@@ -562,18 +562,18 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 			subject = "untitled"
 		}
 
-		htmlContent := extractHTMLFromEmail(m.body)
+		senderDir := sanitizeFilename(fromName)
+		feedDir := filepath.Join(h.DataDir, "raw", "newsletter", senderDir)
+		assetsDir := filepath.Join(feedDir, "assets")
+		os.MkdirAll(assetsDir, 0755)
+
+		htmlContent := extractHTMLFromEmail(m.body, assetsDir)
 		if htmlContent == "" {
 			fmt.Printf("[newsletter] skipping uid=%d: no HTML content\n", m.uid)
 			continue
 		}
 
 		viewURL := extractViewInBrowserLink(htmlContent)
-
-		senderDir := sanitizeFilename(fromName)
-		feedDir := filepath.Join(h.DataDir, "raw", "newsletter", senderDir)
-		assetsDir := filepath.Join(feedDir, "assets")
-		os.MkdirAll(assetsDir, 0755)
 
 		filteredHTML := filterDecorativeImages(htmlContent)
 		markdown, imgCount, imgErrors := processHTMLToMarkdown(filteredHTML, assetsDir, viewURL)
@@ -686,7 +686,7 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 	}
 }
 
-func extractHTMLFromEmail(body []byte) string {
+func extractHTMLFromEmail(body []byte, assetsDir string) string {
 	mr, err := mail.CreateReader(bytes.NewReader(body))
 	if err != nil {
 		bodyStr := string(body)
@@ -697,6 +697,9 @@ func extractHTMLFromEmail(body []byte) string {
 	}
 	defer mr.Close()
 
+	var htmlContent string
+	cidMap := make(map[string]string) // cid -> local filename
+
 	for {
 		p, err := mr.NextPart()
 		if err == io.EOF {
@@ -706,24 +709,60 @@ func extractHTMLFromEmail(body []byte) string {
 			continue
 		}
 
-		h, ok := p.Header.(*mail.InlineHeader)
-		if !ok {
-			continue
-		}
+		switch h := p.Header.(type) {
+		case *mail.InlineHeader:
+			contentType, _, _ := h.ContentType()
+			if contentType == "text/html" && htmlContent == "" {
+				b, err := io.ReadAll(p.Body)
+				if err != nil {
+					continue
+				}
+				htmlContent = string(b)
+			} else if strings.HasPrefix(contentType, "image/") {
+				// Embedded image — save to assets
+				contentID := h.Get("Content-Id")
+				if contentID == "" {
+					continue
+				}
+				// Strip < > brackets from Content-Id
+				contentID = strings.Trim(contentID, "<>")
 
-		contentType, _, _ := h.ContentType()
-		if contentType != "text/html" {
-			continue
-		}
+				imgData, err := io.ReadAll(p.Body)
+				if err != nil {
+					continue
+				}
 
-		b, err := io.ReadAll(p.Body)
-		if err != nil {
-			continue
+				ext := ".bin"
+				switch contentType {
+				case "image/png":
+					ext = ".png"
+				case "image/jpeg", "image/jpg":
+					ext = ".jpg"
+				case "image/gif":
+					ext = ".gif"
+				case "image/webp":
+					ext = ".webp"
+				case "image/svg+xml":
+					ext = ".svg"
+				}
+
+				filename := sanitizeFilename(contentID) + ext
+				localPath := filepath.Join(assetsDir, filename)
+				if err := os.WriteFile(localPath, imgData, 0644); err == nil {
+					cidMap[contentID] = "assets/" + filename
+				}
+			}
 		}
-		return string(b)
 	}
 
-	return ""
+	// Replace cid: references in HTML with local paths
+	if htmlContent != "" && len(cidMap) > 0 {
+		for cid, localPath := range cidMap {
+			htmlContent = strings.ReplaceAll(htmlContent, "cid:"+cid, localPath)
+		}
+	}
+
+	return htmlContent
 }
 
 func extractViewInBrowserLink(htmlContent string) string {
