@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -468,7 +469,7 @@ func normalizeSourceURL(rawURL string) string {
 
 // discoverRSSFromHTML parses HTML and finds RSS/Atom feed links in <head>
 func discoverRSSFromHTML(htmlURL string) (string, error) {
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(htmlURL)
 	if err != nil {
 		return "", err
@@ -701,7 +702,7 @@ func downloadImageToAssets(imgURL, assetsDir, articleURL string) (string, error)
 	}
 
 	// Download with timeout
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(imgURL)
 	if err != nil {
 		return "", err
@@ -734,18 +735,23 @@ func processHTMLToMarkdown(htmlContent, assetsDir, articleURL string) (string, i
 	imgCount := 0
 	imgErrors := 0
 
-	// Download images first and replace with markdown syntax
+	// Collect image elements for parallel download
+	type imgTask struct {
+		index    int
+		selection *goquery.Selection
+		src      string
+		alt      string
+	}
+	var tasks []imgTask
 	doc.Find("img").Each(func(i int, s *goquery.Selection) {
 		src, exists := s.Attr("src")
 		if !exists || src == "" {
 			return
 		}
-
 		alt, _ := s.Attr("alt")
 		if alt == "" {
 			alt = "image"
 		}
-
 		// Skip images already saved locally (e.g. cid: attachments replaced by extractHTMLFromEmail)
 		if strings.HasPrefix(src, "assets/") {
 			mdImg := fmt.Sprintf("![%s](%s)", alt, src)
@@ -753,18 +759,51 @@ func processHTMLToMarkdown(htmlContent, assetsDir, articleURL string) (string, i
 			imgCount++
 			return
 		}
-
-		localPath, err := downloadImageToAssets(src, assetsDir, articleURL)
-		if err != nil {
-			imgErrors++
-			s.Remove()
-			return
-		}
-
-		imgCount++
-		mdImg := fmt.Sprintf("![%s](assets/%s)", alt, filepath.Base(localPath))
-		s.ReplaceWithHtml(mdImg)
+		tasks = append(tasks, imgTask{index: i, selection: s, src: src, alt: alt})
 	})
+
+	// Download images in parallel (max 5 concurrent)
+	type imgResult struct {
+		task      imgTask
+		localPath string
+		err       error
+	}
+	sem := make(chan struct{}, 5)
+	resultCh := make(chan imgResult, len(tasks))
+	var wg sync.WaitGroup
+	for _, t := range tasks {
+		wg.Add(1)
+		go func(task imgTask) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			localPath, err := downloadImageToAssets(task.src, assetsDir, articleURL)
+			resultCh <- imgResult{task: task, localPath: localPath, err: err}
+		}(t)
+	}
+	wg.Wait()
+	close(resultCh)
+
+	results := make(map[int]imgResult)
+	for r := range resultCh {
+		results[r.task.index] = r
+	}
+
+	// Apply results to DOM
+	for _, t := range tasks {
+		r, ok := results[t.index]
+		if !ok {
+			continue
+		}
+		if r.err != nil {
+			imgErrors++
+			t.selection.Remove()
+			continue
+		}
+		imgCount++
+		mdImg := fmt.Sprintf("![%s](assets/%s)", t.alt, filepath.Base(r.localPath))
+		t.selection.ReplaceWithHtml(mdImg)
+	}
 
 	// Convert HTML to markdown by processing the body content
 	var markdown strings.Builder

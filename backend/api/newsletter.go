@@ -597,6 +597,14 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 			continue
 		}
 
+		// Save HTML version for rich rendering in frontend
+		htmlToSave := filteredHTML
+		if !strings.Contains(strings.ToLower(htmlToSave), "charset") {
+			htmlToSave = strings.Replace(htmlToSave, "<head>", `<head><meta charset="utf-8">`, 1)
+		}
+		htmlPath := filepath.Join(feedDir, slug+".html")
+		os.WriteFile(htmlPath, []byte(htmlToSave), 0644)
+
 		metadata := map[string]string{
 			"from":      fromName,
 			"fromAddr":  fromAddr,
