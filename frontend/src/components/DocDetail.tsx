@@ -38,6 +38,7 @@ export default function DocDetail() {
   const [document, setDocument] = useState<Document | null>(null)
   const [wikiContent, setWikiContent] = useState<string>('')
   const [rawContent, setRawContent] = useState<string>('') // For RSS/web markdown content
+  const [htmlContent, setHtmlContent] = useState<string>('') // For newsletter HTML rendering
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -65,7 +66,7 @@ export default function DocDetail() {
   const [bilingualContent, setBilingualContent] = useState('')
 
   // View mode - default set based on sourceType after document loads
-  const [viewMode, setViewMode] = useState<'wiki' | 'translation' | 'bilingual' | 'pdf' | 'dual-pdf' | 'raw'>('raw')
+  const [viewMode, setViewMode] = useState<'wiki' | 'translation' | 'bilingual' | 'pdf' | 'dual-pdf' | 'raw' | 'html'>('raw')
 
   // Summary regeneration state
   const [regeneratingSummary, setRegeneratingSummary] = useState(false)
@@ -179,6 +180,26 @@ export default function DocDetail() {
               }
             }
             setRawContent(content)
+          }
+        }
+
+        // Load HTML version for newsletter rich rendering
+        if (doc.sourceType === 'newsletter' && doc.rawPath) {
+          const htmlPath = doc.rawPath.replace(/\.md$/, '.html')
+          try {
+            const htmlRes = await fetch(`/data/${encodeURIPath(htmlPath)}`)
+            if (htmlRes.ok) {
+              let html = await htmlRes.text()
+              const parentDir = doc.rawPath.substring(0, doc.rawPath.lastIndexOf('/'))
+              html = html.replace(
+                /(src|href)=(["'])assets\//g,
+                `$1=$2/data/${encodeURIPath(parentDir)}/assets/`
+              )
+              setHtmlContent(html)
+              setViewMode('html')
+            }
+          } catch {
+            // HTML file not available, fall back to markdown
           }
         }
 
@@ -441,6 +462,8 @@ export default function DocDetail() {
         return translationContent
       case 'bilingual':
         return bilingualContent || rawContent
+      case 'html':
+        return null // Newsletter HTML is rendered in iframe
       case 'pdf':
         return null // PDF is rendered in iframe
       case 'dual-pdf':
@@ -535,14 +558,26 @@ export default function DocDetail() {
                 PDF
               </button>
             ) : (
-              <button
-                onClick={() => setViewMode('raw')}
-                className={`px-3 py-1.5 rounded-lg text-sm ${
-                  viewMode === 'raw' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                {t('docDetail.rawContent')}
-              </button>
+              <>
+                {htmlContent && document?.sourceType === 'newsletter' && (
+                  <button
+                    onClick={() => setViewMode('html')}
+                    className={`px-3 py-1.5 rounded-lg text-sm ${
+                      viewMode === 'html' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    HTML
+                  </button>
+                )}
+                <button
+                  onClick={() => setViewMode('raw')}
+                  className={`px-3 py-1.5 rounded-lg text-sm ${
+                    viewMode === 'raw' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  {t('docDetail.rawContent')}
+                </button>
+              </>
             )}
             {wikiContent && (
               <button
@@ -625,9 +660,28 @@ export default function DocDetail() {
           </div>
         </div>
 
-        {/* Markdown content area */}
+        {/* Content area */}
         <div className="flex-1 overflow-auto">
-          {viewMode === 'pdf' && pdfUrl ? (
+          {viewMode === 'html' && htmlContent ? (
+            <iframe
+              srcDoc={htmlContent}
+              sandbox="allow-same-origin"
+              title="Newsletter HTML"
+              className="w-full border-0"
+              style={{ minHeight: '100%' }}
+              onLoad={(e) => {
+                const iframe = e.target as HTMLIFrameElement
+                if (!iframe.contentDocument) return
+                const resizeIframe = () => {
+                  const height = iframe.contentDocument!.documentElement.scrollHeight
+                  iframe.style.height = height + 'px'
+                }
+                resizeIframe()
+                const observer = new ResizeObserver(resizeIframe)
+                observer.observe(iframe.contentDocument.documentElement)
+              }}
+            />
+          ) : viewMode === 'pdf' && pdfUrl ? (
             <div className="h-full">
               <PDFViewer url={pdfUrl} />
             </div>
