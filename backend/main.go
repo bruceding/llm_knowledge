@@ -255,6 +255,7 @@ func main() {
 	apiGroup.PUT("/imap/config", newsletterH.UpdateConfig)
 	apiGroup.DELETE("/imap/config", newsletterH.DeleteConfig)
 	apiGroup.POST("/imap/test", newsletterH.TestConnection)
+	apiGroup.GET("/imap/folders", newsletterH.ListFolders)
 	apiGroup.POST("/imap/sync", newsletterH.Sync)
 
 	newsletterH.StartAutoSyncScheduler()

@@ -1,4 +1,4 @@
-import type { Document, UpdateDocRequest, SSEEvent, UserSettings, Conversation, Message, LoginResponse, RegisterResponse, CaptchaResponse, IMAPConfigInput, IMAPConfigResponse, IMAPTestResult, NewsletterSyncResult } from './types'
+import type { Document, UpdateDocRequest, SSEEvent, UserSettings, Conversation, Message, LoginResponse, RegisterResponse, CaptchaResponse, IMAPConfigInput, IMAPConfigResponse, IMAPTestResult, IMAPFoldersResult, NewsletterSyncResult } from './types'
 
 const API_BASE = '/api'
 
@@ -581,6 +581,12 @@ export async function deleteIMAPConfig(): Promise<void> {
 export async function testIMAPConnection(): Promise<IMAPTestResult> {
   const res = await fetch(`${API_BASE}/imap/test`, { method: 'POST', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to test IMAP connection')
+  return res.json()
+}
+
+export async function listIMAPFolders(): Promise<IMAPFoldersResult> {
+  const res = await fetch(`${API_BASE}/imap/folders`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to list IMAP folders')
   return res.json()
 }
 

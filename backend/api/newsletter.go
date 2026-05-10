@@ -31,6 +31,41 @@ import (
 
 var syncLocks sync.Map
 
+// resolveMailboxName attempts to select a mailbox by name. If the exact name
+// fails (Gmail IMAP is case-sensitive for non-INBOX folders), it falls back to
+// a case-insensitive LIST match and returns the canonical name from the server.
+func resolveMailboxName(client *imapclient.Client, folderName string) (canonical string, selectData *imap.SelectData, err error) {
+	selectData, err = client.Select(folderName, nil).Wait()
+	if err == nil {
+		return folderName, selectData, nil
+	}
+
+	// Folder not found — try case-insensitive LIST match
+	listCmd := client.List("", "*", nil)
+	var matched string
+	for {
+		data := listCmd.Next()
+		if data == nil {
+			break
+		}
+		if strings.EqualFold(data.Mailbox, folderName) {
+			matched = data.Mailbox
+			break
+		}
+	}
+	listCmd.Close()
+
+	if matched != "" {
+		selectData, err2 := client.Select(matched, nil).Wait()
+		if err2 != nil {
+			return "", nil, fmt.Errorf("folder '%s' not found (tried case-insensitive match '%s'): %v", folderName, matched, err2)
+		}
+		return matched, selectData, nil
+	}
+
+	return "", nil, fmt.Errorf("folder '%s' not found", folderName)
+}
+
 type NewsletterHandler struct {
 	DataDir   string
 	ClaudeBin string
@@ -229,13 +264,32 @@ func (h *NewsletterHandler) TestConnection(c echo.Context) error {
 		return c.JSON(http.StatusOK, echo.Map{"success": false, "message": "login failed, check credentials"})
 	}
 
-	selectData, err := client.Select(cfg.FolderName, nil).Wait()
+	canonicalName, selectData, err := resolveMailboxName(client, cfg.FolderName)
 	if err != nil {
+		// Collect available folders for the error message
+		listCmd := client.List("", "*", nil)
+		var available []string
+		for {
+			data := listCmd.Next()
+			if data == nil {
+				break
+			}
+			available = append(available, data.Mailbox)
+		}
+		listCmd.Close()
+
 		return c.JSON(http.StatusOK, echo.Map{
-			"success":      false,
-			"folderExists": false,
-			"message":      fmt.Sprintf("folder '%s' not found", cfg.FolderName),
+			"success":          false,
+			"folderExists":     false,
+			"message":          fmt.Sprintf("folder '%s' not found", cfg.FolderName),
+			"availableFolders": available,
 		})
+	}
+
+	// Auto-correct case mismatch in DB
+	if canonicalName != cfg.FolderName {
+		db.DB.Model(cfg).Update("folder_name", canonicalName)
+		cfg.FolderName = canonicalName
 	}
 
 	return c.JSON(http.StatusOK, echo.Map{
@@ -244,6 +298,43 @@ func (h *NewsletterHandler) TestConnection(c echo.Context) error {
 		"messageCount": selectData.NumMessages,
 		"message":      fmt.Sprintf("Connection successful, folder '%s' accessible", cfg.FolderName),
 	})
+}
+
+func (h *NewsletterHandler) ListFolders(c echo.Context) error {
+	userId := GetCurrentUserId(c)
+
+	var cfg db.IMAPConfig
+	if err := db.DB.Where("user_id = ?", userId).First(&cfg).Error; err != nil {
+		return c.JSON(http.StatusOK, echo.Map{"folders": []string{}})
+	}
+
+	password, err := crypto.Decrypt(cfg.EncryptedPass)
+	if err != nil {
+		return c.JSON(http.StatusOK, echo.Map{"folders": []string{}})
+	}
+
+	client, err := dialIMAP(cfg.Host, cfg.Port, 30*time.Second)
+	if err != nil {
+		return c.JSON(http.StatusOK, echo.Map{"folders": []string{}})
+	}
+	defer client.Close()
+
+	if err := client.Login(cfg.Username, password).Wait(); err != nil {
+		return c.JSON(http.StatusOK, echo.Map{"folders": []string{}})
+	}
+
+	listCmd := client.List("", "*", nil)
+	var folders []string
+	for {
+		data := listCmd.Next()
+		if data == nil {
+			break
+		}
+		folders = append(folders, data.Mailbox)
+	}
+	listCmd.Close()
+
+	return c.JSON(http.StatusOK, echo.Map{"folders": folders})
 }
 
 func (h *NewsletterHandler) Sync(c echo.Context) error {
@@ -282,8 +373,15 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 		return NewsletterSyncResult{Error: "login failed: " + err.Error()}
 	}
 
-	if _, err := client.Select(cfg.FolderName, nil).Wait(); err != nil {
+	canonicalName, _, err := resolveMailboxName(client, cfg.FolderName)
+	if err != nil {
 		return NewsletterSyncResult{Error: fmt.Sprintf("folder '%s' not found: %v", cfg.FolderName, err)}
+	}
+
+	// Auto-correct case mismatch in DB
+	if canonicalName != cfg.FolderName {
+		db.DB.Model(cfg).Update("folder_name", canonicalName)
+		cfg.FolderName = canonicalName
 	}
 
 	criteria := &imap.SearchCriteria{

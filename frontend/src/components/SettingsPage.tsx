@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import i18n from '../i18n'
-import { fetchSettings, updateSettings, getIMAPConfig, updateIMAPConfig, deleteIMAPConfig, testIMAPConnection } from '../api'
+import { fetchSettings, updateSettings, getIMAPConfig, updateIMAPConfig, deleteIMAPConfig, testIMAPConnection, listIMAPFolders } from '../api'
 
 export default function SettingsPage() {
   const { t } = useTranslation()
@@ -29,6 +29,9 @@ export default function SettingsPage() {
   const [imapTestSuccess, setImapTestSuccess] = useState(false)
   const [imapSuccess, setImapSuccess] = useState(false)
   const [imapError, setImapError] = useState<string | null>(null)
+  const [imapFolders, setImapFolders] = useState<string[]>([])
+  const [imapFoldersLoading, setImapFoldersLoading] = useState(false)
+  const [showFolderDropdown, setShowFolderDropdown] = useState(false)
 
   useEffect(() => {
     loadSettings()
@@ -123,6 +126,9 @@ export default function SettingsPage() {
       const result = await testIMAPConnection()
       setImapTestResult(result.message)
       setImapTestSuccess(result.success)
+      if (result.availableFolders && result.availableFolders.length > 0) {
+        setImapFolders(result.availableFolders)
+      }
     } catch (err) {
       setImapTestResult(err instanceof Error ? err.message : 'Test failed')
       setImapTestSuccess(false)
@@ -142,8 +148,22 @@ export default function SettingsPage() {
       setImapPassword('')
       setImapFolder('Newsletter')
       setImapAutoSync(false)
+      setImapFolders([])
     } catch (err) {
       setImapError(err instanceof Error ? err.message : 'Failed to delete config')
+    }
+  }
+
+  const handleLoadFolders = async () => {
+    setImapFoldersLoading(true)
+    try {
+      const result = await listIMAPFolders()
+      setImapFolders(result.folders || [])
+      setShowFolderDropdown(true)
+    } catch (err) {
+      setImapError(err instanceof Error ? err.message : 'Failed to load folders')
+    } finally {
+      setImapFoldersLoading(false)
     }
   }
 
@@ -312,13 +332,41 @@ export default function SettingsPage() {
 
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1">{t('settings.imapFolder')}</label>
-            <input
-              type="text"
-              value={imapFolder}
-              onChange={(e) => setImapFolder(e.target.value)}
-              placeholder="Newsletter"
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={imapFolder}
+                  onChange={(e) => { setImapFolder(e.target.value); setShowFolderDropdown(false) }}
+                  onFocus={() => { if (imapFolders.length > 0) setShowFolderDropdown(true) }}
+                  placeholder="Newsletter"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                {showFolderDropdown && imapFolders.length > 0 && (
+                  <div className="absolute z-10 w-full mt-1 max-h-48 overflow-auto bg-white border border-gray-200 rounded-lg shadow-lg">
+                    {imapFolders.map((f) => (
+                      <button
+                        key={f}
+                        type="button"
+                        className={`w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50 ${f === imapFolder ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-700'}`}
+                        onClick={() => { setImapFolder(f); setShowFolderDropdown(false) }}
+                      >
+                        {f}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={handleLoadFolders}
+                disabled={imapFoldersLoading || !imapConfigured}
+                className="px-3 py-2 text-sm border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:text-gray-400 disabled:hover:bg-white whitespace-nowrap"
+                title={t('settings.loadFolders')}
+              >
+                {imapFoldersLoading ? '...' : t('settings.browseFolders')}
+              </button>
+            </div>
             <p className="text-xs text-gray-500 mt-1">{t('settings.imapFolderHint')}</p>
           </div>
 

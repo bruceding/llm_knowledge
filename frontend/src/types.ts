@@ -171,6 +171,11 @@ export interface IMAPTestResult {
   folderExists?: boolean
   messageCount?: number
   message: string
+  availableFolders?: string[]
+}
+
+export interface IMAPFoldersResult {
+  folders: string[]
 }
 
 export interface NewsletterSyncResult {
