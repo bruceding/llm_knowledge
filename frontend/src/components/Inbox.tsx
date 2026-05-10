@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { fetchInbox, deleteDocument } from '../api'
+import { fetchInbox, deleteDocument, updateDocument } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
 import type { Document } from '../types'
 
@@ -106,6 +106,12 @@ export default function Inbox() {
         return (
           <span className="px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded-full">
             {t('inbox.archived')}
+          </span>
+        )
+      case 'later':
+        return (
+          <span className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full">
+            {t('inbox.later')}
           </span>
         )
       default:
@@ -237,7 +243,23 @@ export default function Inbox() {
               </div>
 
               <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between text-xs text-gray-400">
-                <span className="capitalize">{doc.sourceType}</span>
+                <div className="flex items-center gap-2">
+                  <span className="capitalize">{doc.sourceType}</span>
+                  {doc.status === 'inbox' && (
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        updateDocument(doc.id, { status: 'later' })
+                          .then(() => loadDocuments())
+                          .catch((err) => setError(err instanceof Error ? err.message : 'Failed to move to later'))
+                      }}
+                      className="px-2 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+                    >
+                      {t('inbox.later')}
+                    </button>
+                  )}
+                </div>
                 <svg
                   className="w-4 h-4 group-hover:text-blue-500 transition-colors"
                   fill="none"

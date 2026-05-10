@@ -74,9 +74,9 @@ func (h *DocHandler) UpdateDoc(c echo.Context) error {
 
 	// Validate status if provided
 	if req.Status != "" {
-		validStatuses := map[string]bool{"inbox": true, "published": true, "archived": true}
+		validStatuses := map[string]bool{"inbox": true, "later": true, "published": true, "archived": true}
 		if !validStatuses[req.Status] {
-			return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid status, must be one of: inbox, published, archived"})
+			return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid status, must be one of: inbox, later, published, archived"})
 		}
 		doc.Status = req.Status
 	}

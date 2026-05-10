@@ -7,24 +7,24 @@ import (
 )
 
 type Document struct {
-	ID         uint      `gorm:"primaryKey" json:"id"`
-	Title      string    `json:"title"`
-	Slug       string    `json:"slug"`                         // Filesystem-safe name derived from Title
-	SourceType string    `json:"sourceType"` // pdf, rss, web, manual
-	RawPath    string    `json:"rawPath"`
-	WikiPath   string    `json:"wikiPath"`
-	Summary    string    `json:"summary"`                    // AI生成的短摘要（50-100字）
-	Language   string    `json:"language"`
-	Status     string    `gorm:"default:inbox" json:"status"` // inbox, published, archived
-	Metadata   string    `json:"metadata"`                    // JSON string
-	SourceURL  string          `json:"sourceUrl"`                    // Original URL for web/rss
-	SourceGUID string          `json:"sourceGuid"`                   // RSS item GUID for dedup
-	UserID     uint            `gorm:"index;not null;default:1" json:"userId"`
-	RSSFeedID  uint            `json:"rssFeedId"`                    // Associated RSS feed
-	CreatedAt  time.Time       `json:"createdAt"`
-	UpdatedAt  time.Time       `json:"updatedAt"`
-	DeletedAt  gorm.DeletedAt  `gorm:"index" json:"deletedAt,omitempty"`
-	Tags       []Tag           `gorm:"many2many:document_tags;" json:"tags"`
+	ID         uint           `gorm:"primaryKey" json:"id"`
+	Title      string         `json:"title"`
+	Slug       string         `json:"slug"`       // Filesystem-safe name derived from Title
+	SourceType string         `json:"sourceType"` // pdf, rss, web, manual
+	RawPath    string         `json:"rawPath"`
+	WikiPath   string         `json:"wikiPath"`
+	Summary    string         `json:"summary"` // AI生成的短摘要（50-100字）
+	Language   string         `json:"language"`
+	Status     string         `gorm:"default:inbox" json:"status"` // inbox, later, published, archived
+	Metadata   string         `json:"metadata"`                    // JSON string
+	SourceURL  string         `json:"sourceUrl"`                   // Original URL for web/rss
+	SourceGUID string         `json:"sourceGuid"`                  // RSS item GUID for dedup
+	UserID     uint           `gorm:"index;not null;default:1" json:"userId"`
+	RSSFeedID  uint           `json:"rssFeedId"` // Associated RSS feed
+	CreatedAt  time.Time      `json:"createdAt"`
+	UpdatedAt  time.Time      `json:"updatedAt"`
+	DeletedAt  gorm.DeletedAt `gorm:"index" json:"deletedAt,omitempty"`
+	Tags       []Tag          `gorm:"many2many:document_tags;" json:"tags"`
 }
 
 type Tag struct {
@@ -54,7 +54,7 @@ type ConversationMessage struct {
 	ConversationID uint      `json:"conversationId"`
 	Role           string    `json:"role"` // user, assistant, system
 	Content        string    `json:"content"`
-	ContextDocIDs  string    `json:"contextDocIds"` // JSON array
+	ContextDocIDs  string    `json:"contextDocIds"`            // JSON array
 	Images         string    `gorm:"default:''" json:"images"` // JSON array of image paths
 	CreatedAt      time.Time `json:"createdAt"`
 }
@@ -94,13 +94,13 @@ type DocNote struct {
 }
 
 type User struct {
-	ID                uint      `gorm:"primaryKey" json:"id"`
-	Username          string    `gorm:"unique;not null" json:"username"`
-	PasswordHash      string    `gorm:"not null" json:"-"`
-	Email             string    `gorm:"unique;not null" json:"email"`
-	MustChangePassword bool     `gorm:"default:false" json:"mustChangePassword"`
-	CreatedAt         time.Time `json:"createdAt"`
-	UpdatedAt         time.Time `json:"updatedAt"`
+	ID                 uint      `gorm:"primaryKey" json:"id"`
+	Username           string    `gorm:"unique;not null" json:"username"`
+	PasswordHash       string    `gorm:"not null" json:"-"`
+	Email              string    `gorm:"unique;not null" json:"email"`
+	MustChangePassword bool      `gorm:"default:false" json:"mustChangePassword"`
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
 }
 
 type Session struct {

@@ -801,6 +801,7 @@ export default function DocDetail() {
               className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
               <option value="inbox">{t('docDetail.inbox')}</option>
+              <option value="later">{t('docDetail.laterStatus')}</option>
               <option value="published">{t('documentsList.published')}</option>
               <option value="archived">{t('docDetail.archivedStatus')}</option>
             </select>
@@ -964,6 +965,14 @@ export default function DocDetail() {
               className="w-full px-3 py-1.5 text-sm bg-green-500 text-white rounded hover:bg-green-600 disabled:opacity-50 transition-colors"
             >
               {publishing ? 'Publishing...' : t('docDetail.publish')}
+            </button>
+          )}
+          {document.status === 'inbox' && (
+            <button
+              onClick={() => handleSave('later')}
+              className="w-full px-3 py-1.5 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+            >
+              {t('docDetail.moveToLater')}
             </button>
           )}
           {document.status !== 'archived' && (

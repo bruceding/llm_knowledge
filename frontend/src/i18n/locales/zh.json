@@ -4,6 +4,7 @@
     "searchPlaceholder": "搜索...",
     "navigation": "导航",
     "inbox": "收件箱",
+    "later": "稍后阅读",
     "archived": "已归档",
     "allDocuments": "所有文档",
     "tags": "标签",
@@ -24,6 +25,7 @@
     "importHint": "导入新文档开始构建您的知识库",
     "pendingReview": "待审核",
     "published": "已发布",
+    "later": "稍后阅读",
     "archived": "已归档",
     "retry": "重试"
   },
@@ -96,6 +98,7 @@
   "documentsList": {
     "title": "文档",
     "all": "全部",
+    "later": "稍后阅读",
     "published": "已发布",
     "archived": "已归档",
     "noDocuments": "未找到文档",
@@ -142,6 +145,8 @@
     "translate": "翻译",
     "bilingual": "双语对照",
     "inbox": "收件箱",
+    "laterStatus": "稍后阅读",
+    "moveToLater": "稍后阅读",
     "archivedStatus": "已归档",
     "metadataTab": "元数据",
     "chatTab": "对话",

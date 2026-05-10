@@ -15,7 +15,7 @@ export interface Document {
   wikiPath: string
   summary: string
   language: string
-  status: 'inbox' | 'published' | 'archived'
+  status: 'inbox' | 'later' | 'published' | 'archived'
   metadata: string
   createdAt: string
   updatedAt: string

@@ -4,6 +4,7 @@
     "searchPlaceholder": "Search...",
     "navigation": "Navigation",
     "inbox": "Inbox",
+    "later": "Later",
     "archived": "Archived",
     "allDocuments": "All Documents",
     "tags": "Tags",
@@ -24,6 +25,7 @@
     "importHint": "Import new documents to start building your knowledge base",
     "pendingReview": "Pending Review",
     "published": "Published",
+    "later": "Later",
     "archived": "Archived",
     "retry": "Retry"
   },
@@ -96,6 +98,7 @@
   "documentsList": {
     "title": "Documents",
     "all": "All",
+    "later": "Later",
     "published": "Published",
     "archived": "Archived",
     "noDocuments": "No documents found",
@@ -142,6 +145,8 @@
     "translate": "Translate",
     "bilingual": "Bilingual",
     "inbox": "Inbox",
+    "laterStatus": "Later",
+    "moveToLater": "Later",
     "archivedStatus": "Archived",
     "metadataTab": "Metadata",
     "chatTab": "Chat",

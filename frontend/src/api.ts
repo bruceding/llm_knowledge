@@ -19,6 +19,10 @@ export async function fetchInbox(): Promise<Document[]> {
   return res.json()
 }
 
+export async function fetchLater(): Promise<Document[]> {
+  return fetchDocuments('later')
+}
+
 export async function fetchDocuments(status?: string): Promise<Document[]> {
   const url = status ? `${API_BASE}/documents?status=${status}` : `${API_BASE}/documents`
   const res = await fetch(url, { headers: getHeaders() })

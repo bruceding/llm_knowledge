@@ -125,6 +125,12 @@ export default function DocumentsList() {
             {t('documentsList.archived')}
           </span>
         )
+      case 'later':
+        return (
+          <span className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full">
+            {t('documentsList.later')}
+          </span>
+        )
       default:
         return null
     }
@@ -190,6 +196,7 @@ export default function DocumentsList() {
           >
             <option value="">{t('documentsList.allStatus')}</option>
             <option value="inbox">{t('inbox.pendingReview')}</option>
+            <option value="later">{t('documentsList.later')}</option>
             <option value="published">{t('documentsList.published')}</option>
             <option value="archived">{t('documentsList.archived')}</option>
           </select>

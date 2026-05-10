@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { fetchInbox, fetchDocuments, logout } from '../api'
+import { fetchInbox, fetchLater, fetchDocuments, logout } from '../api'
 import { useAuthStore } from '../store/authStore'
 
 export default function Sidebar() {
@@ -12,6 +12,7 @@ export default function Sidebar() {
   const clearAuth = useAuthStore((s) => s.clearAuth)
   const [searchQuery, setSearchQuery] = useState('')
   const [inboxCount, setInboxCount] = useState(0)
+  const [laterCount, setLaterCount] = useState(0)
   const [archivedCount, setArchivedCount] = useState(0)
   const [expandedSections, setExpandedSections] = useState({
     navigation: true,
@@ -28,9 +29,12 @@ export default function Sidebar() {
   }
 
   useEffect(() => {
-    // Fetch inbox and archived count on mount and when location changes
+    // Fetch inbox, later, and archived count on mount and when location changes
     fetchInbox()
       .then((docs) => setInboxCount(docs.length))
+      .catch(() => {})
+    fetchLater()
+      .then((docs) => setLaterCount(docs.length))
       .catch(() => {})
     fetchDocuments('archived')
       .then((docs) => setArchivedCount(docs.length))
@@ -53,6 +57,9 @@ export default function Sidebar() {
     if (path === '/') return location.pathname === '/' && !location.search
     if (path === '/documents?status=archived') {
       return location.pathname === '/documents' && location.search === '?status=archived'
+    }
+    if (path === '/documents?status=later') {
+      return location.pathname === '/documents' && location.search === '?status=later'
     }
     return location.pathname === path && !location.search
   }
@@ -133,6 +140,24 @@ export default function Sidebar() {
                   {inboxCount > 0 && (
                     <span className="ml-auto px-2 py-0.5 text-xs bg-blue-500 text-white rounded-full">
                       {inboxCount}
+                    </span>
+                  )}
+                </Link>
+              </li>
+              <li>
+                <Link to="/documents?status=later" className={navItemClass('/documents?status=later')}>
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                  <span>{t('sidebar.later')}</span>
+                  {laterCount > 0 && (
+                    <span className="ml-auto px-2 py-0.5 text-xs bg-blue-500 text-white rounded-full">
+                      {laterCount}
                     </span>
                   )}
                 </Link>
