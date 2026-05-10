@@ -429,10 +429,9 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 	isFirstSync := cfg.LastSyncAt.IsZero()
 
 	criteria := &imap.SearchCriteria{}
-	if !isFirstSync {
-		// After first sync, only fetch unseen messages
-		criteria.NotFlag = []imap.Flag{imap.FlagSeen}
-	}
+	// Use Since to filter by date — no NotFlag/FlagSeen filter.
+	// Rely on source_guid dedup instead: emails already synced will be skipped.
+	// Filtering by FlagSeen would miss emails that users read in their mail client.
 	if !cfg.LastSyncAt.IsZero() {
 		criteria.Since = cfg.LastSyncAt
 	}
