@@ -1080,6 +1080,8 @@ func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, origi
 func yamlQuote(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
 	return "\"" + s + "\""
 }
 
@@ -1259,7 +1261,8 @@ func (h *WebHandler) uploadWeChat(c echo.Context, req WebUploadRequest) error {
 	// Fetch HTML with WeChat-specific headers
 	html, err := fetchHTML(req.URL, weChatHeaders)
 	if err != nil {
-		return c.JSON(500, echo.Map{"error": "failed to fetch WeChat article: " + err.Error()})
+		log.Printf("[wechat] fetchHTML failed for %s: %v", req.URL, err)
+		return c.JSON(500, echo.Map{"error": "failed to fetch WeChat article"})
 	}
 
 	// Parse HTML
