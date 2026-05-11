@@ -45,7 +45,7 @@ func (p *Pool) ensureBrowser() (*rod.Browser, error) {
 	}
 
 	u, err := launcher.New().
-		Headless(true).
+		Set("headless", "new").
 		Set("disable-blink-features", "AutomationControlled").
 		Launch()
 	if err != nil {
@@ -91,8 +91,12 @@ func (p *Pool) FetchRenderedHTML(url string, opts RenderOpts) (string, error) {
 
 	page = page.Context(ctx)
 
-	// Hide webdriver flag before navigation
-	page.MustEvalOnNewDocument(`Object.defineProperty(navigator, 'webdriver', {get: () => false})`)
+	page.MustEvalOnNewDocument(`
+Object.defineProperty(navigator, 'webdriver', {get: () => false});
+window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
+Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
+Object.defineProperty(navigator, 'platform', {get: () => 'MacIntel'});
+`)
 
 	if err := page.Navigate(url); err != nil {
 		return "", fmt.Errorf("navigate to %s: %w", url, err)

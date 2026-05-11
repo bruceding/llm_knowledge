@@ -79,19 +79,21 @@ func isWeChatURL(urlStr string) bool {
 }
 
 type browserSiteConfig struct {
-	WaitSelector  string
-	Postprocess   func(doc *goquery.Document)
-	ExtractAuthor func(doc *goquery.Document) string
-	FetchMethod   string
-	ImageHeaders  func(imgURL string) map[string]string
+	WaitSelector   string
+	VerifySelector string
+	Postprocess    func(doc *goquery.Document)
+	ExtractAuthor  func(doc *goquery.Document) string
+	FetchMethod    string
+	ImageHeaders   func(imgURL string) map[string]string
 }
 
 var browserSites = map[string]browserSiteConfig{
 	"mp.weixin.qq.com": {
-		WaitSelector:  "#js_content",
-		Postprocess:   preprocessWeChatImages,
-		ExtractAuthor: extractWeChatAuthor,
-		FetchMethod:   "wechat",
+		WaitSelector:   "#js_content",
+		VerifySelector: "#js_verify",
+		Postprocess:    preprocessWeChatImages,
+		ExtractAuthor:  extractWeChatAuthor,
+		FetchMethod:    "wechat",
 		ImageHeaders: func(imgURL string) map[string]string {
 			if strings.Contains(imgURL, "mmbiz.qpic.cn") {
 				return weChatHeaders
@@ -908,6 +910,17 @@ func (h *WebHandler) uploadBrowser(c echo.Context, req WebUploadRequest, cfg bro
 		Timeout:      30 * time.Second,
 	})
 	if err != nil {
+		// If WaitSelector timed out and we have a VerifySelector, check for captcha page
+		if cfg.VerifySelector != "" {
+			fallbackHTML, fallbackErr := h.BrowserPool.FetchRenderedHTML(req.URL, browser.RenderOpts{
+				WaitSelector: cfg.VerifySelector,
+				Timeout:      10 * time.Second,
+			})
+			if fallbackErr == nil && strings.Contains(fallbackHTML, cfg.VerifySelector[1:]) {
+				log.Printf("[browser] captcha/verify page detected for %s", req.URL)
+				return c.JSON(403, echo.Map{"error": "页面需要验证码，请在浏览器中手动打开链接完成验证后重试"})
+			}
+		}
 		log.Printf("[browser] rendering failed for %s: %v", req.URL, err)
 		return c.JSON(500, echo.Map{"error": "browser rendering failed: " + err.Error()})
 	}
@@ -915,6 +928,12 @@ func (h *WebHandler) uploadBrowser(c echo.Context, req WebUploadRequest, cfg bro
 	doc, err := ParseHTML(renderedHTML)
 	if err != nil {
 		return c.JSON(500, echo.Map{"error": "failed to parse rendered HTML"})
+	}
+
+	// Check for verify page even when no error (WaitSelector might match a wrong element)
+	if cfg.VerifySelector != "" && doc.Find(cfg.VerifySelector).Length() > 0 {
+		log.Printf("[browser] captcha/verify page detected for %s", req.URL)
+		return c.JSON(403, echo.Map{"error": "页面需要验证码，请在浏览器中手动打开链接完成验证后重试"})
 	}
 
 	if cfg.Postprocess != nil {
