@@ -81,6 +81,7 @@ func isWeChatURL(urlStr string) bool {
 type browserSiteConfig struct {
 	WaitSelector   string
 	VerifySelector string
+	ScrollToLoad   bool
 	Postprocess    func(doc *goquery.Document)
 	ExtractAuthor  func(doc *goquery.Document) string
 	FetchMethod    string
@@ -91,6 +92,7 @@ var browserSites = map[string]browserSiteConfig{
 	"mp.weixin.qq.com": {
 		WaitSelector:   "#js_content",
 		VerifySelector: "#js_verify",
+		ScrollToLoad:   true,
 		Postprocess:    preprocessWeChatImages,
 		ExtractAuthor:  extractWeChatAuthor,
 		FetchMethod:    "wechat",
@@ -939,6 +941,7 @@ func (h *WebHandler) fetchWeChatViaSogou(originalURL string) (string, error) {
 	// The signed URL from Sogou bypasses WeChat's captcha for this visit.
 	articleHTML, err := h.BrowserPool.FetchRenderedHTML(redirectURL, browser.RenderOpts{
 		WaitSelector: "#js_content",
+		ScrollToLoad: true,
 		Timeout:      30 * time.Second,
 	})
 	if err != nil {
@@ -956,6 +959,7 @@ func (h *WebHandler) uploadBrowser(c echo.Context, req WebUploadRequest, cfg bro
 	renderedHTML, err := h.BrowserPool.FetchRenderedHTML(req.URL, browser.RenderOpts{
 		WaitSelector: cfg.WaitSelector,
 		WaitStable:   2 * time.Second,
+		ScrollToLoad: cfg.ScrollToLoad,
 		Timeout:      30 * time.Second,
 	})
 

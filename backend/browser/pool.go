@@ -15,6 +15,7 @@ type RenderOpts struct {
 	WaitSelector string
 	WaitStable   time.Duration
 	Timeout      time.Duration
+	ScrollToLoad bool
 }
 
 type Pool struct {
@@ -116,6 +117,27 @@ Object.defineProperty(navigator, 'platform', {get: () => 'MacIntel'});
 		if err := page.WaitStable(opts.WaitStable); err != nil {
 			return "", fmt.Errorf("wait stable: %w", err)
 		}
+	}
+
+	if opts.ScrollToLoad {
+		// Scroll through the page to trigger lazy-loaded images, then force-copy
+		// data-src to src for any images still using lazy placeholders.
+		page.Eval(`(async () => {
+			const delay = ms => new Promise(r => setTimeout(r, ms));
+			const step = Math.max(window.innerHeight || 600, 600);
+			const maxH = document.documentElement.scrollHeight || 5000;
+			for (let y = 0; y <= maxH; y += step) {
+				window.scrollTo(0, y);
+				await delay(200);
+			}
+			window.scrollTo(0, 0);
+			await delay(200);
+			document.querySelectorAll('img[data-src]').forEach(img => {
+				if (!img.src || img.src === '' || img.src.startsWith('data:')) {
+					img.src = img.dataset.src;
+				}
+			});
+		})()`)
 	}
 
 	html, err := page.HTML()
