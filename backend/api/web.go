@@ -922,7 +922,12 @@ func (h *WebHandler) fetchWeChatViaSogou(originalURL string) (string, error) {
 		Timeout: 20 * time.Second,
 	})
 	if err != nil {
-		return "", fmt.Errorf("sogou search: %w", err)
+		return "", fmt.Errorf("sogou search render: %w", err)
+	}
+	log.Printf("[sogou] search returned %d chars", len(searchHTML))
+
+	if strings.Contains(searchHTML, "用户您好，您的访问过于频繁") || strings.Contains(searchHTML, "antispider") {
+		return "", fmt.Errorf("sogou anti-spider triggered, try again later")
 	}
 
 	searchDoc, err := ParseHTML(searchHTML)
@@ -939,7 +944,8 @@ func (h *WebHandler) fetchWeChatViaSogou(originalURL string) (string, error) {
 		return true
 	})
 	if redirectURL == "" {
-		return "", fmt.Errorf("no article links in sogou results")
+		log.Printf("[sogou] no links found, page title: %s", searchDoc.Find("title").Text())
+		return "", fmt.Errorf("no article links in sogou results (title: %s)", searchDoc.Find("title").Text())
 	}
 	log.Printf("[sogou] following redirect via browser")
 
