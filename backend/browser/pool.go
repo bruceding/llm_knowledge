@@ -121,12 +121,13 @@ func (p *Pool) idleReaper() {
 	for {
 		select {
 		case <-ticker.C:
-			p.mu.Lock()
-			if p.browser != nil && time.Since(p.lastUsed) > p.idleTimeout {
-				p.browser.Close()
-				p.browser = nil
+			if p.mu.TryLock() {
+				if p.browser != nil && time.Since(p.lastUsed) > p.idleTimeout {
+					p.browser.Close()
+					p.browser = nil
+				}
+				p.mu.Unlock()
 			}
-			p.mu.Unlock()
 		case <-p.stopIdle:
 			return
 		}
