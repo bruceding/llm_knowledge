@@ -899,6 +899,55 @@ func slugify(title string) string {
 	return title
 }
 
+// fetchWeChatViaSogou searches Sogou WeChat index to find and fetch the article
+// when direct access is blocked by captcha. Uses __biz + mid from the URL as search query.
+func (h *WebHandler) fetchWeChatViaSogou(originalURL string) (string, error) {
+	u, err := url.Parse(originalURL)
+	if err != nil {
+		return "", fmt.Errorf("parse URL: %w", err)
+	}
+	biz := u.Query().Get("__biz")
+	mid := u.Query().Get("mid")
+	if biz == "" || mid == "" {
+		return "", fmt.Errorf("missing __biz or mid in WeChat URL")
+	}
+
+	searchQuery := url.QueryEscape(biz + " " + mid)
+	searchURL := "https://weixin.sogou.com/weixin?type=2&query=" + searchQuery
+	log.Printf("[sogou] searching: %s", searchURL)
+
+	searchHTML, err := h.BrowserPool.FetchRenderedHTML(searchURL, browser.RenderOpts{
+		Timeout: 20 * time.Second,
+	})
+	if err != nil {
+		return "", fmt.Errorf("sogou search: %w", err)
+	}
+
+	re := regexp.MustCompile(`href="(/link\?url=[^"]+)"`)
+	matches := re.FindStringSubmatch(searchHTML)
+	if len(matches) < 2 {
+		return "", fmt.Errorf("no article links in sogou results")
+	}
+
+	redirectURL := "https://weixin.sogou.com" + matches[1]
+	log.Printf("[sogou] following redirect via browser")
+
+	// Navigate directly to Sogou's redirect link. The browser will:
+	// 1. Load the intermediate page with JS redirect
+	// 2. Follow window.location.replace() to the signed WeChat URL
+	// 3. Wait for #js_content on the final article page
+	// The signed URL from Sogou bypasses WeChat's captcha for this visit.
+	articleHTML, err := h.BrowserPool.FetchRenderedHTML(redirectURL, browser.RenderOpts{
+		WaitSelector: "#js_content",
+		Timeout:      30 * time.Second,
+	})
+	if err != nil {
+		return "", fmt.Errorf("sogou redirect: %w", err)
+	}
+
+	return articleHTML, nil
+}
+
 func (h *WebHandler) uploadBrowser(c echo.Context, req WebUploadRequest, cfg browserSiteConfig) error {
 	if h.BrowserPool == nil {
 		return c.JSON(500, echo.Map{"error": "browser rendering not available"})
@@ -909,30 +958,52 @@ func (h *WebHandler) uploadBrowser(c echo.Context, req WebUploadRequest, cfg bro
 		WaitStable:   2 * time.Second,
 		Timeout:      30 * time.Second,
 	})
+
+	captchaDetected := false
 	if err != nil {
-		// If WaitSelector timed out and we have a VerifySelector, check for captcha page
 		if cfg.VerifySelector != "" {
 			fallbackHTML, fallbackErr := h.BrowserPool.FetchRenderedHTML(req.URL, browser.RenderOpts{
 				WaitSelector: cfg.VerifySelector,
 				Timeout:      10 * time.Second,
 			})
 			if fallbackErr == nil && strings.Contains(fallbackHTML, cfg.VerifySelector[1:]) {
-				log.Printf("[browser] captcha/verify page detected for %s", req.URL)
-				return c.JSON(403, echo.Map{"error": "页面需要验证码，请在浏览器中手动打开链接完成验证后重试"})
+				captchaDetected = true
 			}
 		}
-		log.Printf("[browser] rendering failed for %s: %v", req.URL, err)
-		return c.JSON(500, echo.Map{"error": "browser rendering failed: " + err.Error()})
+		if !captchaDetected {
+			log.Printf("[browser] rendering failed for %s: %v", req.URL, err)
+			return c.JSON(500, echo.Map{"error": "browser rendering failed: " + err.Error()})
+		}
 	}
 
-	doc, err := ParseHTML(renderedHTML)
-	if err != nil {
+	doc, parseErr := ParseHTML(renderedHTML)
+	if parseErr != nil && !captchaDetected {
 		return c.JSON(500, echo.Map{"error": "failed to parse rendered HTML"})
 	}
 
-	// Check for verify page even when no error (WaitSelector might match a wrong element)
-	if cfg.VerifySelector != "" && doc.Find(cfg.VerifySelector).Length() > 0 {
-		log.Printf("[browser] captcha/verify page detected for %s", req.URL)
+	if !captchaDetected && cfg.VerifySelector != "" && doc != nil && doc.Find(cfg.VerifySelector).Length() > 0 {
+		captchaDetected = true
+	}
+
+	// Sogou fallback for WeChat captcha
+	if captchaDetected && isWeChatURL(req.URL) {
+		log.Printf("[browser] captcha detected, trying sogou fallback for %s", req.URL)
+		sogouHTML, sogouErr := h.fetchWeChatViaSogou(req.URL)
+		if sogouErr != nil {
+			log.Printf("[sogou] fallback failed: %v", sogouErr)
+			return c.JSON(403, echo.Map{"error": "页面需要验证码，搜狗搜索也未找到文章，请在浏览器中手动打开链接完成验证后重试"})
+		}
+		renderedHTML = sogouHTML
+		doc, parseErr = ParseHTML(renderedHTML)
+		if parseErr != nil {
+			return c.JSON(500, echo.Map{"error": "failed to parse sogou fallback HTML"})
+		}
+		captchaDetected = false
+		cfg.FetchMethod = "sogou"
+		log.Printf("[sogou] fallback succeeded for %s", req.URL)
+	}
+
+	if captchaDetected {
 		return c.JSON(403, echo.Map{"error": "页面需要验证码，请在浏览器中手动打开链接完成验证后重试"})
 	}
 
