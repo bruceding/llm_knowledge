@@ -1821,3 +1821,30 @@ func TestWebClippingWeChatArticle(t *testing.T) {
 	}
 	t.Logf("[debug] WeChat HTML saved to: %s", htmlFile)
 }
+
+func TestNeedsBrowser(t *testing.T) {
+	tests := []struct {
+		url    string
+		expect bool
+		method string
+	}{
+		{"https://mp.weixin.qq.com/s/some-article", true, "wechat"},
+		{"https://mp.weixin.qq.com/s?__biz=MzI2&mid=123", true, "wechat"},
+		{"https://www.bestblogs.dev/article/abc123", true, "browser"},
+		{"https://go.dev/blog/some-article", false, ""},
+		{"https://x.com/user/status/123", false, ""},
+		{"https://example.com", false, ""},
+		{"not-a-url", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			cfg, ok := needsBrowser(tt.url)
+			if ok != tt.expect {
+				t.Errorf("needsBrowser(%q) = %v, want %v", tt.url, ok, tt.expect)
+			}
+			if ok && cfg.FetchMethod != tt.method {
+				t.Errorf("needsBrowser(%q).FetchMethod = %q, want %q", tt.url, cfg.FetchMethod, tt.method)
+			}
+		})
+	}
+}
