@@ -13,6 +13,7 @@ import (
 
 type RenderOpts struct {
 	WaitSelector string
+	WaitStable   time.Duration
 	Timeout      time.Duration
 }
 
@@ -43,7 +44,10 @@ func (p *Pool) ensureBrowser() (*rod.Browser, error) {
 		return p.browser, nil
 	}
 
-	u, err := launcher.New().Headless(true).Launch()
+	u, err := launcher.New().
+		Headless(true).
+		Set("disable-blink-features", "AutomationControlled").
+		Launch()
 	if err != nil {
 		return nil, fmt.Errorf("launch chromium: %w", err)
 	}
@@ -87,18 +91,26 @@ func (p *Pool) FetchRenderedHTML(url string, opts RenderOpts) (string, error) {
 
 	page = page.Context(ctx)
 
+	// Hide webdriver flag before navigation
+	page.MustEvalOnNewDocument(`Object.defineProperty(navigator, 'webdriver', {get: () => false})`)
+
 	if err := page.Navigate(url); err != nil {
 		return "", fmt.Errorf("navigate to %s: %w", url, err)
 	}
 
-	if err := page.WaitLoad(); err != nil {
-		return "", fmt.Errorf("wait page load: %w", err)
-	}
+	// WaitLoad may fail on SPAs that destroy execution context during hydration
+	_ = page.WaitLoad()
 
 	if opts.WaitSelector != "" {
 		_, err := page.Element(opts.WaitSelector)
 		if err != nil {
 			return "", fmt.Errorf("wait for selector %q: %w", opts.WaitSelector, err)
+		}
+	}
+
+	if opts.WaitStable > 0 {
+		if err := page.WaitStable(opts.WaitStable); err != nil {
+			return "", fmt.Errorf("wait stable: %w", err)
 		}
 	}
 

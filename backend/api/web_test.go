@@ -1830,7 +1830,7 @@ func TestNeedsBrowser(t *testing.T) {
 	}{
 		{"https://mp.weixin.qq.com/s/some-article", true, "wechat"},
 		{"https://mp.weixin.qq.com/s?__biz=MzI2&mid=123", true, "wechat"},
-		{"https://www.bestblogs.dev/article/abc123", true, "browser"},
+		{"https://www.bestblogs.dev/article/abc123", false, ""},
 		{"https://go.dev/blog/some-article", false, ""},
 		{"https://x.com/user/status/123", false, ""},
 		{"https://example.com", false, ""},

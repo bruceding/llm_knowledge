@@ -99,10 +99,6 @@ var browserSites = map[string]browserSiteConfig{
 			return nil
 		},
 	},
-	"www.bestblogs.dev": {
-		WaitSelector: "article",
-		FetchMethod:  "browser",
-	},
 }
 
 func needsBrowser(urlStr string) (browserSiteConfig, bool) {
@@ -908,6 +904,7 @@ func (h *WebHandler) uploadBrowser(c echo.Context, req WebUploadRequest, cfg bro
 
 	renderedHTML, err := h.BrowserPool.FetchRenderedHTML(req.URL, browser.RenderOpts{
 		WaitSelector: cfg.WaitSelector,
+		WaitStable:   2 * time.Second,
 		Timeout:      30 * time.Second,
 	})
 	if err != nil {
