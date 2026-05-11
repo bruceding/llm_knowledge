@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"llm-knowledge/browser"
 	"llm-knowledge/db"
 	"llm-knowledge/ingest"
 	"log"
@@ -25,8 +26,9 @@ import (
 var inlineImageRe = regexp.MustCompile(`!\[([^\]]*)\]\((https?://[^\)]+)\)`)
 
 type WebHandler struct {
-	DataDir   string
-	ClaudeBin string
+	DataDir     string
+	ClaudeBin   string
+	BrowserPool *browser.Pool
 }
 
 type WebUploadRequest struct {
@@ -74,6 +76,42 @@ func isWeChatURL(urlStr string) bool {
 	}
 	host := strings.ToLower(u.Host)
 	return host == "mp.weixin.qq.com"
+}
+
+type browserSiteConfig struct {
+	WaitSelector   string
+	VerifySelector string
+	ScrollToLoad   bool
+	Postprocess    func(doc *goquery.Document)
+	ExtractAuthor  func(doc *goquery.Document) string
+	FetchMethod    string
+	ImageHeaders   func(imgURL string) map[string]string
+}
+
+var browserSites = map[string]browserSiteConfig{
+	"mp.weixin.qq.com": {
+		WaitSelector:   "#js_content",
+		VerifySelector: "#js_verify",
+		ScrollToLoad:   true,
+		Postprocess:    preprocessWeChatImages,
+		ExtractAuthor:  extractWeChatAuthor,
+		FetchMethod:    "wechat",
+		ImageHeaders: func(imgURL string) map[string]string {
+			if strings.Contains(imgURL, "mmbiz.qpic.cn") {
+				return weChatHeaders
+			}
+			return nil
+		},
+	},
+}
+
+func needsBrowser(urlStr string) (browserSiteConfig, bool) {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return browserSiteConfig{}, false
+	}
+	cfg, ok := browserSites[strings.ToLower(u.Host)]
+	return cfg, ok
 }
 
 // extractTitle extracts the page title, preferring og:title over <title>
@@ -863,6 +901,169 @@ func slugify(title string) string {
 	return title
 }
 
+// fetchWeChatViaSogou searches Sogou WeChat index to find and fetch the article
+// when direct access is blocked by captcha. Uses __biz + mid from the URL as search query.
+func (h *WebHandler) fetchWeChatViaSogou(originalURL string) (string, error) {
+	u, err := url.Parse(originalURL)
+	if err != nil {
+		return "", fmt.Errorf("parse URL: %w", err)
+	}
+	biz := u.Query().Get("__biz")
+	mid := u.Query().Get("mid")
+	if biz == "" || mid == "" {
+		return "", fmt.Errorf("missing __biz or mid in WeChat URL")
+	}
+
+	searchQuery := url.QueryEscape(biz + " " + mid)
+	searchURL := "https://weixin.sogou.com/weixin?type=2&query=" + searchQuery
+	log.Printf("[sogou] searching: %s", searchURL)
+
+	searchHTML, err := h.BrowserPool.FetchRenderedHTML(searchURL, browser.RenderOpts{
+		Timeout: 20 * time.Second,
+	})
+	if err != nil {
+		return "", fmt.Errorf("sogou search: %w", err)
+	}
+
+	searchDoc, err := ParseHTML(searchHTML)
+	if err != nil {
+		return "", fmt.Errorf("parse sogou results: %w", err)
+	}
+	var redirectURL string
+	searchDoc.Find("a[href*='/link?url=']").EachWithBreak(func(i int, s *goquery.Selection) bool {
+		href, exists := s.Attr("href")
+		if exists {
+			redirectURL = "https://weixin.sogou.com" + href
+			return false
+		}
+		return true
+	})
+	if redirectURL == "" {
+		return "", fmt.Errorf("no article links in sogou results")
+	}
+	log.Printf("[sogou] following redirect via browser")
+
+	// Navigate directly to Sogou's redirect link. The browser will:
+	// 1. Load the intermediate page with JS redirect
+	// 2. Follow window.location.replace() to the signed WeChat URL
+	// 3. Wait for #js_content on the final article page
+	// The signed URL from Sogou bypasses WeChat's captcha for this visit.
+	articleHTML, err := h.BrowserPool.FetchRenderedHTML(redirectURL, browser.RenderOpts{
+		WaitSelector: "#js_content",
+		ScrollToLoad: true,
+		Timeout:      30 * time.Second,
+	})
+	if err != nil {
+		return "", fmt.Errorf("sogou redirect: %w", err)
+	}
+
+	return articleHTML, nil
+}
+
+func (h *WebHandler) uploadBrowser(c echo.Context, req WebUploadRequest, cfg browserSiteConfig) error {
+	if h.BrowserPool == nil {
+		return c.JSON(500, echo.Map{"error": "browser rendering not available"})
+	}
+
+	renderedHTML, err := h.BrowserPool.FetchRenderedHTML(req.URL, browser.RenderOpts{
+		WaitSelector: cfg.WaitSelector,
+		WaitStable:   2 * time.Second,
+		ScrollToLoad: cfg.ScrollToLoad,
+		Timeout:      30 * time.Second,
+	})
+
+	captchaDetected := false
+	if err != nil {
+		if cfg.VerifySelector != "" {
+			fallbackHTML, fallbackErr := h.BrowserPool.FetchRenderedHTML(req.URL, browser.RenderOpts{
+				WaitSelector: cfg.VerifySelector,
+				Timeout:      10 * time.Second,
+			})
+			if fallbackErr == nil && strings.Contains(fallbackHTML, cfg.VerifySelector[1:]) {
+				captchaDetected = true
+			}
+		}
+		if !captchaDetected {
+			log.Printf("[browser] rendering failed for %s: %v", req.URL, err)
+			return c.JSON(500, echo.Map{"error": "browser rendering failed: " + err.Error()})
+		}
+	}
+
+	doc, parseErr := ParseHTML(renderedHTML)
+	if parseErr != nil && !captchaDetected {
+		return c.JSON(500, echo.Map{"error": "failed to parse rendered HTML"})
+	}
+
+	if !captchaDetected && cfg.VerifySelector != "" && doc != nil && doc.Find(cfg.VerifySelector).Length() > 0 {
+		captchaDetected = true
+	}
+
+	// Sogou fallback for WeChat captcha
+	if captchaDetected && isWeChatURL(req.URL) {
+		log.Printf("[browser] captcha detected, trying sogou fallback for %s", req.URL)
+		sogouHTML, sogouErr := h.fetchWeChatViaSogou(req.URL)
+		if sogouErr != nil {
+			log.Printf("[sogou] fallback failed: %v", sogouErr)
+			return c.JSON(403, echo.Map{"error": "页面需要验证码，搜狗搜索也未找到文章，请在浏览器中手动打开链接完成验证后重试"})
+		}
+		renderedHTML = sogouHTML
+		doc, parseErr = ParseHTML(renderedHTML)
+		if parseErr != nil {
+			return c.JSON(500, echo.Map{"error": "failed to parse sogou fallback HTML"})
+		}
+		captchaDetected = false
+		cfg.FetchMethod = "sogou"
+		log.Printf("[sogou] fallback succeeded for %s", req.URL)
+	}
+
+	if captchaDetected {
+		return c.JSON(403, echo.Map{"error": "页面需要验证码，请在浏览器中手动打开链接完成验证后重试"})
+	}
+
+	if cfg.Postprocess != nil {
+		cfg.Postprocess(doc)
+	}
+
+	originalTitle := extractTitle(doc)
+	if originalTitle == "" {
+		originalTitle = "untitled"
+	}
+
+	author := ""
+	if cfg.ExtractAuthor != nil {
+		author = cfg.ExtractAuthor(doc)
+	}
+
+	publishedTime := extractPublishedTime(doc)
+	if publishedTime.IsZero() {
+		publishedTime = time.Now()
+	}
+
+	content := ExtractContent(doc)
+
+	if cfg.ImageHeaders == nil {
+		cfg.ImageHeaders = func(imgURL string) map[string]string { return nil }
+	}
+
+	fetchMethod := cfg.FetchMethod
+	if fetchMethod == "" {
+		fetchMethod = "browser"
+	}
+
+	return h.saveWebDocument(c, req, originalTitle, doc, publishedTime, content, webSaveConfig{
+		Author:       author,
+		FetchMethod:  fetchMethod,
+		Language:     detectLanguage(content),
+		ImageHeaders: cfg.ImageHeaders,
+		SuccessMsg:   "Page saved successfully (browser rendered)",
+		Metadata: map[string]string{
+			"published":    publishedTime.Format(time.RFC3339),
+			"author":       author,
+			"fetch_method": fetchMethod,
+		},
+	})
+}
+
 func (h *WebHandler) UploadWeb(c echo.Context) error {
 	var req WebUploadRequest
 	if err := c.Bind(&req); err != nil {
@@ -879,10 +1080,8 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 		return h.uploadXTwitter(c, req)
 	}
 
-	// Check if this is a WeChat URL — needs special handling
-	// because WeChat blocks bare HTTP GET and uses data-src for images
-	if isWeChatURL(req.URL) {
-		return h.uploadWeChat(c, req)
+	if cfg, ok := needsBrowser(req.URL); ok {
+		return h.uploadBrowser(c, req, cfg)
 	}
 
 	// Fetch HTML
@@ -1254,57 +1453,3 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 	})
 }
 
-// uploadWeChat handles WeChat article URLs with special headers and DOM preprocessing.
-// WeChat articles have full content in HTML (unlike X/Twitter), but require:
-// 1. Referer + User-Agent headers for HTTP fetching
-// 2. data-src → src migration for lazy-loaded images
-// 3. Referer headers for downloading mmbiz.qpic.cn images
-func (h *WebHandler) uploadWeChat(c echo.Context, req WebUploadRequest) error {
-	// Fetch HTML with WeChat-specific headers
-	html, err := fetchHTML(req.URL, weChatHeaders)
-	if err != nil {
-		log.Printf("[wechat] fetchHTML failed for %s: %v", req.URL, err)
-		return c.JSON(500, echo.Map{"error": "failed to fetch WeChat article"})
-	}
-
-	// Parse HTML
-	doc, err := ParseHTML(html)
-	if err != nil {
-		return c.JSON(500, echo.Map{"error": "failed to parse HTML"})
-	}
-
-	// Preprocess: migrate data-src → src for lazy-loaded WeChat images
-	preprocessWeChatImages(doc)
-
-	// Extract title and author
-	originalTitle := extractTitle(doc)
-	if originalTitle == "" {
-		originalTitle = "untitled"
-	}
-	author := extractWeChatAuthor(doc)
-
-	publishedTime := extractPublishedTime(doc)
-	if publishedTime.IsZero() {
-		publishedTime = time.Now()
-	}
-
-	content := ExtractContent(doc)
-
-	return h.saveWebDocument(c, req, originalTitle, doc, publishedTime, content, webSaveConfig{
-		Author:       author,
-		FetchMethod:  "wechat",
-		Language:     detectLanguage(content),
-		ImageHeaders: func(imgURL string) map[string]string {
-			if strings.Contains(imgURL, "mmbiz.qpic.cn") {
-				return weChatHeaders
-			}
-			return nil
-		},
-		SuccessMsg: "WeChat article saved successfully",
-		Metadata: map[string]string{
-			"published":    publishedTime.Format(time.RFC3339),
-			"author":       author,
-			"fetch_method": "wechat",
-		},
-	})
-}

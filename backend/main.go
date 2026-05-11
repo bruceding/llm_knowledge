@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/fs"
 	"llm-knowledge/api"
+	"llm-knowledge/browser"
 	"llm-knowledge/claude"
 	"llm-knowledge/config"
 	"llm-knowledge/db"
@@ -135,9 +136,13 @@ func main() {
 	apiGroup.POST("/raw/pdf-url", rawH.UploadPDFFromURL)
 
 	// Web clipping API (protected)
+	browserPool := browser.NewPool(2)
+	defer browserPool.Close()
+
 	webH := &api.WebHandler{
-		DataDir:   cfg.DataDir,
-		ClaudeBin: cfg.ClaudeBin,
+		DataDir:     cfg.DataDir,
+		ClaudeBin:   cfg.ClaudeBin,
+		BrowserPool: browserPool,
 	}
 	apiGroup.POST("/raw/web", webH.UploadWeb)
 
