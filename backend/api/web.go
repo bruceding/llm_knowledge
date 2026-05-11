@@ -903,20 +903,14 @@ func slugify(title string) string {
 
 // fetchWeChatViaSogou searches Sogou WeChat index to find and fetch the article
 // when direct access is blocked by captcha. Uses __biz + mid from the URL as search query.
-func (h *WebHandler) fetchWeChatViaSogou(originalURL string) (string, error) {
-	u, err := url.Parse(originalURL)
-	if err != nil {
-		return "", fmt.Errorf("parse URL: %w", err)
-	}
-	biz := u.Query().Get("__biz")
-	mid := u.Query().Get("mid")
-	if biz == "" || mid == "" {
-		return "", fmt.Errorf("missing __biz or mid in WeChat URL")
+func (h *WebHandler) fetchWeChatViaSogou(_ string, pageTitle string) (string, error) {
+	if pageTitle == "" {
+		return "", fmt.Errorf("no title available for sogou search")
 	}
 
-	searchQuery := url.QueryEscape(biz + " " + mid)
+	searchQuery := url.QueryEscape(pageTitle)
 	searchURL := "https://weixin.sogou.com/weixin?type=2&query=" + searchQuery
-	log.Printf("[sogou] searching: %s", searchURL)
+	log.Printf("[sogou] searching by title: %s", searchURL)
 
 	searchHTML, err := h.BrowserPool.FetchRenderedHTML(searchURL, browser.RenderOpts{
 		Timeout: 20 * time.Second,
@@ -954,7 +948,9 @@ func (h *WebHandler) fetchWeChatViaSogou(originalURL string) (string, error) {
 	// 2. Follow window.location.replace() to the signed WeChat URL
 	// 3. Wait for #js_content on the final article page
 	// The signed URL from Sogou bypasses WeChat's captcha for this visit.
+	log.Printf("[sogou] redirect URL: %s", redirectURL)
 	articleHTML, err := h.BrowserPool.FetchRenderedHTML(redirectURL, browser.RenderOpts{
+		WaitRedirect: true,
 		WaitSelector: "#js_content",
 		ScrollToLoad: true,
 		Timeout:      30 * time.Second,
@@ -987,6 +983,7 @@ func (h *WebHandler) uploadBrowser(c echo.Context, req WebUploadRequest, cfg bro
 			})
 			if fallbackErr == nil && strings.Contains(fallbackHTML, cfg.VerifySelector[1:]) {
 				captchaDetected = true
+				renderedHTML = fallbackHTML
 			}
 		}
 		if !captchaDetected {
@@ -1006,8 +1003,12 @@ func (h *WebHandler) uploadBrowser(c echo.Context, req WebUploadRequest, cfg bro
 
 	// Sogou fallback for WeChat captcha
 	if captchaDetected && isWeChatURL(req.URL) {
-		log.Printf("[browser] captcha detected, trying sogou fallback for %s", req.URL)
-		sogouHTML, sogouErr := h.fetchWeChatViaSogou(req.URL)
+		pageTitle := ""
+		if doc != nil {
+			pageTitle = strings.TrimSpace(doc.Find("title").Text())
+		}
+		log.Printf("[browser] captcha detected, trying sogou fallback for %s (title: %q)", req.URL, pageTitle)
+		sogouHTML, sogouErr := h.fetchWeChatViaSogou(req.URL, pageTitle)
 		if sogouErr != nil {
 			log.Printf("[sogou] fallback failed: %v", sogouErr)
 			return c.JSON(403, echo.Map{"error": "页面需要验证码，搜狗搜索也未找到文章，请在浏览器中手动打开链接完成验证后重试"})
