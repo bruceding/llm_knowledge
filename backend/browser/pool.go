@@ -12,10 +12,11 @@ import (
 )
 
 type RenderOpts struct {
-	WaitSelector string
-	WaitStable   time.Duration
-	Timeout      time.Duration
-	ScrollToLoad bool
+	WaitSelector  string
+	WaitStable    time.Duration
+	Timeout       time.Duration
+	ScrollToLoad  bool
+	WaitRedirect  bool
 }
 
 type Pool struct {
@@ -108,6 +109,13 @@ Object.defineProperty(navigator, 'platform', {get: () => 'MacIntel'});
 
 	// WaitLoad may fail on SPAs that destroy execution context during hydration
 	_ = page.WaitLoad()
+
+	if opts.WaitRedirect {
+		page.EachEvent(func(e *proto.PageFrameNavigated) bool {
+			return e.Frame.ParentID == ""
+		})()
+		_ = page.WaitLoad()
+	}
 
 	if opts.WaitSelector != "" {
 		_, err := page.Element(opts.WaitSelector)
