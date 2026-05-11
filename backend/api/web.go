@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"llm-knowledge/browser"
 	"llm-knowledge/db"
 	"llm-knowledge/ingest"
 	"log"
@@ -25,8 +26,9 @@ import (
 var inlineImageRe = regexp.MustCompile(`!\[([^\]]*)\]\((https?://[^\)]+)\)`)
 
 type WebHandler struct {
-	DataDir   string
-	ClaudeBin string
+	DataDir     string
+	ClaudeBin   string
+	BrowserPool *browser.Pool
 }
 
 type WebUploadRequest struct {
@@ -74,6 +76,42 @@ func isWeChatURL(urlStr string) bool {
 	}
 	host := strings.ToLower(u.Host)
 	return host == "mp.weixin.qq.com"
+}
+
+type browserSiteConfig struct {
+	WaitSelector  string
+	Postprocess   func(doc *goquery.Document)
+	ExtractAuthor func(doc *goquery.Document) string
+	FetchMethod   string
+	ImageHeaders  func(imgURL string) map[string]string
+}
+
+var browserSites = map[string]browserSiteConfig{
+	"mp.weixin.qq.com": {
+		WaitSelector:  "#js_content",
+		Postprocess:   preprocessWeChatImages,
+		ExtractAuthor: extractWeChatAuthor,
+		FetchMethod:   "wechat",
+		ImageHeaders: func(imgURL string) map[string]string {
+			if strings.Contains(imgURL, "mmbiz.qpic.cn") {
+				return weChatHeaders
+			}
+			return nil
+		},
+	},
+	"www.bestblogs.dev": {
+		WaitSelector: "article",
+		FetchMethod:  "browser",
+	},
+}
+
+func needsBrowser(urlStr string) (browserSiteConfig, bool) {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return browserSiteConfig{}, false
+	}
+	cfg, ok := browserSites[strings.ToLower(u.Host)]
+	return cfg, ok
 }
 
 // extractTitle extracts the page title, preferring og:title over <title>
@@ -863,6 +901,69 @@ func slugify(title string) string {
 	return title
 }
 
+func (h *WebHandler) uploadBrowser(c echo.Context, req WebUploadRequest, cfg browserSiteConfig) error {
+	if h.BrowserPool == nil {
+		return c.JSON(500, echo.Map{"error": "browser rendering not available"})
+	}
+
+	renderedHTML, err := h.BrowserPool.FetchRenderedHTML(req.URL, browser.RenderOpts{
+		WaitSelector: cfg.WaitSelector,
+		Timeout:      30 * time.Second,
+	})
+	if err != nil {
+		log.Printf("[browser] rendering failed for %s: %v", req.URL, err)
+		return c.JSON(500, echo.Map{"error": "browser rendering failed: " + err.Error()})
+	}
+
+	doc, err := ParseHTML(renderedHTML)
+	if err != nil {
+		return c.JSON(500, echo.Map{"error": "failed to parse rendered HTML"})
+	}
+
+	if cfg.Postprocess != nil {
+		cfg.Postprocess(doc)
+	}
+
+	originalTitle := extractTitle(doc)
+	if originalTitle == "" {
+		originalTitle = "untitled"
+	}
+
+	author := ""
+	if cfg.ExtractAuthor != nil {
+		author = cfg.ExtractAuthor(doc)
+	}
+
+	publishedTime := extractPublishedTime(doc)
+	if publishedTime.IsZero() {
+		publishedTime = time.Now()
+	}
+
+	content := ExtractContent(doc)
+
+	if cfg.ImageHeaders == nil {
+		cfg.ImageHeaders = func(imgURL string) map[string]string { return nil }
+	}
+
+	fetchMethod := cfg.FetchMethod
+	if fetchMethod == "" {
+		fetchMethod = "browser"
+	}
+
+	return h.saveWebDocument(c, req, originalTitle, doc, publishedTime, content, webSaveConfig{
+		Author:       author,
+		FetchMethod:  fetchMethod,
+		Language:     detectLanguage(content),
+		ImageHeaders: cfg.ImageHeaders,
+		SuccessMsg:   "Page saved successfully (browser rendered)",
+		Metadata: map[string]string{
+			"published":    publishedTime.Format(time.RFC3339),
+			"author":       author,
+			"fetch_method": fetchMethod,
+		},
+	})
+}
+
 func (h *WebHandler) UploadWeb(c echo.Context) error {
 	var req WebUploadRequest
 	if err := c.Bind(&req); err != nil {
@@ -879,10 +980,8 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 		return h.uploadXTwitter(c, req)
 	}
 
-	// Check if this is a WeChat URL — needs special handling
-	// because WeChat blocks bare HTTP GET and uses data-src for images
-	if isWeChatURL(req.URL) {
-		return h.uploadWeChat(c, req)
+	if cfg, ok := needsBrowser(req.URL); ok {
+		return h.uploadBrowser(c, req, cfg)
 	}
 
 	// Fetch HTML
@@ -1254,57 +1353,3 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 	})
 }
 
-// uploadWeChat handles WeChat article URLs with special headers and DOM preprocessing.
-// WeChat articles have full content in HTML (unlike X/Twitter), but require:
-// 1. Referer + User-Agent headers for HTTP fetching
-// 2. data-src → src migration for lazy-loaded images
-// 3. Referer headers for downloading mmbiz.qpic.cn images
-func (h *WebHandler) uploadWeChat(c echo.Context, req WebUploadRequest) error {
-	// Fetch HTML with WeChat-specific headers
-	html, err := fetchHTML(req.URL, weChatHeaders)
-	if err != nil {
-		log.Printf("[wechat] fetchHTML failed for %s: %v", req.URL, err)
-		return c.JSON(500, echo.Map{"error": "failed to fetch WeChat article"})
-	}
-
-	// Parse HTML
-	doc, err := ParseHTML(html)
-	if err != nil {
-		return c.JSON(500, echo.Map{"error": "failed to parse HTML"})
-	}
-
-	// Preprocess: migrate data-src → src for lazy-loaded WeChat images
-	preprocessWeChatImages(doc)
-
-	// Extract title and author
-	originalTitle := extractTitle(doc)
-	if originalTitle == "" {
-		originalTitle = "untitled"
-	}
-	author := extractWeChatAuthor(doc)
-
-	publishedTime := extractPublishedTime(doc)
-	if publishedTime.IsZero() {
-		publishedTime = time.Now()
-	}
-
-	content := ExtractContent(doc)
-
-	return h.saveWebDocument(c, req, originalTitle, doc, publishedTime, content, webSaveConfig{
-		Author:       author,
-		FetchMethod:  "wechat",
-		Language:     detectLanguage(content),
-		ImageHeaders: func(imgURL string) map[string]string {
-			if strings.Contains(imgURL, "mmbiz.qpic.cn") {
-				return weChatHeaders
-			}
-			return nil
-		},
-		SuccessMsg: "WeChat article saved successfully",
-		Metadata: map[string]string{
-			"published":    publishedTime.Format(time.RFC3339),
-			"author":       author,
-			"fetch_method": "wechat",
-		},
-	})
-}
