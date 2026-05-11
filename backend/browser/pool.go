@@ -25,6 +25,7 @@ type Pool struct {
 	sem         chan struct{}
 	idleTimeout time.Duration
 	stopIdle    chan struct{}
+	reaperDone  sync.WaitGroup
 }
 
 func NewPool(maxConcurrency int) *Pool {
@@ -33,6 +34,7 @@ func NewPool(maxConcurrency int) *Pool {
 		idleTimeout: 5 * time.Minute,
 		stopIdle:    make(chan struct{}),
 	}
+	p.reaperDone.Add(1)
 	go p.idleReaper()
 	return p
 }
@@ -88,7 +90,8 @@ func (p *Pool) FetchRenderedHTML(url string, opts RenderOpts) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create page: %w", err)
 	}
-	defer page.Close()
+	closePage := page
+	defer closePage.Close()
 
 	page = page.Context(ctx)
 
@@ -153,6 +156,7 @@ Object.defineProperty(navigator, 'platform', {get: () => 'MacIntel'});
 }
 
 func (p *Pool) idleReaper() {
+	defer p.reaperDone.Done()
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
@@ -174,6 +178,7 @@ func (p *Pool) idleReaper() {
 
 func (p *Pool) Close() {
 	close(p.stopIdle)
+	p.reaperDone.Wait()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.browser != nil {

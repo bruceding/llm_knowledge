@@ -925,13 +925,22 @@ func (h *WebHandler) fetchWeChatViaSogou(originalURL string) (string, error) {
 		return "", fmt.Errorf("sogou search: %w", err)
 	}
 
-	re := regexp.MustCompile(`href="(/link\?url=[^"]+)"`)
-	matches := re.FindStringSubmatch(searchHTML)
-	if len(matches) < 2 {
+	searchDoc, err := ParseHTML(searchHTML)
+	if err != nil {
+		return "", fmt.Errorf("parse sogou results: %w", err)
+	}
+	var redirectURL string
+	searchDoc.Find("a[href*='/link?url=']").EachWithBreak(func(i int, s *goquery.Selection) bool {
+		href, exists := s.Attr("href")
+		if exists {
+			redirectURL = "https://weixin.sogou.com" + href
+			return false
+		}
+		return true
+	})
+	if redirectURL == "" {
 		return "", fmt.Errorf("no article links in sogou results")
 	}
-
-	redirectURL := "https://weixin.sogou.com" + matches[1]
 	log.Printf("[sogou] following redirect via browser")
 
 	// Navigate directly to Sogou's redirect link. The browser will:
