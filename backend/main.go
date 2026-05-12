@@ -145,6 +145,7 @@ func main() {
 		BrowserPool: browserPool,
 	}
 	apiGroup.POST("/raw/web", webH.UploadWeb)
+	apiGroup.POST("/raw/web-clip", webH.ClipWeb, middleware.BodyLimit("10M"))
 
 	// Document CRUD API (protected)
 	docH := &api.DocHandler{
