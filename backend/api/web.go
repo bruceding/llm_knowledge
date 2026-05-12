@@ -764,6 +764,9 @@ func ExtractContent(doc *goquery.Document) string {
 	// Clean up excessive blank lines (more than 2 consecutive)
 	content = cleanExcessiveWhitespace(content)
 
+	// Merge table rows separated by blank lines
+	content = mergeTableRows(content)
+
 	return strings.TrimSpace(content)
 }
 
@@ -886,6 +889,29 @@ func cleanExcessiveWhitespace(content string) string {
 		result = result[:len(result)-1]
 	}
 
+	return strings.Join(result, "\n")
+}
+
+// mergeTableRows removes blank lines between consecutive markdown table rows.
+// WeChat articles often wrap each table row in a separate <p>/<section>,
+// producing blank lines that break markdown table syntax.
+func mergeTableRows(content string) string {
+	lines := strings.Split(content, "\n")
+	var result []string
+	for i := 0; i < len(lines); i++ {
+		result = append(result, lines[i])
+		// If current line looks like a table row and next non-blank line also does,
+		// skip the blank line between them
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "|") && strings.HasSuffix(strings.TrimSpace(lines[i]), "|") {
+			j := i + 1
+			for j < len(lines) && strings.TrimSpace(lines[j]) == "" {
+				j++
+			}
+			if j < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[j]), "|") && strings.HasSuffix(strings.TrimSpace(lines[j]), "|") {
+				i = j - 1 // skip blank lines; loop increment moves to j
+			}
+		}
+	}
 	return strings.Join(result, "\n")
 }
 

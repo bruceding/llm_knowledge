@@ -1098,6 +1098,15 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		codeContent := ""
 		if codeEl.Length() > 0 {
 			codeContent = codeEl.Text()
+			// WeChat wraps each code line in a child element without newlines.
+			// If Text() has no newlines but <code> has multiple children, join per-child.
+			if !strings.Contains(codeContent, "\n") && codeEl.Children().Length() > 1 {
+				var codeLines []string
+				codeEl.Children().Each(func(i int, child *goquery.Selection) {
+					codeLines = append(codeLines, child.Text())
+				})
+				codeContent = strings.Join(codeLines, "\n")
+			}
 		} else {
 			codeContent = s.Text()
 		}

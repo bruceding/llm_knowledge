@@ -230,6 +230,11 @@ func TestConvertNodeToMarkdown(t *testing.T) {
 			html:     "<pre><code>func main() {}</code></pre>",
 			expected: "```\nfunc main() {}\n```",
 		},
+		{
+			name:     "code block with per-line child elements",
+			html:     `<pre><code><span>SKILLS = (</span><span>    "line1",</span><span>    "line2"</span><span>)</span></code></pre>`,
+			expected: "```\nSKILLS = (\n    \"line1\",\n    \"line2\"\n)\n```",
+		},
 	}
 
 	for _, tt := range tests {
@@ -2055,5 +2060,52 @@ func TestWeChatDecorativeSectionsNotProduceEmptyListItems(t *testing.T) {
 	}
 	if !strings.Contains(content, "Real content after separator") {
 		t.Error("Expected real content to be preserved")
+	}
+}
+
+func TestMergeTableRows(t *testing.T) {
+	input := "| 路径 | 耗时 | 场景 |\n\n|------|-------|-------|\n\n| Layer 1 | ~0.001ms | 热路径 |\n\n| Layer 2 | ~1ms | 冷启动 |"
+	expected := "| 路径 | 耗时 | 场景 |\n|------|-------|-------|\n| Layer 1 | ~0.001ms | 热路径 |\n| Layer 2 | ~1ms | 冷启动 |"
+
+	result := mergeTableRows(input)
+	if result != expected {
+		t.Errorf("Expected:\n%s\nGot:\n%s", expected, result)
+	}
+}
+
+func TestMergeTableRowsPreservesNonTableBlanks(t *testing.T) {
+	input := "Some text\n\nAnother paragraph\n\n| H1 | H2 |\n|---|---|\n| A | B |\n\nMore text"
+	result := mergeTableRows(input)
+
+	if !strings.Contains(result, "text\n\nAnother") {
+		t.Error("Expected blank line between non-table paragraphs to be preserved")
+	}
+	if !strings.Contains(result, "| B |\n\nMore") {
+		t.Error("Expected blank line after table to be preserved")
+	}
+}
+
+func TestExtractContentMergesTableRows(t *testing.T) {
+	html := `<html><body><article>
+	<p>性能对比：</p>
+	<p>| 路径 | 耗时 | 场景 |</p>
+	<p>|------|-------|-------|</p>
+	<p>| Layer 1 | ~0.001ms | 热路径 |</p>
+	<p>| Layer 2 | ~1ms | 冷启动 |</p>
+	</article></body></html>`
+
+	doc, err := ParseHTML(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := ExtractContent(doc)
+
+	// Table rows should be contiguous (no blank line between them)
+	if strings.Contains(content, "|\n\n|") {
+		t.Errorf("Expected table rows to be merged without blank lines, got:\n%s", content)
+	}
+	if !strings.Contains(content, "| 路径 | 耗时 | 场景 |\n|") {
+		t.Errorf("Expected header and separator to be adjacent, got:\n%s", content)
 	}
 }
