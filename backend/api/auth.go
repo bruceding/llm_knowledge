@@ -170,6 +170,7 @@ type LoginRequest struct {
 	Password      string `json:"password"`
 	CaptchaKey    string `json:"captchaKey"`
 	CaptchaAnswer string `json:"captchaAnswer"`
+	ClientType    string `json:"clientType"`
 }
 
 func (h *AuthHandler) Login(c echo.Context) error {
@@ -178,9 +179,11 @@ func (h *AuthHandler) Login(c echo.Context) error {
 		return c.JSON(400, echo.Map{"error": "无效的请求体"})
 	}
 
-	// Validate captcha
-	if !verifyCaptcha(req.CaptchaKey, req.CaptchaAnswer) {
-		return c.JSON(400, echo.Map{"error": "验证码错误或已过期"})
+	// Skip captcha for extension clients
+	if req.ClientType != "extension" {
+		if !verifyCaptcha(req.CaptchaKey, req.CaptchaAnswer) {
+			return c.JSON(400, echo.Map{"error": "验证码错误或已过期"})
+		}
 	}
 
 	// Find user

@@ -56,3 +56,18 @@ func TestValidateUsername(t *testing.T) {
 		}
 	}
 }
+
+func TestLoginRequestClientType(t *testing.T) {
+	req := LoginRequest{
+		Username:   "testuser",
+		Password:   "test123",
+		ClientType: "extension",
+	}
+	if req.ClientType != "extension" {
+		t.Errorf("Expected ClientType 'extension', got %q", req.ClientType)
+	}
+
+	if req.CaptchaKey != "" || req.CaptchaAnswer != "" {
+		t.Error("Extension login should not require captcha fields")
+	}
+}
