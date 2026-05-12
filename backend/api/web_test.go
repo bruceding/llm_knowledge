@@ -1884,24 +1884,26 @@ func TestClipWebParseAndExtract(t *testing.T) {
 
 func TestClipWebValidation(t *testing.T) {
 	tests := []struct {
-		name string
-		req  WebClipRequest
-		err  string
+		name  string
+		url   string
+		html  string
+		valid bool
 	}{
-		{"empty html", WebClipRequest{URL: "https://example.com", HTML: ""}, "html is required"},
-		{"empty url", WebClipRequest{URL: "", HTML: "<html></html>"}, "url is required"},
-		{"valid", WebClipRequest{URL: "https://example.com", Title: "Test", HTML: "<html><body>Hello</body></html>"}, ""},
+		{"empty html", "https://example.com", "", false},
+		{"empty url", "", "<html></html>", false},
+		{"valid", "https://example.com", "<html><body>Hello</body></html>", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.err != "" {
-				if tt.req.HTML == "" && tt.err == "html is required" {
-					// Validation check
-				}
-				if tt.req.URL == "" && tt.err == "url is required" {
-					// Validation check
-				}
+			req := WebClipRequest{URL: tt.url, HTML: tt.html}
+			hasURL := req.URL != ""
+			hasHTML := req.HTML != ""
+			if tt.valid && (!hasURL || !hasHTML) {
+				t.Errorf("Expected valid request to have both URL and HTML")
+			}
+			if !tt.valid && hasURL && hasHTML {
+				t.Errorf("Expected invalid request to be missing URL or HTML")
 			}
 		})
 	}

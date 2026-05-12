@@ -73,7 +73,7 @@ chrome.action.onClicked.addListener(async (tab) => {
       action: 'showToast',
       success: false,
       message: err.message || '收藏失败'
-    });
+    }).catch(() => {});
   }
 
   // Clear badge after 3 seconds

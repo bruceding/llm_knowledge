@@ -1148,8 +1148,9 @@ func (h *WebHandler) ClipWeb(c echo.Context) error {
 		return c.JSON(400, echo.Map{"error": "failed to parse HTML"})
 	}
 
-	// Apply platform-specific postprocessing (e.g. WeChat data-src → src)
-	if cfg, ok := needsBrowser(req.URL); ok && cfg.Postprocess != nil {
+	// Platform-specific config (e.g. WeChat)
+	cfg, hasCfg := needsBrowser(req.URL)
+	if hasCfg && cfg.Postprocess != nil {
 		cfg.Postprocess(doc)
 	}
 
@@ -1170,7 +1171,7 @@ func (h *WebHandler) ClipWeb(c echo.Context) error {
 
 	imageHeaders := func(imgURL string) map[string]string { return nil }
 	fetchMethod := "extension"
-	if cfg, ok := needsBrowser(req.URL); ok && cfg.ImageHeaders != nil {
+	if hasCfg && cfg.ImageHeaders != nil {
 		imageHeaders = cfg.ImageHeaders
 		fetchMethod = "extension-" + cfg.FetchMethod
 	}

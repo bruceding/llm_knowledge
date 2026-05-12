@@ -1,3 +1,6 @@
+if (!window._wikiClipperLoaded) {
+window._wikiClipperLoaded = true;
+
 // Selectors for non-content elements to remove before clipping
 var REMOVE_SELECTORS = [
   'script', 'style', 'iframe', 'noscript',
@@ -78,3 +81,5 @@ chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
   }
   return true;
 });
+
+} // end re-injection guard
