@@ -750,6 +750,9 @@ func ExtractContent(doc *goquery.Document) string {
 		contentNode = doc.Find("body")
 	}
 
+	// WeChat-specific cleanup: remove code line number lists
+	contentNode.Find(".code-snippet__line-index").Remove()
+
 	// Convert HTML to markdown using the same logic as RSS
 	var markdown strings.Builder
 	contentNode.Contents().Each(func(i int, s *goquery.Selection) {

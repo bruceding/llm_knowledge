@@ -833,7 +833,7 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 	node := s.Nodes[0]
 	if node.Type == html.TextNode {
 		text := node.Data
-		// Collapse multiple spaces/tabs into single space
+		text = strings.ReplaceAll(text, " ", " ")
 		text = strings.ReplaceAll(text, "\t", " ")
 		for strings.Contains(text, "  ") {
 			text = strings.ReplaceAll(text, "  ", " ")
@@ -1097,12 +1097,11 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		// For code inside pre, we need to preserve the original formatting
 		codeContent := ""
 		if codeEl.Length() > 0 {
-			// Get text from the code element directly
 			codeContent = codeEl.Text()
 		} else {
-			// Get text from pre directly
 			codeContent = s.Text()
 		}
+		codeContent = strings.ReplaceAll(codeContent, " ", " ")
 		// Strip common leading indentation while preserving relative indentation
 		// Find the minimum indentation among non-empty lines
 		lines := strings.Split(codeContent, "\n")
@@ -1157,17 +1156,25 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 			li.Contents().Each(func(j int, child *goquery.Selection) {
 				liContent += convertNodeToMarkdown(child)
 			})
-			result.WriteString("- " + strings.TrimSpace(liContent) + "\n")
+			trimmed := strings.TrimSpace(liContent)
+			if trimmed != "" {
+				result.WriteString("- " + trimmed + "\n")
+			}
 		})
 		return result.String() + "\n"
 	case "ol":
 		var result strings.Builder
+		idx := 1
 		s.Children().Each(func(i int, li *goquery.Selection) {
 			liContent := ""
 			li.Contents().Each(func(j int, child *goquery.Selection) {
 				liContent += convertNodeToMarkdown(child)
 			})
-			result.WriteString(fmt.Sprintf("%d. %s\n", i+1, strings.TrimSpace(liContent)))
+			trimmed := strings.TrimSpace(liContent)
+			if trimmed != "" {
+				result.WriteString(fmt.Sprintf("%d. %s\n", idx, trimmed))
+				idx++
+			}
 		})
 		return result.String() + "\n"
 	case "li":

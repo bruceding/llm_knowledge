@@ -11,11 +11,28 @@ var REMOVE_SELECTORS = [
   '[role="banner"]', '[role="navigation"]', '[role="complementary"]'
 ].join(', ');
 
+// Content area selectors in priority order
+var CONTENT_SELECTORS = [
+  '#js_content',          // WeChat articles
+  'article',
+  'main',
+  '[role="main"]',
+  '.content',
+  '.post-content',
+  '#content'
+];
+
 // Extract cleaned HTML from the page
 function extractContent() {
-  var clone = document.documentElement.cloneNode(true);
+  var mainEl = null;
+  for (var i = 0; i < CONTENT_SELECTORS.length; i++) {
+    mainEl = document.querySelector(CONTENT_SELECTORS[i]);
+    if (mainEl) break;
+  }
+  if (!mainEl) mainEl = document.body;
 
-  // Remove non-content elements
+  var clone = mainEl.cloneNode(true);
+
   clone.querySelectorAll(REMOVE_SELECTORS).forEach(function(el) {
     el.remove();
   });

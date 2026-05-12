@@ -210,6 +210,26 @@ func TestConvertNodeToMarkdown(t *testing.T) {
 			html:     `<a href="#section">Jump to section</a>`,
 			expected: "[Jump to section](#section)",
 		},
+		{
+			name:     "empty list items are skipped",
+			html:     `<ul><li>Real item</li><li><section><span><br/></span></section></li><li></li><li>Another item</li></ul>`,
+			expected: "- Real item\n- Another item\n",
+		},
+		{
+			name:     "ordered list skips empty items and renumbers",
+			html:     `<ol><li>First</li><li></li><li>Third</li></ol>`,
+			expected: "1. First\n2. Third\n",
+		},
+		{
+			name:     "no-break space replaced with regular space",
+			html:     "<p>hello world</p>",
+			expected: "hello world",
+		},
+		{
+			name:     "no-break space in code block cleaned",
+			html:     "<pre><code>func main() {}</code></pre>",
+			expected: "```\nfunc main() {}\n```",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1930,5 +1950,110 @@ func TestClipWebWeChatPostprocess(t *testing.T) {
 	src, _ = doc.Find("img").Attr("src")
 	if src != "https://mmbiz.qpic.cn/test.png" {
 		t.Errorf("After postprocess, src should be data-src value, got %q", src)
+	}
+}
+
+func TestExtractContentRemovesWeChatLineNumbers(t *testing.T) {
+	html := `<html><body><div id="js_content">
+	<p>Some code explanation</p>
+	<section class="code-snippet__line-index">
+		<li></li><li></li><li></li><li></li><li></li>
+	</section>
+	<pre><code>func main() {
+    fmt.Println("hello")
+}</code></pre>
+	</div></body></html>`
+
+	doc, err := ParseHTML(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := ExtractContent(doc)
+
+	if strings.Contains(content, "code-snippet") {
+		t.Error("Expected code line number elements to be removed")
+	}
+	if !strings.Contains(content, "Some code explanation") {
+		t.Error("Expected article content to be preserved")
+	}
+	if !strings.Contains(content, "func main()") {
+		t.Error("Expected code block content to be preserved")
+	}
+}
+
+func TestExtractContentFromContentAreaOnly(t *testing.T) {
+	html := `<html><body>
+	<nav>Navigation bar</nav>
+	<div id="js_content">
+		<p>Article content here</p>
+	</div>
+	<footer>Footer stuff</footer>
+	</body></html>`
+
+	doc, err := ParseHTML(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := ExtractContent(doc)
+
+	if !strings.Contains(content, "Article content here") {
+		t.Error("Expected content area text to be present")
+	}
+	if strings.Contains(content, "Navigation bar") {
+		t.Error("Expected nav to be stripped")
+	}
+	if strings.Contains(content, "Footer stuff") {
+		t.Error("Expected footer to be stripped")
+	}
+}
+
+func TestExtractContentWithExtensionHTML(t *testing.T) {
+	// Simulates content.js sending only the content area HTML (not full DOM)
+	html := `<div id="js_content">
+		<h2>Article Title</h2>
+		<p>Paragraph one.</p>
+		<p>Paragraph two.</p>
+	</div>`
+
+	doc, err := ParseHTML(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := ExtractContent(doc)
+
+	if !strings.Contains(content, "Article Title") {
+		t.Error("Expected title in content")
+	}
+	if !strings.Contains(content, "Paragraph one") {
+		t.Error("Expected paragraph content")
+	}
+}
+
+func TestWeChatDecorativeSectionsNotProduceEmptyListItems(t *testing.T) {
+	// WeChat uses decorative sections for chapter separators (gold lines + dots)
+	html := `<html><body><div id="js_content">
+	<section>
+		<section style="width: 25px; height: 2px; background: rgb(255, 200, 88);"><span><br/></span></section>
+		<section style="width: 4px; height: 4px; background: rgb(255, 200, 88);"><span><br/></span></section>
+		<section style="width: 25px; height: 2px; background: rgb(255, 200, 88);"><span><br/></span></section>
+	</section>
+	<p>Real content after separator</p>
+	</div></body></html>`
+
+	doc, err := ParseHTML(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := ExtractContent(doc)
+
+	if strings.Contains(content, "\n-\n") || strings.Contains(content, "\n- \n") {
+		t.Errorf("Expected no empty list items, got:\n%s", content)
+	}
+	if !strings.Contains(content, "Real content after separator") {
+		t.Error("Expected real content to be preserved")
 	}
 }
