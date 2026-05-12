@@ -73,7 +73,8 @@ saveBtn.addEventListener('click', async function() {
     // Clear password field
     passwordInput.value = '';
 
-    showStatus('success', '连接成功');
+    showStatus('success', '连接成功，即将关闭...');
+    setTimeout(function() { window.close(); }, 1500);
   } catch (err) {
     showStatus('error', err.message || '连接失败');
   } finally {
