@@ -1124,6 +1124,70 @@ func (h *WebHandler) UploadWeb(c echo.Context) error {
 	})
 }
 
+type WebClipRequest struct {
+	URL   string `json:"url"`
+	Title string `json:"title"`
+	HTML  string `json:"html"`
+}
+
+func (h *WebHandler) ClipWeb(c echo.Context) error {
+	var req WebClipRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(400, echo.Map{"error": "invalid request"})
+	}
+
+	if req.HTML == "" {
+		return c.JSON(400, echo.Map{"error": "html is required"})
+	}
+	if req.URL == "" {
+		return c.JSON(400, echo.Map{"error": "url is required"})
+	}
+
+	doc, err := ParseHTML(req.HTML)
+	if err != nil {
+		return c.JSON(400, echo.Map{"error": "failed to parse HTML"})
+	}
+
+	// Apply platform-specific postprocessing (e.g. WeChat data-src → src)
+	if cfg, ok := needsBrowser(req.URL); ok && cfg.Postprocess != nil {
+		cfg.Postprocess(doc)
+	}
+
+	originalTitle := req.Title
+	if originalTitle == "" {
+		originalTitle = extractTitle(doc)
+	}
+	if originalTitle == "" {
+		originalTitle = "untitled"
+	}
+
+	publishedTime := extractPublishedTime(doc)
+	if publishedTime.IsZero() {
+		publishedTime = time.Now()
+	}
+
+	content := ExtractContent(doc)
+
+	imageHeaders := func(imgURL string) map[string]string { return nil }
+	fetchMethod := "extension"
+	if cfg, ok := needsBrowser(req.URL); ok && cfg.ImageHeaders != nil {
+		imageHeaders = cfg.ImageHeaders
+		fetchMethod = "extension-" + cfg.FetchMethod
+	}
+
+	uploadReq := WebUploadRequest{URL: req.URL}
+	return h.saveWebDocument(c, uploadReq, originalTitle, doc, publishedTime, content, webSaveConfig{
+		FetchMethod:  fetchMethod,
+		Language:     detectLanguage(content),
+		ImageHeaders: imageHeaders,
+		SuccessMsg:   "Web page clipped successfully",
+		Metadata: map[string]string{
+			"published":    publishedTime.Format(time.RFC3339),
+			"fetch_method": fetchMethod,
+		},
+	})
+}
+
 // webSaveConfig holds platform-specific parameters for saving a web document.
 // The shared pipeline (dedup, collision, dirs, images, HTML/md save, DB, summary) is
 // identical across UploadWeb and uploadWeChat; only these fields vary.

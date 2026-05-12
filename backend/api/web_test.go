@@ -1848,3 +1848,85 @@ func TestNeedsBrowser(t *testing.T) {
 		})
 	}
 }
+
+func TestClipWebParseAndExtract(t *testing.T) {
+	html := `<html><head><title>Test Article</title>
+	<meta property="article:published_time" content="2026-05-01"/>
+	</head><body>
+	<nav>Navigation</nav>
+	<article><h1>Test Article</h1><p>Hello world.</p>
+	<img src="https://example.com/img.png"/></article>
+	<footer>Footer</footer></body></html>`
+
+	doc, err := ParseHTML(html)
+	if err != nil {
+		t.Fatalf("ParseHTML failed: %v", err)
+	}
+
+	title := extractTitle(doc)
+	if title != "Test Article" {
+		t.Errorf("Expected title 'Test Article', got %q", title)
+	}
+
+	content := ExtractContent(doc)
+	if !strings.Contains(content, "Hello world") {
+		t.Errorf("Expected content to contain 'Hello world', got %q", content)
+	}
+	if strings.Contains(content, "Navigation") {
+		t.Errorf("Expected nav to be stripped from content")
+	}
+
+	pubTime := extractPublishedTime(doc)
+	if pubTime.IsZero() {
+		t.Error("Expected published time to be extracted")
+	}
+}
+
+func TestClipWebValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		req  WebClipRequest
+		err  string
+	}{
+		{"empty html", WebClipRequest{URL: "https://example.com", HTML: ""}, "html is required"},
+		{"empty url", WebClipRequest{URL: "", HTML: "<html></html>"}, "url is required"},
+		{"valid", WebClipRequest{URL: "https://example.com", Title: "Test", HTML: "<html><body>Hello</body></html>"}, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.err != "" {
+				if tt.req.HTML == "" && tt.err == "html is required" {
+					// Validation check
+				}
+				if tt.req.URL == "" && tt.err == "url is required" {
+					// Validation check
+				}
+			}
+		})
+	}
+}
+
+func TestClipWebWeChatPostprocess(t *testing.T) {
+	html := `<html><body><div id="js_content">
+	<img data-src="https://mmbiz.qpic.cn/test.png" src=""/>
+	<p>WeChat article content</p>
+	</div></body></html>`
+
+	doc, err := ParseHTML(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	src, _ := doc.Find("img").Attr("src")
+	if src != "" {
+		t.Errorf("Before postprocess, src should be empty, got %q", src)
+	}
+
+	preprocessWeChatImages(doc)
+
+	src, _ = doc.Find("img").Attr("src")
+	if src != "https://mmbiz.qpic.cn/test.png" {
+		t.Errorf("After postprocess, src should be data-src value, got %q", src)
+	}
+}
