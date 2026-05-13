@@ -91,14 +91,18 @@ func generateSettingsFile(scriptsDir string) (string, error) {
 			Hooks: []Hook{
 				{
 					Type:    "command",
-					Command: validatorPath,
+					Command: fmt.Sprintf("python3 \"%s\"", validatorPath),
+					Timeout: 5,
 				},
 			},
 		})
 	}
 
-	settings := HookSettings{}
-	settings.Hooks.PreToolUse = preToolUseHooks
+	settings := map[string]interface{}{
+		"hooks": map[string]interface{}{
+			"PreToolUse": preToolUseHooks,
+		},
+	}
 
 	jsonData, err := json.Marshal(settings)
 	if err != nil {
@@ -133,13 +137,6 @@ func GetSettingsPath() string {
 	return globalSecurityConfig.SettingsPath
 }
 
-// HookSettings represents the hook configuration for settings.json
-type HookSettings struct {
-	Hooks struct {
-		PreToolUse []HookMatcher `json:"PreToolUse"`
-	} `json:"hooks"`
-}
-
 type HookMatcher struct {
 	Matcher string `json:"matcher"`
 	Hooks   []Hook `json:"hooks"`
@@ -148,6 +145,7 @@ type HookMatcher struct {
 type Hook struct {
 	Type    string `json:"type"`
 	Command string `json:"command,omitempty"`
+	Timeout int    `json:"timeout,omitempty"`
 }
 
 // BuildSecureEnv builds environment variables for Claude CLI with security settings
