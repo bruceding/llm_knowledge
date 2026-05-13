@@ -120,6 +120,9 @@ func (h *QueryHandler) Message(c echo.Context) error {
 	// Build system prompt
 	systemPrompt := h.buildSystemPrompt(req.DocID)
 
+	// Get user directory for session isolation
+	userDir := GetUserDir(c)
+
 	// Use context.Background() — request context gets cancelled when handler returns,
 	// which would kill the Claude subprocess via exec.CommandContext.
 	ctx := context.Background()
@@ -133,7 +136,7 @@ func (h *QueryHandler) Message(c echo.Context) error {
 	if qs == nil {
 		var err error
 		var source claude.SessionSource
-		qs, source, err = h.Pool.GetOrResume(ctx, req.ConversationID, conv.SessionID, systemPrompt, func(convID uint, newSID string) {
+		qs, source, err = h.Pool.GetOrResume(ctx, req.ConversationID, conv.SessionID, systemPrompt, userDir, func(convID uint, newSID string) {
 			db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
 		})
 		if err != nil {
@@ -194,7 +197,7 @@ func (h *QueryHandler) Message(c echo.Context) error {
 		log.Printf("[query] Failed to ask question: %v", err)
 		// Session might be dead, try to recreate
 		h.Pool.Remove(req.ConversationID)
-		qs, _, err = h.Pool.GetOrResume(ctx, req.ConversationID, "", systemPrompt, func(convID uint, newSID string) {
+		qs, _, err = h.Pool.GetOrResume(ctx, req.ConversationID, "", systemPrompt, userDir, func(convID uint, newSID string) {
 			db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
 		})
 		if err != nil {
@@ -247,13 +250,16 @@ func (h *QueryHandler) ResumeConversation(c echo.Context) error {
 	// Build system prompt
 	systemPrompt := h.buildSystemPrompt(0)
 
+	// Get user directory for session isolation
+	userDir := GetUserDir(c)
+
 	// Use context.Background() for session creation
 	ctx := context.Background()
 
 	// Remove old session if exists, then get or resume/create atomically
 	h.Pool.Remove(req.ConversationID)
 
-	qs, _, err := h.Pool.GetOrResume(ctx, req.ConversationID, conv.SessionID, systemPrompt, func(convID uint, newSID string) {
+	qs, _, err := h.Pool.GetOrResume(ctx, req.ConversationID, conv.SessionID, systemPrompt, userDir, func(convID uint, newSID string) {
 		db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
 	})
 	if err != nil {
@@ -325,8 +331,9 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 		// to update the DB when the real session_id arrives.
 		bgCtx := context.Background()
 		systemPrompt := h.buildSystemPrompt(0)
+		userDir := GetUserDir(c)
 		var err error
-		qs, _, err = h.Pool.GetOrResume(bgCtx, convID, conv.SessionID, systemPrompt, func(cid uint, newSID string) {
+		qs, _, err = h.Pool.GetOrResume(bgCtx, convID, conv.SessionID, systemPrompt, userDir, func(cid uint, newSID string) {
 			db.DB.Model(&db.Conversation{}).Where("id = ?", cid).Update("session_id", newSID)
 		})
 		if err != nil {

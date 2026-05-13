@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"llm-knowledge/config"
 	"llm-knowledge/crypto"
 	"llm-knowledge/db"
+	"llm-knowledge/fs"
 	"llm-knowledge/ingest"
 	"net"
 	"net/http"
@@ -562,7 +564,12 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 		}
 
 		senderDir := sanitizeFilename(fromName)
-		feedDir := filepath.Join(h.DataDir, "raw", "newsletter", senderDir)
+		// Use user-specific directory
+		userDir := config.GetUserDir(h.DataDir, cfg.UserID)
+		userIdStr := strconv.FormatUint(uint64(cfg.UserID), 10)
+		fs.InitUserDirs(h.DataDir, cfg.UserID)
+
+		feedDir := filepath.Join(userDir, "raw", "newsletter", senderDir)
 		assetsDir := filepath.Join(feedDir, "assets")
 		os.MkdirAll(assetsDir, 0755)
 
@@ -619,7 +626,7 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 			Title:      subject,
 			Slug:       slug,
 			SourceType: "newsletter",
-			RawPath:    filepath.Join("raw", "newsletter", senderDir, slug+".md"),
+			RawPath:    filepath.Join("users", userIdStr, "raw", "newsletter", senderDir, slug+".md"),
 			SourceURL:  viewURL,
 			SourceGUID: messageID,
 			Language:   "en",
@@ -643,18 +650,30 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 			db.DB.Create(&db.DocumentTag{DocumentID: doc.ID, TagID: tag.ID})
 		}
 
-		if h.ClaudeBin != "" {
-			docID := doc.ID
-			rawPath := doc.RawPath
-			go func() {
-				summary, err := ingest.GenerateSummary(h.DataDir, rawPath, h.ClaudeBin)
-				if err != nil {
-					fmt.Printf("[newsletter] summary generation failed for %d: %v\n", docID, err)
+			if h.ClaudeBin != "" {
+				docID := doc.ID
+				rawPath := doc.RawPath
+				// Extract relative path (e.g., "users/1/raw/newsletter/foo" -> "raw/newsletter/foo")
+				var rawRelPath string
+				if strings.HasPrefix(rawPath, "users/") {
+					parts := strings.SplitN(rawPath, "/", 3)
+					if len(parts) >= 3 {
+						rawRelPath = parts[2]
+					} else {
+						rawRelPath = rawPath
+					}
 				} else {
-					db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
+					rawRelPath = rawPath
 				}
-			}()
-		}
+				go func() {
+					summary, err := ingest.GenerateSummary(userDir, rawRelPath, h.ClaudeBin)
+					if err != nil {
+						fmt.Printf("[newsletter] summary generation failed for %d: %v\n", docID, err)
+					} else {
+						db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
+					}
+				}()
+			}
 
 		processedUIDs = append(processedUIDs, m.uid)
 		newArticles++

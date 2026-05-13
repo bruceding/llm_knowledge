@@ -165,12 +165,39 @@ func (h *DocHandler) Publish(c echo.Context) error {
 
 	// Trigger wiki ingest if raw content exists and ClaudeBin is configured
 	if doc.RawPath != "" && h.ClaudeBin != "" {
-		wikiDir := filepath.Join(h.DataDir, "wiki")
+		userDir := GetUserDir(c)
+		userIdStr := GetUserIdStr(c)
+
+		// Extract relative path from doc.RawPath (which is "users/{userId}/raw/...")
+		// Claude CLI runs with cmd.Dir = userDir, so paths should be relative to userDir
+		var rawRelPath string
+		if strings.HasPrefix(doc.RawPath, "users/") {
+			// Remove "users/{userId}/" prefix to get path relative to userDir
+			parts := strings.SplitN(doc.RawPath, "/", 3)
+			if len(parts) >= 3 {
+				rawRelPath = parts[2] // e.g., "raw/papers/my-paper"
+			} else {
+				rawRelPath = doc.RawPath
+			}
+		} else {
+			// Legacy path without user prefix - use as-is
+			rawRelPath = doc.RawPath
+		}
+
+		// Build absolute path for existence check
 		var mdPath string
-		if strings.HasSuffix(doc.RawPath, ".md") {
+		if strings.HasSuffix(rawRelPath, ".md") {
 			mdPath = filepath.Join(h.DataDir, doc.RawPath)
 		} else {
 			mdPath = filepath.Join(h.DataDir, doc.RawPath, "paper.md")
+		}
+
+		// Build relative path for Claude (relative to userDir)
+		var claudeRelPath string
+		if strings.HasSuffix(rawRelPath, ".md") {
+			claudeRelPath = rawRelPath
+		} else {
+			claudeRelPath = rawRelPath + "/paper.md"
 		}
 
 		if _, err := os.Stat(mdPath); err == nil {
@@ -181,12 +208,12 @@ func (h *DocHandler) Publish(c echo.Context) error {
 				docSlug = doc.Title // fallback for legacy records
 			}
 			go func() {
-				p := ingest.NewPipeline(wikiDir, h.ClaudeBin)
+				p := ingest.NewPipeline(userDir, h.ClaudeBin)
 				ctx := context.Background()
-				if err := p.Ingest(ctx, mdPath, docSlug, docID); err != nil {
+				if err := p.Ingest(ctx, claudeRelPath, docSlug, docID); err != nil {
 					log.Printf("[api] wiki ingest failed for %d: %v", docID, err)
 				} else {
-					wikiRelPath := filepath.Join("wiki", "sources", docSlug+".md")
+					wikiRelPath := filepath.Join("users", userIdStr, "wiki", "sources", docSlug+".md")
 					db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("wiki_path", wikiRelPath)
 					log.Printf("[api] wiki ingest completed for %d: %s", docID, wikiRelPath)
 				}
@@ -251,7 +278,8 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 	}
 
 	// Clean wiki content (entities, topics, index files) related to this document
-	wikiDir := filepath.Join(h.DataDir, "wiki")
+	userDir := GetUserDir(c)
+	wikiDir := filepath.Join(userDir, "wiki")
 	docSlug := doc.Slug
 	if docSlug == "" {
 		docSlug = doc.Title // fallback for legacy records
@@ -545,8 +573,25 @@ func (h *DocHandler) RegenerateSummary(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "document has no raw content"})
 	}
 
+	// Get user directory for summary generation
+	userDir := GetUserDir(c)
+
+	// Extract relative path from doc.RawPath (e.g., "users/1/raw/papers/foo" -> "raw/papers/foo")
+	var rawRelPath string
+	if strings.HasPrefix(doc.RawPath, "users/") {
+		parts := strings.SplitN(doc.RawPath, "/", 3)
+		if len(parts) >= 3 {
+			rawRelPath = parts[2]
+		} else {
+			rawRelPath = doc.RawPath
+		}
+	} else {
+		// Legacy path without user prefix
+		rawRelPath = doc.RawPath
+	}
+
 	// Generate summary
-	summary, err := ingest.GenerateSummary(h.DataDir, doc.RawPath, claudeBin)
+	summary, err := ingest.GenerateSummary(userDir, rawRelPath, claudeBin)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to generate summary: " + err.Error()})
 	}

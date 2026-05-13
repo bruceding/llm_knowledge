@@ -97,6 +97,10 @@ func Init(path string) error {
 		DB.Migrator().DropIndex(&Tag{}, "idx_tags_name")
 	}
 
+	// Migrate document paths to user-partitioned structure
+	// Update raw_path and wiki_path to include "users/{userId}/" prefix
+	migrateDocumentPaths()
+
 	// Start session cleanup scheduler
 	startSessionCleanup()
 
@@ -141,4 +145,33 @@ func startSessionCleanup() {
 			}
 		}
 	}()
+}
+
+// migrateDocumentPaths updates raw_path and wiki_path to include user prefix
+// Old: "raw/papers/foo" -> New: "users/1/raw/papers/foo"
+func migrateDocumentPaths() {
+	// Check if migration needed by looking for paths without "users/" prefix
+	var needsMigration int64
+	DB.Model(&Document{}).Where("raw_path != '' AND raw_path NOT LIKE 'users/%'").Count(&needsMigration)
+	if needsMigration == 0 {
+		return
+	}
+
+	log.Printf("[migration] Migrating %d document paths to user-partitioned structure", needsMigration)
+
+	// Update raw_path: prepend "users/{user_id}/"
+	DB.Exec(`
+		UPDATE documents
+		SET raw_path = 'users/' || user_id || '/' || raw_path
+		WHERE raw_path != '' AND raw_path NOT LIKE 'users/%'
+	`)
+
+	// Update wiki_path: prepend "users/{user_id}/"
+	DB.Exec(`
+		UPDATE documents
+		SET wiki_path = 'users/' || user_id || '/' || wiki_path
+		WHERE wiki_path != '' AND wiki_path NOT LIKE 'users/%'
+	`)
+
+	log.Printf("[migration] Document path migration completed")
 }

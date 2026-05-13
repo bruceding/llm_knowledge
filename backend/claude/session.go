@@ -141,7 +141,7 @@ func waitForInit(session *InteractiveSession, timeout time.Duration) error {
 }
 
 // StartSession creates a new Claude session with user/document ownership
-func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID uint, docID uint) (*InteractiveSession, error) {
+func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID uint, docID uint, userDir string) (*InteractiveSession, error) {
 	args := []string{
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
@@ -155,7 +155,8 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 	args = append(args, "--system-prompt", systemPrompt)
 
 	ctx, cancel := context.WithCancel(ctx)
-	cmd := buildCmd(ctx, p.claudeBin, args, p.dataDir)
+	// Use userDir instead of p.dataDir for isolation
+	cmd := buildCmd(ctx, p.claudeBin, args, userDir)
 
 	stdinPipe, stdoutPipe, stderrPipe, err := createPipes(cmd)
 	if err != nil {

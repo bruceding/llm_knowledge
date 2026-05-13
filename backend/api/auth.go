@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"llm-knowledge/db"
+	embedfs "llm-knowledge/fs"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -158,6 +159,9 @@ func (h *AuthHandler) Register(c echo.Context) error {
 		MustChangePassword: false,
 	}
 	db.DB.Create(&user)
+
+	// Initialize user directory structure
+	embedfs.InitUserDirs(GlobalDataDir, user.ID)
 
 	return c.JSON(200, echo.Map{
 		"success": true,

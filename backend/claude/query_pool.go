@@ -337,7 +337,8 @@ const (
 // concurrent resume attempts for the same conversation.
 // The onSessionID callback is registered to update the database when the real
 // session_id arrives asynchronously.
-func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSessionID string, systemPrompt string, onRealSessionID func(convID uint, newSID string)) (*QuerySession, SessionSource, error) {
+// userDir is the user's directory for Claude session isolation.
+func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSessionID string, systemPrompt string, userDir string, onRealSessionID func(convID uint, newSID string)) (*QuerySession, SessionSource, error) {
 	p.mu.RLock()
 	qs, exists := p.sessions[convID]
 	p.mu.RUnlock()
@@ -360,7 +361,7 @@ func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSes
 
 	// Try resume first if a previous session_id is available and looks real
 	if prevSessionID != "" && !strings.HasPrefix(prevSessionID, "local-") {
-		session, err = StartResumedSession(ctx, p.claudeBin, p.dataDir, prevSessionID, systemPrompt)
+		session, err = StartResumedSession(ctx, p.claudeBin, userDir, prevSessionID, systemPrompt)
 		if err != nil {
 			log.Printf("[query-pool] Resume failed for conversation %d (%v), creating fresh session", convID, err)
 			session = nil // fall through to create new
@@ -370,7 +371,7 @@ func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSes
 	}
 
 	if session == nil {
-		session, err = StartSession(ctx, p.claudeBin, p.dataDir, systemPrompt)
+		session, err = StartSession(ctx, p.claudeBin, userDir, systemPrompt)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to start session: %w", err)
 		}
@@ -393,7 +394,8 @@ func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSes
 
 // GetOrCreate retrieves an existing session or creates a new one.
 // Prefer GetOrResume which also tries --resume when a previous session exists.
-func (p *QuerySessionPool) GetOrCreate(ctx context.Context, convID uint, systemPrompt string) (*QuerySession, error) {
+// userDir is the user's directory for Claude session isolation.
+func (p *QuerySessionPool) GetOrCreate(ctx context.Context, convID uint, systemPrompt string, userDir string) (*QuerySession, error) {
 	p.mu.RLock()
 	qs, exists := p.sessions[convID]
 	p.mu.RUnlock()
@@ -410,7 +412,7 @@ func (p *QuerySessionPool) GetOrCreate(ctx context.Context, convID uint, systemP
 		return qs, nil
 	}
 
-	session, err := StartSession(ctx, p.claudeBin, p.dataDir, systemPrompt)
+	session, err := StartSession(ctx, p.claudeBin, userDir, systemPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start session: %w", err)
 	}
@@ -430,11 +432,12 @@ func (p *QuerySessionPool) GetOrCreate(ctx context.Context, convID uint, systemP
 }
 
 // ResumeSession creates a new session by resuming a previous one via --resume.
-func (p *QuerySessionPool) ResumeSession(ctx context.Context, convID uint, prevSessionID string, systemPrompt string) (*QuerySession, error) {
+// userDir is the user's directory for Claude session isolation.
+func (p *QuerySessionPool) ResumeSession(ctx context.Context, convID uint, prevSessionID string, systemPrompt string, userDir string) (*QuerySession, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	session, err := StartResumedSession(ctx, p.claudeBin, p.dataDir, prevSessionID, systemPrompt)
+	session, err := StartResumedSession(ctx, p.claudeBin, userDir, prevSessionID, systemPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resume session: %w", err)
 	}
@@ -471,7 +474,8 @@ func (p *QuerySessionPool) Remove(convID uint) {
 // Extracted from SessionPool.StartSession for reuse.
 // No init message is sent — the first real user message triggers system.init,
 // so session creation returns immediately without waiting for Claude CLI to boot.
-func StartSession(ctx context.Context, claudeBin string, dataDir string, systemPrompt string) (*InteractiveSession, error) {
+// userDir is the user's directory (cmd.Dir) for Claude session isolation.
+func StartSession(ctx context.Context, claudeBin string, userDir string, systemPrompt string) (*InteractiveSession, error) {
 	args := []string{
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
@@ -485,7 +489,7 @@ func StartSession(ctx context.Context, claudeBin string, dataDir string, systemP
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
-	cmd := buildCmd(ctx, claudeBin, args, dataDir)
+	cmd := buildCmd(ctx, claudeBin, args, userDir)
 
 	stdinPipe, stdoutPipe, stderrPipe, err := createPipes(cmd)
 	if err != nil {
@@ -537,7 +541,8 @@ func StartSession(ctx context.Context, claudeBin string, dataDir string, systemP
 
 // StartResumedSession creates a new InteractiveSession that resumes a previous conversation.
 // No init message is sent — the first real user message triggers system.init.
-func StartResumedSession(ctx context.Context, claudeBin string, dataDir string, prevSessionID string, systemPrompt string) (*InteractiveSession, error) {
+// userDir is the user's directory (cmd.Dir) for Claude session isolation.
+func StartResumedSession(ctx context.Context, claudeBin string, userDir string, prevSessionID string, systemPrompt string) (*InteractiveSession, error) {
 	args := []string{
 		"--resume", prevSessionID,
 		"--output-format", "stream-json",
@@ -552,7 +557,7 @@ func StartResumedSession(ctx context.Context, claudeBin string, dataDir string, 
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
-	cmd := buildCmd(ctx, claudeBin, args, dataDir)
+	cmd := buildCmd(ctx, claudeBin, args, userDir)
 
 	stdinPipe, stdoutPipe, stderrPipe, err := createPipes(cmd)
 	if err != nil {

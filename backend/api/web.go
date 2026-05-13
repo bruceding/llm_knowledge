@@ -8,6 +8,7 @@ import (
 	"io"
 	"llm-knowledge/browser"
 	"llm-knowledge/db"
+	"llm-knowledge/fs"
 	"llm-knowledge/ingest"
 	"log"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -716,58 +718,129 @@ func getImageExtension(imgURL string) string {
 	return ".png"
 }
 
-// extractContent extracts clean text content from HTML for markdown
+// extractContent extracts clean text content from HTML for markdown.
+// Strategy: try multiple selectors and pick the one with most text content.
 func ExtractContent(doc *goquery.Document) string {
 	// Remove script, style, nav, header, footer, sidebar elements
 	// Also remove navigation links, social icons, and other non-content elements
-	doc.Find("script, style, nav, header, .Header, .Footer, .NavigationDrawer, aside, .sidebar, .navigation, .menu, .ads").Remove()
+	doc.Find("script, style, nav, header, footer, .Header, .Footer, .NavigationDrawer, aside, .sidebar, .navigation, .menu, .ads").Remove()
 
 	// Remove cookie notices and other non-content
 	doc.Find(".Cookie-notice, .cookie-notice, .js-cookieNotice").Remove()
 
-	// Try to find main content area - prioritize specific selectors
-	var contentNode *goquery.Selection
-	// Try multiple selectors in order of specificity
+	// Content selectors ordered by specificity (platform-specific first, then generic)
+	// Key insight: some sites have <article> for footer, <main> for content (e.g. Aliyun docs)
+	// Solution: pick the selector with most text content, not first match
 	selectors := []string{
-		".Article",          // Go blog
-		".Blog-content",     // Go blog alternative
-		".u-rich-text-blog", // Claude blog
-		"article",
-		"main",
-		"#js_content",       // WeChat articles (mp.weixin.qq.com)
-		".content",
-		".post",
+		// Platform-specific: GitHub / markdown renderers
+		".markdown-body",    // GitHub, Aliyun docs, many markdown-based sites
+		".prose",            // Tailwind Typography (modern blogs)
+
+		// Platform-specific: Go/blog
+		".Article",
+		".Blog-content",
+
+		// Platform-specific: Medium/CMS style
+		".section-content",  // Medium
+		".article-content",  // Common CMS (WordPress, 少数派, etc.)
+		".article-body",
+		".post-content",
+		".entry-content",    // WordPress standard
+
+		// Platform-specific: Claude blog
+		".u-rich-text-blog",
+
+		// Platform-specific: documentation frameworks
+		"#VPContent",        // VitePress (Vue docs)
+		".document",         // Sphinx (Python docs)
+		"div.body",          // Sphinx variant
+
+		// Platform-specific: WeChat
+		"#js_content",
+
+		// Generic semantic HTML5
 		"#content",
 		"#main",
+		".content",
+		".post",
+		"main",
+		"article",
 	}
+
+	var bestContent string
+	var bestTextLen int
+
 	for _, sel := range selectors {
-		if doc.Find(sel).Length() > 0 {
-			contentNode = doc.Find(sel).First()
-			break
+		matches := doc.Find(sel)
+		if matches.Length() == 0 {
+			continue
 		}
+
+		// Try each match and find the one with most text
+		matches.Each(func(i int, s *goquery.Selection) {
+			// Skip if this node contains only nav/sidebar elements
+			if isNavOrFooter(s) {
+				return
+			}
+
+			// Extract content
+			var markdown strings.Builder
+			s.Contents().Each(func(j int, child *goquery.Selection) {
+				markdown.WriteString(convertNodeToMarkdown(child))
+			})
+			content := cleanExcessiveWhitespace(markdown.String())
+
+			// Measure text length (excluding whitespace)
+			textLen := len(strings.TrimSpace(content))
+			if textLen > bestTextLen {
+				bestTextLen = textLen
+				bestContent = content
+			}
+		})
 	}
-	if contentNode == nil {
-		contentNode = doc.Find("body")
+
+	// Fallback to body if no selector found meaningful content
+	if bestContent == "" {
+		var markdown strings.Builder
+		doc.Find("body").Contents().Each(func(i int, s *goquery.Selection) {
+			markdown.WriteString(convertNodeToMarkdown(s))
+		})
+		bestContent = cleanExcessiveWhitespace(markdown.String())
 	}
-
-	// WeChat-specific cleanup: remove code line number lists
-	contentNode.Find(".code-snippet__line-index").Remove()
-
-	// Convert HTML to markdown using the same logic as RSS
-	var markdown strings.Builder
-	contentNode.Contents().Each(func(i int, s *goquery.Selection) {
-		markdown.WriteString(convertNodeToMarkdown(s))
-	})
-
-	content := markdown.String()
-
-	// Clean up excessive blank lines (more than 2 consecutive)
-	content = cleanExcessiveWhitespace(content)
 
 	// Merge table rows separated by blank lines
-	content = mergeTableRows(content)
+	bestContent = mergeTableRows(bestContent)
 
-	return strings.TrimSpace(content)
+	return strings.TrimSpace(bestContent)
+}
+
+// isNavOrFooter checks if a node is likely navigation/footer rather than main content.
+// Heuristic: if it contains footer/nav indicators or has very few text characters.
+func isNavOrFooter(s *goquery.Selection) bool {
+	// Check for footer/nav indicators in class or id
+	class, _ := s.Attr("class")
+	id, _ := s.Attr("id")
+
+	footerIndicators := []string{
+		"footer", "nav", "navigation", "sidebar", "menu",
+		"comment", "reply", "discuss", "related",
+		"share", "social", "breadcrumb",
+		"copyright", "license",
+	}
+	for _, indicator := range footerIndicators {
+		if strings.Contains(strings.ToLower(class), indicator) ||
+			strings.Contains(strings.ToLower(id), indicator) {
+			return true
+		}
+	}
+
+	// Check text length heuristic: footer areas typically have < 100 chars
+	text := strings.TrimSpace(s.Text())
+	if len(text) < 100 {
+		return true
+	}
+
+	return false
 }
 
 // extractPublishedTime extracts publication time from HTML meta tags
@@ -1235,6 +1308,11 @@ type webSaveConfig struct {
 func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, originalTitle string, doc *goquery.Document, publishedTime time.Time, content string, cfg webSaveConfig) error {
 	title := slugify(originalTitle)
 	userId := GetCurrentUserId(c)
+	userDir := GetUserDir(c)
+	userIdStr := strconv.FormatUint(uint64(userId), 10)
+
+	// Ensure user directory exists
+	fs.InitUserDirs(h.DataDir, userId)
 
 	// Dedup: hard-delete any soft-deleted records with the same source_url for this user
 	// This prevents "ghost" records from causing confusion and accidental deletion of re-imported files
@@ -1260,16 +1338,16 @@ func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, origi
 
 	// Resolve raw_path collision: different URLs may produce the same title/slug.
 	// If another active document already uses this raw_path, append a numeric suffix.
-	rawRelPath := filepath.Join("raw", "web", title)
+	rawRelPath := filepath.Join("users", userIdStr, "raw", "web", title)
 	var collisionCount int64
 	db.DB.Model(&db.Document{}).Where("raw_path = ? AND source_url != ?", rawRelPath, req.URL).Count(&collisionCount)
 	if collisionCount > 0 {
 		title = fmt.Sprintf("%s-%d", title, collisionCount+1)
-		rawRelPath = filepath.Join("raw", "web", title)
+		rawRelPath = filepath.Join("users", userIdStr, "raw", "web", title)
 	}
 
 	// Create directory
-	dir := filepath.Join(h.DataDir, rawRelPath)
+	dir := filepath.Join(userDir, "raw", "web", title)
 	assetsDir := filepath.Join(dir, "assets")
 	if err := os.MkdirAll(assetsDir, 0755); err != nil {
 		return c.JSON(500, echo.Map{"error": "failed to create directory"})
@@ -1356,7 +1434,7 @@ func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, origi
 	// Trigger async summary generation if ClaudeBin is configured
 	if h.ClaudeBin != "" {
 		go func() {
-			summary, err := ingest.GenerateSummary(h.DataDir, rawRelPath, h.ClaudeBin)
+			summary, err := ingest.GenerateSummary(userDir, "raw/web/"+title, h.ClaudeBin)
 			if err != nil {
 				fmt.Printf("[api] summary generation failed for %s: %v\n", title, err)
 			} else {
@@ -1415,6 +1493,11 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 	title := slugify(originalTitle)
 
 	userId := GetCurrentUserId(c)
+	userDir := GetUserDir(c)
+	userIdStr := strconv.FormatUint(uint64(userId), 10)
+
+	// Ensure user directory exists
+	fs.InitUserDirs(h.DataDir, userId)
 
 	// Dedup
 	var staleDocs []db.Document
@@ -1435,15 +1518,15 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 		})
 	}
 
-	rawRelPath := filepath.Join("raw", "web", title)
+	rawRelPath := filepath.Join("users", userIdStr, "raw", "web", title)
 	var collisionCount int64
 	db.DB.Model(&db.Document{}).Where("raw_path = ? AND source_url != ?", rawRelPath, req.URL).Count(&collisionCount)
 	if collisionCount > 0 {
 		title = fmt.Sprintf("%s-%d", title, collisionCount+1)
-		rawRelPath = filepath.Join("raw", "web", title)
+		rawRelPath = filepath.Join("users", userIdStr, "raw", "web", title)
 	}
 
-	dir := filepath.Join(h.DataDir, rawRelPath)
+	dir := filepath.Join(userDir, "raw", "web", title)
 	assetsDir := filepath.Join(dir, "assets")
 	if err := os.MkdirAll(assetsDir, 0755); err != nil {
 		return c.JSON(500, echo.Map{"error": "failed to create directory"})
@@ -1532,7 +1615,7 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 	// Async summary
 	if h.ClaudeBin != "" {
 		go func() {
-			summary, err := ingest.GenerateSummary(h.DataDir, rawRelPath, h.ClaudeBin)
+			summary, err := ingest.GenerateSummary(userDir, "raw/web/"+title, h.ClaudeBin)
 			if err != nil {
 				fmt.Printf("[api] summary generation failed for %s: %v\n", title, err)
 			} else {

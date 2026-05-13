@@ -3,11 +3,13 @@ package api
 import (
 	"encoding/base64"
 	"fmt"
+	"llm-knowledge/fs"
 	"log"
 	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +54,12 @@ func (h *ImagesHandler) Upload(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, echo.Map{"error": "未登录"})
 	}
 
+	userDir := GetUserDir(c)
+	userIdStr := strconv.FormatUint(uint64(userId), 10)
+
+	// Ensure user directory exists
+	fs.InitUserDirs(h.DataDir, userId)
+
 	var req ImageUploadRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid request body"})
@@ -91,8 +99,8 @@ func (h *ImagesHandler) Upload(c echo.Context) error {
 		})
 	}
 
-	// Create images directory
-	imagesDir := filepath.Join(h.DataDir, "cache", "images")
+	// Create images directory in user's cache
+	imagesDir := filepath.Join(userDir, "cache", "images")
 	if err := os.MkdirAll(imagesDir, 0755); err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create images directory"})
 	}
@@ -111,7 +119,7 @@ func (h *ImagesHandler) Upload(c echo.Context) error {
 	log.Printf("[images] Saved image %s (%d bytes)", filename, len(decoded))
 
 	return c.JSON(http.StatusOK, ImageUploadResponse{
-		Path:     "/data/cache/images/" + filename,
+		Path:     "/data/users/" + userIdStr + "/cache/images/" + filename,
 		Filename: filename,
 	})
 }
