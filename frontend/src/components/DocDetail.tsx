@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import 'highlight.js/styles/github.css'
 import { useTranslation } from 'react-i18next'
-import { fetchDocument, updateDocument, publishDocument, deleteDocument, regenerateSummary, getPagesStatus, fetchSettings, checkPDFTranslationStatus, translatePDF, checkMarkdownTranslationStatus, translateMarkdown, fetchDocNotes, deleteDocNote, pushNoteToWiki, type DocNote } from '../api'
+import { fetchDocument, updateDocument, publishDocument, deleteDocument, regenerateSummary, getPagesStatus, fetchSettings, checkPDFTranslationStatus, translatePDF, checkMarkdownTranslationStatus, translateMarkdown, fetchDocNotes, deleteDocNote, pushNoteToWiki, type DocNote, getAuthHeaders } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
 import type { Document, SSEEvent, UserSettings } from '../types'
 import PDFViewer from './PDFViewer'
@@ -17,6 +17,13 @@ import DualPDFViewer from './DualPDFViewer'
 // Note: encodeURIComponent doesn't encode '!' which can cause issues with some servers
 function encodeURIPath(path: string): string {
   return path.split('/').map(segment => encodeURIComponent(segment).replace(/!/g, '%21')).join('/')
+}
+
+// Helper to add token query param for static resources (images, PDFs)
+function addTokenParam(url: string): string {
+  const token = localStorage.getItem('token')
+  if (!token) return url
+  return `${url}?token=${encodeURIComponent(token)}`
 }
 
 // Helper to strip YAML frontmatter from markdown content
@@ -154,7 +161,7 @@ export default function DocDetail() {
 
       // Load wiki content
       if (doc.wikiPath) {
-        const wikiRes = await fetch(`/data/${encodeURIPath(doc.wikiPath)}`)
+        const wikiRes = await fetch(`/data/${encodeURIPath(doc.wikiPath)}`, { headers: getAuthHeaders() })
         if (wikiRes.ok) {
           setWikiContent(await wikiRes.text())
         }
@@ -169,7 +176,7 @@ export default function DocDetail() {
           if (doc.sourceType === 'web') {
             rawFilePath = `${doc.rawPath}/paper.md`
           }
-          const rawRes = await fetch(`/data/${encodeURIPath(rawFilePath)}`)
+          const rawRes = await fetch(`/data/${encodeURIPath(rawFilePath)}`, { headers: getAuthHeaders() })
           if (rawRes.ok) {
             let content = await rawRes.text()
             // Strip YAML frontmatter (content between --- markers at the beginning)
@@ -187,13 +194,17 @@ export default function DocDetail() {
         if (doc.sourceType === 'newsletter' && doc.rawPath) {
           const htmlPath = doc.rawPath.replace(/\.md$/, '.html')
           try {
-            const htmlRes = await fetch(`/data/${encodeURIPath(htmlPath)}`)
+            const htmlRes = await fetch(`/data/${encodeURIPath(htmlPath)}`, { headers: getAuthHeaders() })
             if (htmlRes.ok) {
               let html = await htmlRes.text()
               const parentDir = doc.rawPath.substring(0, doc.rawPath.lastIndexOf('/'))
+              // First replace assets path, then add token to each resource URL
               html = html.replace(
-                /(src|href)=(["'])assets\//g,
-                `$1=$2/data/${encodeURIPath(parentDir)}/assets/`
+                /(src|href)=(["'])assets\/([^"']+)/g,
+                (_match, attr, quote, filename) => {
+                  const fullPath = `/data/${encodeURIPath(parentDir)}/assets/${filename}`
+                  return `${attr}=${quote}${addTokenParam(fullPath)}`
+                }
               )
               setHtmlContent(html)
               setViewMode('html')
@@ -212,7 +223,7 @@ export default function DocDetail() {
               // Load bilingual content - path is /data/... so need to encode properly
               const relativePath = mdStatus.path.replace('/data/', '')
               const encodedPath = `/data/${encodeURIPath(relativePath)}`
-              const bilingualRes = await fetch(encodedPath)
+              const bilingualRes = await fetch(encodedPath, { headers: getAuthHeaders() })
               if (bilingualRes.ok) {
                 setBilingualContent(stripYamlFrontmatter(await bilingualRes.text()))
               }
@@ -226,7 +237,7 @@ export default function DocDetail() {
       // Load existing translation if available (PDF documents)
       if (doc.rawPath && doc.sourceType === 'pdf') {
         // Check for Chinese translation
-        const zhRes = await fetch(`/data/${encodeURIPath(doc.rawPath)}/paper_zh.md`)
+        const zhRes = await fetch(`/data/${encodeURIPath(doc.rawPath)}/paper_zh.md`, { headers: getAuthHeaders() })
         if (zhRes.ok) {
           const zhContent = await zhRes.text()
           if (zhContent.trim()) {
@@ -237,7 +248,7 @@ export default function DocDetail() {
 
         // Check for English translation (if original is Chinese)
         if (!translationContent && doc.language === 'zh') {
-          const enRes = await fetch(`/data/${encodeURIPath(doc.rawPath)}/paper_en.md`)
+          const enRes = await fetch(`/data/${encodeURIPath(doc.rawPath)}/paper_en.md`, { headers: getAuthHeaders() })
           if (enRes.ok) {
             const enContent = await enRes.text()
             if (enContent.trim()) {
@@ -444,7 +455,7 @@ export default function DocDetail() {
             // Load bilingual content - path is /data/... so need to encode properly
             const relativePath = event.path.replace('/data/', '')
             const encodedPath = `/data/${encodeURIPath(relativePath)}`
-            fetch(encodedPath).then(res => res.text()).then(text => setBilingualContent(stripYamlFrontmatter(text)))
+            fetch(encodedPath, { headers: getAuthHeaders() }).then(res => res.text()).then(text => setBilingualContent(stripYamlFrontmatter(text)))
           }
         }
       })
@@ -478,6 +489,7 @@ export default function DocDetail() {
   // Calculate image base path for markdown rendering
   // For PDF/Web: rawPath is directory, images are relative to it (assets/)
   // For RSS: rawPath is .md file, images are relative to parent directory
+  // Returns pure path without token - token is added in img component
   const getImageBasePath = () => {
     if (!document?.rawPath) return ''
     if (document.sourceType === 'pdf' || document.sourceType === 'web') {
@@ -493,7 +505,7 @@ export default function DocDetail() {
 
   // Check if PDF file exists (only for PDF sourceType)
   const pdfUrl = document?.sourceType === 'pdf' && document?.rawPath
-    ? `/data/${encodeURIPath(document.rawPath)}/paper.pdf`
+    ? addTokenParam(`/data/${encodeURIPath(document.rawPath)}/paper.pdf`)
     : null
   const imageBasePath = getImageBasePath()
 
@@ -686,7 +698,7 @@ export default function DocDetail() {
               <PDFViewer url={pdfUrl} />
             </div>
           ) : viewMode === 'dual-pdf' && pdfUrl && translatedPdfPath ? (
-            <DualPDFViewer originalUrl={pdfUrl} translatedUrl={translatedPdfPath} />
+            <DualPDFViewer originalUrl={pdfUrl} translatedUrl={addTokenParam(translatedPdfPath)} />
           ) : viewMode === 'bilingual' && isPDF && document?.rawPath ? (
             <PDFTranslationView
               rawPath={document.rawPath}
@@ -718,10 +730,10 @@ export default function DocDetail() {
                     }
                     return <a href={href} className="text-blue-600 hover:underline">{children}</a>
                   },
-                  // Handle image paths - convert relative to absolute
+                  // Handle image paths - convert relative to absolute with token
                   img: ({ src, alt }) => {
                     if (src && !src.startsWith('/') && !src.startsWith('http')) {
-                      src = `${imageBasePath}/${src}`
+                      src = addTokenParam(`${imageBasePath}/${src}`)
                     }
                     return <img src={src} alt={alt} className="max-w-full h-auto rounded-lg shadow-sm my-6" />
                   },

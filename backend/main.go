@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -110,22 +111,59 @@ func main() {
 	apiGroup.POST("/auth/logout", authH.Logout)
 	apiGroup.PUT("/auth/password", authH.ChangePassword)
 
-	// Serve data directory files (wiki, raw, etc.) - now protected with auth
-	apiGroup.GET("/data/*", func(c echo.Context) error {
-		userDir := api.GetUserDir(c)
-		if userDir == "" {
-			return c.String(http.StatusInternalServerError, "user context error")
+	// Serve data directory files (wiki, raw, etc.) - protected with auth
+	// Note: This must be registered at root level, not under /api group
+	// Handles two path formats:
+	// 1. Path with user prefix: "users/1/raw/web/..." -> use dataDir as base
+	// 2. Path without user prefix: "wiki/topics.md" -> prepend userDir
+	// Supports two auth methods:
+	// 1. Authorization header (for fetch requests)
+	// 2. URL query parameter "?token=xxx" (for static resources like images, PDFs)
+	e.GET("/data/*", func(c echo.Context) error {
+		// Auth check: try header first, then query param
+		var token string
+		authHeader := c.Request().Header.Get("Authorization")
+		if authHeader != "" {
+			token = strings.TrimPrefix(authHeader, "Bearer ")
+			if token == authHeader {
+				return c.JSON(401, echo.Map{"error": "无效的认证格式"})
+			}
+		} else {
+			// Try query parameter for static resources
+			token = c.QueryParam("token")
+			if token == "" {
+				return c.JSON(401, echo.Map{"error": "未登录"})
+			}
 		}
 
-		// Remove /data prefix and serve from userDir
+		// Find session to get userId
+		var session db.Session
+		result := db.DB.Where("token = ? AND expires_at > ?", token, time.Now()).First(&session)
+		if result.Error != nil {
+			return c.JSON(401, echo.Map{"error": "Session无效或已过期"})
+		}
+
+		// Get user directory
+		userDir := config.GetUserDir(cfg.DataDir, session.UserID)
+		userIdStr := strconv.FormatUint(uint64(session.UserID), 10)
 		relPath := c.Param("*")
 		// Decode URL-encoded path (frontend uses encodeURIComponent)
 		if decoded, err := url.PathUnescape(relPath); err == nil {
 			relPath = decoded
 		}
-		fullPath := filepath.Join(userDir, relPath)
 
-		// Security check: ensure path is within userDir
+		// Determine base path based on whether relPath contains user prefix
+		var fullPath string
+		userPrefix := "users/" + userIdStr + "/"
+		if strings.HasPrefix(relPath, userPrefix) {
+			// Path already contains user prefix, use dataDir as base
+			fullPath = filepath.Join(cfg.DataDir, relPath)
+		} else {
+			// Path without user prefix, prepend userDir
+			fullPath = filepath.Join(userDir, relPath)
+		}
+
+		// Security check: ensure resolved path is within userDir
 		absUserDir, err := filepath.Abs(userDir)
 		if err != nil {
 			return c.String(http.StatusInternalServerError, "path error")
