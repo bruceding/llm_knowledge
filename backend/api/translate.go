@@ -229,7 +229,7 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 		// Send completion event with file path
 		completeData, _ := json.Marshal(echo.Map{
 			"type":     "complete",
-			"filePath": translatedPath,
+			"filePath": filepath.Join("/data", rawRelPath, translatedFilename),
 		})
 		if _, err := fmt.Fprintf(c.Response(), "data: %s\n\n", completeData); err != nil {
 			return nil
