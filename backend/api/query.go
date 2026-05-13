@@ -158,9 +158,7 @@ func (h *QueryHandler) Message(c echo.Context) error {
 	// Load images if provided
 	var imageData []claude.ImageData
 	for _, imgPath := range req.Images {
-		// Strip user prefix if present (frontend may send full path)
-		relImgPath := StripUserPrefix(imgPath)
-		img, err := loadImageData(userDir, relImgPath)
+		img, err := loadImageData(userDir, imgPath)
 		if err != nil {
 			log.Printf("[query] Failed to load image %s: %v", imgPath, err)
 			continue
@@ -641,17 +639,23 @@ func (h *QueryHandler) buildSystemPrompt(docID uint, userId uint) string {
 }
 
 // loadImageData loads image file and converts to ImageData for Claude
-func loadImageData(dataDir string, imagePath string) (claude.ImageData, error) {
-	// imagePath is like "/data/cache/images/xxx.png"
+func loadImageData(userDir string, imagePath string) (claude.ImageData, error) {
+	// imagePath can be:
+	// - "/data/users/1/cache/images/xxx.png" (new format with user prefix)
+	// - "/data/cache/images/xxx.png" (old format without user prefix)
 	// Convert to actual file path
 	if !strings.HasPrefix(imagePath, "/data/") {
 		return claude.ImageData{}, fmt.Errorf("invalid image path: %s", imagePath)
 	}
 	relPath := strings.TrimPrefix(imagePath, "/data/")
-	fullPath := filepath.Join(dataDir, relPath)
 
-	// Path traversal containment check
-	absBase, err := filepath.Abs(dataDir)
+	// Strip users/{userId}/ prefix if present, then join with userDir
+	// This handles both formats uniformly
+	cleanPath := StripUserPrefix(relPath)
+	fullPath := filepath.Join(userDir, cleanPath)
+
+	// Path traversal containment check against userDir
+	absUserDir, err := filepath.Abs(userDir)
 	if err != nil {
 		return claude.ImageData{}, fmt.Errorf("path error")
 	}
@@ -659,7 +663,8 @@ func loadImageData(dataDir string, imagePath string) (claude.ImageData, error) {
 	if err != nil {
 		return claude.ImageData{}, fmt.Errorf("path error")
 	}
-	if !strings.HasPrefix(absFull, absBase+string(filepath.Separator)) && absFull != absBase {
+	// Ensure path is within userDir (with separator to prevent prefix collision)
+	if !strings.HasPrefix(absFull, absUserDir+string(filepath.Separator)) && absFull != absUserDir {
 		return claude.ImageData{}, fmt.Errorf("access denied")
 	}
 
