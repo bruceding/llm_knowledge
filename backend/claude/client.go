@@ -63,10 +63,19 @@ type RawEvent struct {
 // The caller should close the channel after Send returns.
 // If workDir is non-empty, the command runs in that directory.
 func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamEvent, workDir string) error {
-	// Use --bare to skip hooks for faster execution in automated scenarios
+	// SECURITY NOTE: --bare skips all PreToolUse/PostToolUse hooks, including
+	// the path-validator. This is intentional for automated ingest scenarios that
+	// need Write/Edit access. Ensure the prompt content is trusted and workDir
+	// is set to the user's isolated directory as a compensating control.
 	// Use --allowedTools to pre-approve file operations
 	// Use --dangerously-skip-permissions for non-interactive ingest scenarios
-	cmd := exec.CommandContext(ctx, c.BinPath,
+	args := []string{}
+	// Add security settings if available (currently skipped by --bare, but
+	// included for forward-compatibility if --bare is removed later)
+	if settingsPath := GetSettingsPath(); settingsPath != "" {
+		args = append(args, "--settings", settingsPath)
+	}
+	args = append(args,
 		"--bare",
 		"--print",
 		"--output-format", "stream-json",
@@ -74,8 +83,13 @@ func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamE
 		"--allowedTools", "Read", "Write", "Edit",
 		"--dangerously-skip-permissions",
 	)
+	cmd := exec.CommandContext(ctx, c.BinPath, args...)
 	if workDir != "" {
 		cmd.Dir = workDir
+		// Set ALLOWED_DIR environment for security hooks (forward-compat)
+		if env := BuildSecureEnv(workDir); len(env) > 0 {
+			cmd.Env = env
+		}
 	}
 	cmd.Stdin = strings.NewReader(prompt)
 
@@ -176,15 +190,24 @@ func (c *Client) SendSimple(ctx context.Context, prompt string) (string, error) 
 // This is faster than stream-json mode for simple tasks like generating summaries.
 // If workDir is non-empty, the command runs in that directory.
 func (c *Client) SendSimpleWithRead(ctx context.Context, prompt string, workDir string) (string, error) {
-	cmd := exec.CommandContext(ctx, c.BinPath,
-		"--bare",
+	args := []string{
 		"-p",
 		"--allowedTools", "Read",
 		"--dangerously-skip-permissions",
-		prompt,
-	)
+	}
+	// Add security settings if available
+	if settingsPath := GetSettingsPath(); settingsPath != "" {
+		args = append(args, "--settings", settingsPath)
+	}
+	args = append(args, prompt)
+
+	cmd := exec.CommandContext(ctx, c.BinPath, args...)
 	if workDir != "" {
 		cmd.Dir = workDir
+		// Set ALLOWED_DIR environment for security hooks
+		if env := BuildSecureEnv(workDir); len(env) > 0 {
+			cmd.Env = env
+		}
 	}
 	out, err := cmd.Output()
 	if err != nil {

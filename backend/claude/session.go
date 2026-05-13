@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -106,12 +105,13 @@ func buildCmd(ctx context.Context, claudeBin string, args []string, dataDir stri
 	return cmd
 }
 
-// buildCmdWithEnv builds a command with additional environment variables
+// buildCmdWithEnv builds a command with a pre-filtered environment.
+// extraEnv should come from BuildSecureEnv which already filters duplicates.
 func buildCmdWithEnv(ctx context.Context, claudeBin string, args []string, dataDir string, extraEnv []string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
 	cmd.Dir = dataDir
 	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
+		cmd.Env = extraEnv
 	}
 	return cmd
 }

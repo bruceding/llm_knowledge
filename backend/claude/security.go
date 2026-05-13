@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // SecurityConfig manages file access security for Claude CLI sessions
@@ -79,18 +80,23 @@ func generateSettingsFile(scriptsDir string) (string, error) {
 		return "", fmt.Errorf("path-validator.py not found at %s", validatorPath)
 	}
 
-	settings := HookSettings{}
-	settings.Hooks.PreToolUse = []HookMatcher{
-		{
-			Matcher: "Read",
+	// Hook all file-access tools to prevent bypass via Glob/Grep/LS
+	hookedTools := []string{"Read", "Glob", "Grep", "LS"}
+	preToolUseHooks := make([]HookMatcher, 0, len(hookedTools))
+	for _, tool := range hookedTools {
+		preToolUseHooks = append(preToolUseHooks, HookMatcher{
+			Matcher: tool,
 			Hooks: []Hook{
 				{
 					Type:    "command",
 					Command: validatorPath,
 				},
 			},
-		},
+		})
 	}
+
+	settings := HookSettings{}
+	settings.Hooks.PreToolUse = preToolUseHooks
 
 	jsonData, err := json.Marshal(settings)
 	if err != nil {
@@ -98,8 +104,9 @@ func generateSettingsFile(scriptsDir string) (string, error) {
 	}
 
 	// Write to temp file with PID (one file per backend process)
+	// Use 0600 permissions to prevent other users from reading the hook config
 	settingsPath := filepath.Join(os.TempDir(), fmt.Sprintf("claude-security-%d.json", os.Getpid()))
-	if err := os.WriteFile(settingsPath, jsonData, 0644); err != nil {
+	if err := os.WriteFile(settingsPath, jsonData, 0600); err != nil {
 		return "", fmt.Errorf("failed to write settings file: %w", err)
 	}
 
@@ -135,19 +142,26 @@ type HookMatcher struct {
 type Hook struct {
 	Type    string `json:"type"`
 	Command string `json:"command,omitempty"`
-	Prompt  string `json:"prompt,omitempty"`
 }
 
 // BuildSecureEnv builds environment variables for Claude CLI with security settings
-// Returns a slice of environment variables to append to cmd.Env
+// Returns a complete environment slice with ALLOWED_DIR set, filtering any
+// pre-existing ALLOWED_DIR from the parent environment to prevent shadowing.
 func BuildSecureEnv(allowedDir string) []string {
-	env := []string{}
-
-	if allowedDir != "" {
-		env = append(env, fmt.Sprintf("ALLOWED_DIR=%s", allowedDir))
+	if allowedDir == "" {
+		return nil
 	}
 
-	return env
+	// Filter out any existing ALLOWED_DIR from parent environment to prevent shadowing
+	baseEnv := os.Environ()
+	filtered := make([]string, 0, len(baseEnv))
+	for _, e := range baseEnv {
+		if !strings.HasPrefix(e, "ALLOWED_DIR=") {
+			filtered = append(filtered, e)
+		}
+	}
+
+	return append(filtered, fmt.Sprintf("ALLOWED_DIR=%s", allowedDir))
 }
 
 // IsSecurityEnabled returns true if security hooks are configured

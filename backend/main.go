@@ -411,6 +411,10 @@ func main() {
 	querySessionPool.Close()
 	sessionPool.Close()
 
+
+	// Clean up security settings temp file
+	claude.CleanupSecuritySettings()
+
 	// Close database connection (cleanup sessions)
 	db.Close()
 
