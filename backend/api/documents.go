@@ -565,18 +565,7 @@ func (h *DocHandler) RegenerateSummary(c echo.Context) error {
 	userDir := GetUserDir(c)
 
 	// Extract relative path from doc.RawPath (e.g., "users/1/raw/papers/foo" -> "raw/papers/foo")
-	var rawRelPath string
-	if strings.HasPrefix(doc.RawPath, "users/") {
-		parts := strings.SplitN(doc.RawPath, "/", 3)
-		if len(parts) >= 3 {
-			rawRelPath = parts[2]
-		} else {
-			rawRelPath = doc.RawPath
-		}
-	} else {
-		// Legacy path without user prefix
-		rawRelPath = doc.RawPath
-	}
+	rawRelPath := StripUserPrefix(doc.RawPath)
 
 	// Generate summary
 	summary, err := ingest.GenerateSummary(userDir, rawRelPath, claudeBin)

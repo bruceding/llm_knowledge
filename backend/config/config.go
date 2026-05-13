@@ -61,8 +61,3 @@ func Load() *Config {
 func GetUserDir(dataDir string, userId uint) string {
 	return filepath.Join(dataDir, "users", strconv.FormatUint(uint64(userId), 10))
 }
-
-// GetUserSubDir returns a specific subdirectory within user space
-func GetUserSubDir(dataDir string, userId uint, subdir string) string {
-	return filepath.Join(GetUserDir(dataDir, userId), subdir)
-}
