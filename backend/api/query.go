@@ -118,7 +118,10 @@ func (h *QueryHandler) Message(c echo.Context) error {
 	}
 
 	// Build system prompt
-	systemPrompt := h.buildSystemPrompt(req.DocID)
+	systemPrompt := h.buildSystemPrompt(req.DocID, userId)
+
+	// Get user directory for session isolation
+	userDir := GetUserDir(c)
 
 	// Use context.Background() — request context gets cancelled when handler returns,
 	// which would kill the Claude subprocess via exec.CommandContext.
@@ -133,7 +136,7 @@ func (h *QueryHandler) Message(c echo.Context) error {
 	if qs == nil {
 		var err error
 		var source claude.SessionSource
-		qs, source, err = h.Pool.GetOrResume(ctx, req.ConversationID, conv.SessionID, systemPrompt, func(convID uint, newSID string) {
+		qs, source, err = h.Pool.GetOrResume(ctx, req.ConversationID, conv.SessionID, systemPrompt, userDir, func(convID uint, newSID string) {
 			db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
 		})
 		if err != nil {
@@ -155,7 +158,7 @@ func (h *QueryHandler) Message(c echo.Context) error {
 	// Load images if provided
 	var imageData []claude.ImageData
 	for _, imgPath := range req.Images {
-		img, err := loadImageData(h.DataDir, imgPath)
+		img, err := loadImageData(userDir, imgPath)
 		if err != nil {
 			log.Printf("[query] Failed to load image %s: %v", imgPath, err)
 			continue
@@ -194,7 +197,7 @@ func (h *QueryHandler) Message(c echo.Context) error {
 		log.Printf("[query] Failed to ask question: %v", err)
 		// Session might be dead, try to recreate
 		h.Pool.Remove(req.ConversationID)
-		qs, _, err = h.Pool.GetOrResume(ctx, req.ConversationID, "", systemPrompt, func(convID uint, newSID string) {
+		qs, _, err = h.Pool.GetOrResume(ctx, req.ConversationID, "", systemPrompt, userDir, func(convID uint, newSID string) {
 			db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
 		})
 		if err != nil {
@@ -245,7 +248,10 @@ func (h *QueryHandler) ResumeConversation(c echo.Context) error {
 	}
 
 	// Build system prompt
-	systemPrompt := h.buildSystemPrompt(0)
+	systemPrompt := h.buildSystemPrompt(0, userId)
+
+	// Get user directory for session isolation
+	userDir := GetUserDir(c)
 
 	// Use context.Background() for session creation
 	ctx := context.Background()
@@ -253,7 +259,7 @@ func (h *QueryHandler) ResumeConversation(c echo.Context) error {
 	// Remove old session if exists, then get or resume/create atomically
 	h.Pool.Remove(req.ConversationID)
 
-	qs, _, err := h.Pool.GetOrResume(ctx, req.ConversationID, conv.SessionID, systemPrompt, func(convID uint, newSID string) {
+	qs, _, err := h.Pool.GetOrResume(ctx, req.ConversationID, conv.SessionID, systemPrompt, userDir, func(convID uint, newSID string) {
 		db.DB.Model(&db.Conversation{}).Where("id = ?", convID).Update("session_id", newSID)
 	})
 	if err != nil {
@@ -324,9 +330,10 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 		// This prevents concurrent resume attempts and registers a callback
 		// to update the DB when the real session_id arrives.
 		bgCtx := context.Background()
-		systemPrompt := h.buildSystemPrompt(0)
+		systemPrompt := h.buildSystemPrompt(0, userId)
+		userDir := GetUserDir(c)
 		var err error
-		qs, _, err = h.Pool.GetOrResume(bgCtx, convID, conv.SessionID, systemPrompt, func(cid uint, newSID string) {
+		qs, _, err = h.Pool.GetOrResume(bgCtx, convID, conv.SessionID, systemPrompt, userDir, func(cid uint, newSID string) {
 			db.DB.Model(&db.Conversation{}).Where("id = ?", cid).Update("session_id", newSID)
 		})
 		if err != nil {
@@ -614,15 +621,17 @@ func (h *QueryHandler) DeleteConversation(c echo.Context) error {
 }
 
 // buildSystemPrompt constructs the system prompt pointing to wiki file paths.
-func (h *QueryHandler) buildSystemPrompt(docID uint) string {
+func (h *QueryHandler) buildSystemPrompt(docID uint, userId uint) string {
 	var prompt strings.Builder
 
 	prompt.WriteString("你是一个知识库助手。知识库文件在 wiki/ 目录下，wiki/index.md 是索引。请使用 Read、Glob、Grep 等工具读取相关文件回答用户问题。如果文件内容不足以回答，可以使用你自己的知识补充。")
 
 	if docID > 0 {
 		var doc db.Document
-		if err := db.DB.First(&doc, docID).Error; err == nil && doc.WikiPath != "" {
-			prompt.WriteString(fmt.Sprintf(" 重点关注: %s", doc.WikiPath))
+		if err := db.DB.Where("id = ? AND user_id = ?", docID, userId).First(&doc).Error; err == nil && doc.WikiPath != "" {
+			// Strip user prefix since Claude CWD is already in userDir
+			wikiRelPath := StripUserPrefix(doc.WikiPath)
+			prompt.WriteString(fmt.Sprintf(" 重点关注: %s", wikiRelPath))
 		}
 	}
 
@@ -630,17 +639,37 @@ func (h *QueryHandler) buildSystemPrompt(docID uint) string {
 }
 
 // loadImageData loads image file and converts to ImageData for Claude
-func loadImageData(dataDir string, imagePath string) (claude.ImageData, error) {
-	// imagePath is like "/data/cache/images/xxx.png"
+func loadImageData(userDir string, imagePath string) (claude.ImageData, error) {
+	// imagePath can be:
+	// - "/data/users/1/cache/images/xxx.png" (new format with user prefix)
+	// - "/data/cache/images/xxx.png" (old format without user prefix)
 	// Convert to actual file path
 	if !strings.HasPrefix(imagePath, "/data/") {
 		return claude.ImageData{}, fmt.Errorf("invalid image path: %s", imagePath)
 	}
 	relPath := strings.TrimPrefix(imagePath, "/data/")
-	fullPath := filepath.Join(dataDir, relPath)
+
+	// Strip users/{userId}/ prefix if present, then join with userDir
+	// This handles both formats uniformly
+	cleanPath := StripUserPrefix(relPath)
+	fullPath := filepath.Join(userDir, cleanPath)
+
+	// Path traversal containment check against userDir
+	absUserDir, err := filepath.Abs(userDir)
+	if err != nil {
+		return claude.ImageData{}, fmt.Errorf("path error")
+	}
+	absFull, err := filepath.Abs(fullPath)
+	if err != nil {
+		return claude.ImageData{}, fmt.Errorf("path error")
+	}
+	// Ensure path is within userDir (with separator to prevent prefix collision)
+	if !strings.HasPrefix(absFull, absUserDir+string(filepath.Separator)) && absFull != absUserDir {
+		return claude.ImageData{}, fmt.Errorf("access denied")
+	}
 
 	// Read file
-	data, err := os.ReadFile(fullPath)
+	data, err := os.ReadFile(absFull)
 	if err != nil {
 		return claude.ImageData{}, fmt.Errorf("failed to read image: %w", err)
 	}

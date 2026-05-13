@@ -576,29 +576,8 @@ func TestWebClippingGolangWeekly(t *testing.T) {
 		t.Fatalf("Failed to parse HTML: %v", err)
 	}
 
-	// Remove navigation and non-content elements
-	doc.Find("script, style, nav, .Header, .Footer, aside, .Cookie-notice, .navigation, .menu").Remove()
-
-	// Find main content using same logic as extractContent
-	var contentNode *goquery.Selection
-	selectors := []string{".Article", ".Blog-content", "article", "main", ".content", "#content"}
-	for _, sel := range selectors {
-		if doc.Find(sel).Length() > 0 {
-			contentNode = doc.Find(sel).First()
-			break
-		}
-	}
-	if contentNode == nil {
-		contentNode = doc.Find("body")
-	}
-
-	// Convert to markdown
-	var markdown strings.Builder
-	contentNode.Contents().Each(func(i int, s *goquery.Selection) {
-		markdown.WriteString(convertNodeToMarkdown(s))
-	})
-
-	result := markdown.String()
+	// Use ExtractContent function (same as production code)
+	result := ExtractContent(doc)
 
 	// Verify key content is present
 	if !strings.Contains(result, "#598") && !strings.Contains(result, "598") {

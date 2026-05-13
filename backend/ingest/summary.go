@@ -21,23 +21,23 @@ const summaryPrompt = `请阅读文件 %s 的内容，并用200-300字概括其�
 
 // GenerateSummary generates a summary by providing file path to Claude
 // Claude uses its Read tool to read the paper.md content
-// rawPath can be either:
-//   - A directory path (e.g., "raw/pdf/title") containing paper.md
-//   - A direct .md file path (e.g., "raw/rss/feed/title.md")
-func GenerateSummary(dataDir string, rawPath string, claudeBin string) (string, error) {
-	// Determine the actual file path
-	var paperPath string
-	if strings.HasSuffix(rawPath, ".md") {
-		// Direct .md file path (RSS format)
-		paperPath = filepath.Join(dataDir, rawPath)
+// userDir is the user's directory for Claude session isolation
+// rawRelPath is the path relative to userDir (e.g., "raw/papers/title" or "raw/rss/feed/title.md")
+func GenerateSummary(userDir string, rawRelPath string, claudeBin string) (string, error) {
+	// Determine the actual file path relative to userDir
+	var paperRelPath string
+	if strings.HasSuffix(rawRelPath, ".md") {
+		// Direct .md file path (RSS/Web format)
+		paperRelPath = rawRelPath
 	} else {
-		// Directory path with paper.md (PDF/Web format)
-		paperPath = filepath.Join(dataDir, rawPath, "paper.md")
+		// Directory path with paper.md (PDF format)
+		paperRelPath = rawRelPath + "/paper.md"
 	}
 
 	// Check if file exists
-	if _, err := os.Stat(paperPath); err != nil {
-		return "", fmt.Errorf("file not found: %s", paperPath)
+	paperAbsPath := filepath.Join(userDir, paperRelPath)
+	if _, err := os.Stat(paperAbsPath); err != nil {
+		return "", fmt.Errorf("file not found: %s", paperAbsPath)
 	}
 
 	// Create Claude client
@@ -48,8 +48,9 @@ func GenerateSummary(dataDir string, rawPath string, claudeBin string) (string, 
 	defer cancel()
 
 	// Generate summary using -p mode (faster than stream-json)
-	prompt := fmt.Sprintf(summaryPrompt, paperPath)
-	summary, err := client.SendSimpleWithRead(ctx, prompt)
+	// Claude runs in userDir, so Read tool sees paths relative to userDir
+	prompt := fmt.Sprintf(summaryPrompt, paperRelPath)
+	summary, err := client.SendSimpleWithRead(ctx, prompt, userDir)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate summary: %w", err)
 	}

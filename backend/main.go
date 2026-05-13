@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -54,6 +55,23 @@ func main() {
 	if err := db.Init(dbPath); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
+
+	// Migrate existing files to user-partitioned structure (if needed)
+	// This MUST happen BEFORE db.MigrateDocumentPaths so file lookup uses old paths
+	migrateFilesToUserPartition(cfg.DataDir)
+
+	// Migrate document paths in database to user-partitioned structure
+	// This MUST happen AFTER file migration is complete
+	// Only run if file migration completed successfully (marker file exists)
+	migrationMarker := filepath.Join(cfg.DataDir, "users", ".migration_complete")
+	if _, err := os.Stat(migrationMarker); err == nil {
+		db.MigrateDocumentPaths()
+	} else {
+		log.Printf("[migration] Skipping DB path migration - file migration incomplete")
+	}
+
+	// Set global data directory for middleware to compute userDir
+	api.SetDataDir(cfg.DataDir)
 
 	// Initialize security hooks for Claude CLI
 	// The scripts directory contains path-validator.py for file access restriction
@@ -108,18 +126,60 @@ func main() {
 	apiGroup.POST("/auth/logout", authH.Logout)
 	apiGroup.PUT("/auth/password", authH.ChangePassword)
 
-	// Serve data directory files (wiki, raw, etc.)
+	// Serve data directory files (wiki, raw, etc.) - protected with auth
+	// Note: This must be registered at root level, not under /api group
+	// Handles two path formats:
+	// 1. Path with user prefix: "users/1/raw/web/..." -> use dataDir as base
+	// 2. Path without user prefix: "wiki/topics.md" -> prepend userDir
+	// Supports two auth methods:
+	// 1. Authorization header (for fetch requests)
+	// 2. URL query parameter "?token=xxx" (for static resources like images, PDFs)
 	e.GET("/data/*", func(c echo.Context) error {
-		// Remove /data prefix and serve from cfg.DataDir
+		// Auth check: try header first, then query param
+		var token string
+		authHeader := c.Request().Header.Get("Authorization")
+		if authHeader != "" {
+			token = strings.TrimPrefix(authHeader, "Bearer ")
+			if token == authHeader {
+				return c.JSON(401, echo.Map{"error": "无效的认证格式"})
+			}
+		} else {
+			// Try query parameter for static resources
+			token = c.QueryParam("token")
+			if token == "" {
+				return c.JSON(401, echo.Map{"error": "未登录"})
+			}
+		}
+
+		// Find session to get userId
+		var session db.Session
+		result := db.DB.Where("token = ? AND expires_at > ?", token, time.Now()).First(&session)
+		if result.Error != nil {
+			return c.JSON(401, echo.Map{"error": "Session无效或已过期"})
+		}
+
+		// Get user directory
+		userDir := config.GetUserDir(cfg.DataDir, session.UserID)
+		userIdStr := strconv.FormatUint(uint64(session.UserID), 10)
 		relPath := c.Param("*")
 		// Decode URL-encoded path (frontend uses encodeURIComponent)
 		if decoded, err := url.PathUnescape(relPath); err == nil {
 			relPath = decoded
 		}
-		fullPath := filepath.Join(cfg.DataDir, relPath)
 
-		// Security check: ensure path is within DataDir
-		absDataDir, err := filepath.Abs(cfg.DataDir)
+		// Determine base path based on whether relPath contains user prefix
+		var fullPath string
+		userPrefix := "users/" + userIdStr + "/"
+		if strings.HasPrefix(relPath, userPrefix) {
+			// Path already contains user prefix, use dataDir as base
+			fullPath = filepath.Join(cfg.DataDir, relPath)
+		} else {
+			// Path without user prefix, prepend userDir
+			fullPath = filepath.Join(userDir, relPath)
+		}
+
+		// Security check: ensure resolved path is within userDir
+		absUserDir, err := filepath.Abs(userDir)
 		if err != nil {
 			return c.String(http.StatusInternalServerError, "path error")
 		}
@@ -128,8 +188,9 @@ func main() {
 			return c.String(http.StatusInternalServerError, "path error")
 		}
 
-		// Check if path starts with DataDir
-		if !strings.HasPrefix(absFullPath, absDataDir) {
+		// Check if path starts with userDir (prevents path traversal)
+		// Must check with separator to prevent prefix collision (e.g., /data/users/1 matching /data/users/10)
+		if !strings.HasPrefix(absFullPath, absUserDir+string(filepath.Separator)) && absFullPath != absUserDir {
 			return c.String(http.StatusForbidden, "access denied")
 		}
 
@@ -354,4 +415,234 @@ func main() {
 	db.Close()
 
 	log.Println("Server exited cleanly")
+}
+
+// migrateFilesToUserPartition moves existing files from shared raw/wiki directories
+// to user-partitioned structure based on document ownership in database.
+func migrateFilesToUserPartition(dataDir string) {
+	usersPath := filepath.Join(dataDir, "users")
+	markerFile := filepath.Join(usersPath, ".migration_complete")
+
+	// If marker file exists, migration already completed successfully
+	if _, err := os.Stat(markerFile); err == nil {
+		return
+	}
+
+	// If users/ exists but marker doesn't, previous migration crashed
+	// Don't delete - copyFile is idempotent, so re-running migration is safe
+	if _, err := os.Stat(usersPath); err == nil {
+		log.Printf("[migration] Found incomplete migration, users/ directory already exists - skipping cleanup (copyFile is idempotent)")
+	}
+
+	// Check if old structure exists
+	oldRawPath := filepath.Join(dataDir, "raw")
+	oldWikiPath := filepath.Join(dataDir, "wiki")
+
+	rawExists := false
+	if _, err := os.Stat(oldRawPath); err == nil {
+		rawExists = true
+	}
+	wikiExists := false
+	if _, err := os.Stat(oldWikiPath); err == nil {
+		wikiExists = true
+	}
+	if !rawExists && !wikiExists {
+		// No files to migrate, create marker to indicate fresh install
+		os.MkdirAll(usersPath, 0755)
+		os.WriteFile(markerFile, []byte("completed"), 0644)
+		return
+	}
+
+	log.Printf("[migration] Migrating files to user-partitioned structure")
+
+	// Get all users from database
+	var users []db.User
+	if err := db.DB.Find(&users).Error; err != nil {
+		log.Printf("[migration] Failed to get users: %v", err)
+		return
+	}
+
+	// Initialize directory structure for each user
+	for _, user := range users {
+		embedfs.InitUserDirs(dataDir, user.ID)
+	}
+
+	// Track failures to prevent data loss
+	var rawFailures int
+	var wikiFailures int
+
+	// Migrate raw files based on document ownership
+	if rawExists {
+		rawFailures = migrateRawFiles(dataDir, oldRawPath)
+	}
+
+	// Migrate wiki files based on document ownership
+	if wikiExists {
+		wikiFailures = migrateWikiFiles(dataDir, oldWikiPath)
+	}
+
+	// Only remove old directories if all migrations succeeded
+	if rawFailures == 0 && rawExists {
+		os.RemoveAll(oldRawPath)
+		log.Printf("[migration] Removed old raw/ directory")
+	}
+	if wikiFailures == 0 && wikiExists {
+		os.RemoveAll(oldWikiPath)
+		log.Printf("[migration] Removed old wiki/ directory")
+	}
+
+	// Write marker file only if all migrations succeeded
+	if rawFailures == 0 && wikiFailures == 0 {
+		os.WriteFile(markerFile, []byte("completed"), 0644)
+		log.Printf("[migration] File migration completed successfully")
+	} else {
+		log.Printf("[migration] File migration completed with %d raw failures, %d wiki failures. Old directories preserved.", rawFailures, wikiFailures)
+	}
+}
+
+// migrateRawFiles moves raw files to user directories based on document ownership
+// Returns number of failed migrations
+func migrateRawFiles(dataDir string, oldRawPath string) int {
+	var failures int
+
+	// Walk through all files in raw/ directory
+	err := filepath.Walk(oldRawPath, func(oldPath string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+
+		// Get relative path from raw/
+		relPath, err := filepath.Rel(oldRawPath, oldPath)
+		if err != nil {
+			failures++
+			return nil
+		}
+
+		// Find document that owns this file
+		// Match against old path format (before DB migration)
+		oldRawRelPath := "raw/" + relPath
+
+		var doc db.Document
+		// Try exact match first
+		result := db.DB.Where("raw_path = ?", oldRawRelPath).First(&doc)
+		if result.Error != nil {
+			// Try with paper.md suffix for PDF directories
+			if !strings.HasSuffix(relPath, ".md") {
+				paperRelPath := "raw/" + relPath + "/paper.md"
+				result = db.DB.Where("raw_path = ? OR raw_path LIKE ?", paperRelPath, "raw/"+relPath+"%").First(&doc)
+			}
+		}
+
+		if result.Error != nil {
+			// File not tracked in database, move to user 1 as fallback
+			log.Printf("[migration] Untracked file %s, moving to user 1", relPath)
+			doc.UserID = 1
+		}
+
+		// Build new path
+		userDir := config.GetUserDir(dataDir, doc.UserID)
+		newPath := filepath.Join(userDir, "raw", relPath)
+
+		// Ensure target directory exists
+		os.MkdirAll(filepath.Dir(newPath), 0755)
+
+		// Copy file ( safer than rename for cross-device)
+		if err := copyFile(oldPath, newPath); err != nil {
+			log.Printf("[migration] Failed to copy %s: %v", oldPath, err)
+			failures++
+		} else {
+			log.Printf("[migration] Copied %s -> users/%d/raw/%s", oldPath, doc.UserID, relPath)
+		}
+
+		return nil
+	})
+	if err != nil {
+		log.Printf("[migration] Error walking raw directory: %v", err)
+	}
+
+	return failures
+}
+
+// migrateWikiFiles moves wiki files to user directories based on document ownership
+// Returns number of failed migrations
+func migrateWikiFiles(dataDir string, oldWikiPath string) int {
+	var failures int
+
+	// Walk through all files in wiki/ directory
+	err := filepath.Walk(oldWikiPath, func(oldPath string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+
+		// Get relative path from wiki/
+		relPath, err := filepath.Rel(oldWikiPath, oldPath)
+		if err != nil {
+			failures++
+			return nil
+		}
+
+		// Determine owner:
+		// - sources/*.md: find document with matching wiki_path
+		// - Other files (entities, topics, index, log): move to user 1 as primary owner
+
+		var ownerID uint = 1
+
+		if strings.HasPrefix(relPath, "sources/") {
+			// Find document that owns this wiki file
+			oldWikiRelPath := "wiki/" + relPath
+			var doc db.Document
+			if db.DB.Where("wiki_path = ?", oldWikiRelPath).First(&doc).Error == nil {
+				ownerID = doc.UserID
+			}
+		}
+
+		// Build new path
+		userDir := config.GetUserDir(dataDir, ownerID)
+		newPath := filepath.Join(userDir, "wiki", relPath)
+
+		// Ensure target directory exists
+		os.MkdirAll(filepath.Dir(newPath), 0755)
+
+		// Copy file (safer than rename for cross-device)
+		if err := copyFile(oldPath, newPath); err != nil {
+			log.Printf("[migration] Failed to copy %s: %v", oldPath, err)
+			failures++
+		} else {
+			log.Printf("[migration] Copied %s -> users/%d/wiki/%s", oldPath, ownerID, relPath)
+		}
+
+		return nil
+	})
+	if err != nil {
+		log.Printf("[migration] Error walking wiki directory: %v", err)
+	}
+
+	return failures
+}
+
+// copyFile copies a file from src to dst
+func copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = io.Copy(destFile, sourceFile)
+	if err != nil {
+		return err
+	}
+
+	// Preserve file mode
+	sourceInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	return os.Chmod(dst, sourceInfo.Mode())
 }

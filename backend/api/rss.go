@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"llm-knowledge/config"
 	"llm-knowledge/db"
+	"llm-knowledge/fs"
 	"llm-knowledge/ingest"
 	"net"
 	"net/http"
@@ -157,7 +159,7 @@ func (h *RSSHandler) DeleteFeed(c echo.Context) error {
 	// Delete physical files for inbox documents only
 	for _, doc := range inboxDocs {
 		if doc.RawPath != "" {
-			fullPath := filepath.Join(h.DataDir, doc.RawPath)
+			fullPath := filepath.Join(config.GetUserDir(h.DataDir, userId), StripUserPrefix(doc.RawPath))
 			os.Remove(fullPath)
 		}
 	}
@@ -216,7 +218,12 @@ func (h *RSSHandler) syncFeedInternal(feed *db.RSSFeed) SyncResult {
 		}
 	}
 
-	feedDir := filepath.Join(h.DataDir, "raw", "rss", sanitizeFilename(feed.Name))
+	// Use user-specific directory
+	userDir := config.GetUserDir(h.DataDir, feed.UserID)
+	userIdStr := strconv.FormatUint(uint64(feed.UserID), 10)
+	fs.InitUserDirs(h.DataDir, feed.UserID)
+
+	feedDir := filepath.Join(userDir, "raw", "rss", sanitizeFilename(feed.Name))
 	assetsDir := filepath.Join(feedDir, "assets")
 	if err := os.MkdirAll(assetsDir, 0755); err != nil {
 		return SyncResult{
@@ -294,7 +301,7 @@ func (h *RSSHandler) syncFeedInternal(feed *db.RSSFeed) SyncResult {
 			Title:      item.Title,
 			Slug:       title,
 			SourceType: "rss",
-			RawPath:    filepath.Join("raw", "rss", sanitizeFilename(feed.Name), title+".md"),
+			RawPath:    filepath.Join("users", userIdStr, "raw", "rss", sanitizeFilename(feed.Name), title+".md"),
 			SourceURL:  normalizedURL,
 			SourceGUID: guid,
 			RSSFeedID:  feed.ID,
@@ -339,9 +346,8 @@ func (h *RSSHandler) syncFeedInternal(feed *db.RSSFeed) SyncResult {
 		// Generate summary asynchronously if ClaudeBin is configured
 		if h.ClaudeBin != "" {
 			docID := doc.ID
-			rawPath := doc.RawPath
 			go func() {
-				summary, err := ingest.GenerateSummary(h.DataDir, rawPath, h.ClaudeBin)
+				summary, err := ingest.GenerateSummary(userDir, "raw/rss/"+sanitizeFilename(feed.Name)+"/"+title+".md", h.ClaudeBin)
 				if err != nil {
 					fmt.Printf("[api] summary generation failed for RSS article %d: %v\n", docID, err)
 				} else {

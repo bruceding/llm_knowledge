@@ -2,11 +2,13 @@ package api
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 	"unicode"
 
 	"llm-knowledge/db"
+	embedfs "llm-knowledge/fs"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -158,6 +160,12 @@ func (h *AuthHandler) Register(c echo.Context) error {
 		MustChangePassword: false,
 	}
 	db.DB.Create(&user)
+
+	// Initialize user directory structure
+	if err := embedfs.InitUserDirs(GlobalDataDir, user.ID); err != nil {
+		db.DB.Delete(&user)
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to initialize user storage"})
+	}
 
 	return c.JSON(200, echo.Map{
 		"success": true,

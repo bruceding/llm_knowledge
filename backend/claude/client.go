@@ -61,7 +61,8 @@ type RawEvent struct {
 // Send executes the Claude CLI with streaming JSON output.
 // Events are sent to the provided channel as they are received.
 // The caller should close the channel after Send returns.
-func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamEvent) error {
+// If workDir is non-empty, the command runs in that directory.
+func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamEvent, workDir string) error {
 	// Use --bare to skip hooks for faster execution in automated scenarios
 	// Use --allowedTools to pre-approve file operations
 	// Use --dangerously-skip-permissions for non-interactive ingest scenarios
@@ -70,9 +71,12 @@ func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamE
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
-		"--allowedTools", "Read", "Write", "Edit", "Bash",
+		"--allowedTools", "Read", "Write", "Edit",
 		"--dangerously-skip-permissions",
 	)
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
 	cmd.Stdin = strings.NewReader(prompt)
 
 	stdout, err := cmd.StdoutPipe()
@@ -170,7 +174,8 @@ func (c *Client) SendSimple(ctx context.Context, prompt string) (string, error) 
 
 // SendSimpleWithRead executes the Claude CLI with -p mode and Read tool enabled.
 // This is faster than stream-json mode for simple tasks like generating summaries.
-func (c *Client) SendSimpleWithRead(ctx context.Context, prompt string) (string, error) {
+// If workDir is non-empty, the command runs in that directory.
+func (c *Client) SendSimpleWithRead(ctx context.Context, prompt string, workDir string) (string, error) {
 	cmd := exec.CommandContext(ctx, c.BinPath,
 		"--bare",
 		"-p",
@@ -178,6 +183,9 @@ func (c *Client) SendSimpleWithRead(ctx context.Context, prompt string) (string,
 		"--dangerously-skip-permissions",
 		prompt,
 	)
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
 	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
@@ -190,14 +198,14 @@ func (c *Client) SendSimpleWithRead(ctx context.Context, prompt string) (string,
 
 // SendWithTools executes the Claude CLI with tools enabled (like Read for PDFs).
 // Returns the final response as a string.
-func (c *Client) SendWithTools(ctx context.Context, prompt string) (string, error) {
+func (c *Client) SendWithTools(ctx context.Context, prompt string, workDir string) (string, error) {
 	// Create a channel to collect events
 	eventCh := make(chan StreamEvent, 100)
 
 	// Run Send in a goroutine
 	go func() {
 		defer close(eventCh)
-		if err := c.Send(ctx, prompt, eventCh); err != nil {
+		if err := c.Send(ctx, prompt, eventCh, workDir); err != nil {
 			eventCh <- StreamEvent{Type: "error", Error: err.Error()}
 		}
 	}()

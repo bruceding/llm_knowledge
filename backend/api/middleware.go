@@ -71,7 +71,7 @@ func GetCurrentUserId(c echo.Context) uint {
 // GetUserDir extracts userDir from context
 func GetUserDir(c echo.Context) string {
 	userDir, ok := c.Get("userDir").(string)
-	if !ok {
+	if !ok || userDir == "" {
 		return ""
 	}
 	return userDir

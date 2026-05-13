@@ -142,3 +142,37 @@ func startSessionCleanup() {
 		}
 	}()
 }
+
+// MigrateDocumentPaths updates raw_path and wiki_path to include user prefix
+// Old: "raw/papers/foo" -> New: "users/1/raw/papers/foo"
+// This should be called AFTER file migration is complete.
+func MigrateDocumentPaths() {
+	// Check if migration needed by looking for paths without "users/" prefix
+	var needsMigration int64
+	DB.Model(&Document{}).Where("raw_path != '' AND raw_path NOT LIKE 'users/%'").Count(&needsMigration)
+	if needsMigration == 0 {
+		return
+	}
+
+	log.Printf("[migration] Migrating %d document paths to user-partitioned structure", needsMigration)
+
+	// Update raw_path: prepend "users/{user_id}/"
+	if result := DB.Exec(`
+		UPDATE documents
+		SET raw_path = 'users/' || user_id || '/' || raw_path
+		WHERE raw_path != '' AND raw_path NOT LIKE 'users/%'
+	`); result.Error != nil {
+		log.Printf("[migration] Failed to update raw_path: %v", result.Error)
+	}
+
+	// Update wiki_path: prepend "users/{user_id}/"
+	if result := DB.Exec(`
+		UPDATE documents
+		SET wiki_path = 'users/' || user_id || '/' || wiki_path
+		WHERE wiki_path != '' AND wiki_path NOT LIKE 'users/%'
+	`); result.Error != nil {
+		log.Printf("[migration] Failed to update wiki_path: %v", result.Error)
+	}
+
+	log.Printf("[migration] Document path migration completed")
+}

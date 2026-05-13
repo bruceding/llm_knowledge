@@ -134,7 +134,7 @@ func (h *DocNoteHandler) PushToWiki(c echo.Context) error {
 	}
 
 	var doc db.Document
-	if err := db.DB.First(&doc, note.DocumentID).Error; err != nil {
+	if err := db.DB.Where("id = ? AND user_id = ?", note.DocumentID, userId).First(&doc).Error; err != nil {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
 	}
 
@@ -147,7 +147,8 @@ func (h *DocNoteHandler) PushToWiki(c echo.Context) error {
 		docSlug = doc.Title // fallback for legacy records
 	}
 
-	wikiPath := filepath.Join(h.DataDir, "wiki", "sources", docSlug+".md")
+	userDir := GetUserDir(c)
+	wikiPath := filepath.Join(userDir, "wiki", "sources", docSlug+".md")
 
 	// Create sources directory if needed
 	os.MkdirAll(filepath.Dir(wikiPath), 0755)
@@ -189,7 +190,7 @@ func (h *DocNoteHandler) PushToWiki(c echo.Context) error {
 	db.DB.Save(&note)
 
 	// Rebuild index files so the new document appears in sidebar
-	wikiDir := filepath.Join(h.DataDir, "wiki")
+	wikiDir := filepath.Join(userDir, "wiki")
 	if err := ingest.SyncIndexFiles(wikiDir); err != nil {
 		log.Printf("[pushWiki] warning: failed to sync index files: %v", err)
 	}

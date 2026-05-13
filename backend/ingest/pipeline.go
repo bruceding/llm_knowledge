@@ -5,6 +5,7 @@ import (
 	"llm-knowledge/claude"
 	"llm-knowledge/db"
 	"log"
+	"path/filepath"
 	"strings"
 	"text/template"
 )
@@ -119,14 +120,16 @@ type: topic
 
 // Pipeline manages the ingestion of raw documents into the wiki
 type Pipeline struct {
-	WikiDir string       // Path to the wiki directory
+	WikiDir string       // Path to the wiki directory (relative to UserDir)
+	UserDir string       // User's directory for Claude session isolation
 	Claude  *claude.Client
 }
 
 // NewPipeline creates a new ingest pipeline
-func NewPipeline(wikiDir string, claudeBin string) *Pipeline {
+func NewPipeline(userDir string, claudeBin string) *Pipeline {
 	return &Pipeline{
-		WikiDir: wikiDir,
+		WikiDir: filepath.Join(userDir, "wiki"),
+		UserDir: userDir,
 		Claude:  claude.NewClientWithPath(claudeBin),
 	}
 }
@@ -161,7 +164,7 @@ func (p *Pipeline) Ingest(ctx context.Context, rawPath, name string, docID uint)
 	eventCh := make(chan claude.StreamEvent)
 	go func() {
 		defer close(eventCh)
-		if err := p.Claude.Send(ctx, prompt, eventCh); err != nil {
+		if err := p.Claude.Send(ctx, prompt, eventCh, p.UserDir); err != nil {
 			log.Printf("[ingest] error sending to Claude: %v", err)
 		}
 	}()
