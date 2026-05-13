@@ -170,19 +170,7 @@ func (h *DocHandler) Publish(c echo.Context) error {
 
 		// Extract relative path from doc.RawPath (which is "users/{userId}/raw/...")
 		// Claude CLI runs with cmd.Dir = userDir, so paths should be relative to userDir
-		var rawRelPath string
-		if strings.HasPrefix(doc.RawPath, "users/") {
-			// Remove "users/{userId}/" prefix to get path relative to userDir
-			parts := strings.SplitN(doc.RawPath, "/", 3)
-			if len(parts) >= 3 {
-				rawRelPath = parts[2] // e.g., "raw/papers/my-paper"
-			} else {
-				rawRelPath = doc.RawPath
-			}
-		} else {
-			// Legacy path without user prefix - use as-is
-			rawRelPath = doc.RawPath
-		}
+		rawRelPath := StripUserPrefix(doc.RawPath)
 
 		// Build absolute path for existence check
 		var mdPath string

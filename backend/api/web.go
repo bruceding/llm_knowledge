@@ -725,6 +725,9 @@ func ExtractContent(doc *goquery.Document) string {
 	// Also remove navigation links, social icons, and other non-content elements
 	doc.Find("script, style, nav, header, footer, .Header, .Footer, .NavigationDrawer, aside, .sidebar, .navigation, .menu, .ads").Remove()
 
+	// WeChat-specific cleanup: remove code line number lists
+	doc.Find(".code-snippet__line-index").Remove()
+
 	// Remove cookie notices and other non-content
 	doc.Find(".Cookie-notice, .cookie-notice, .js-cookieNotice").Remove()
 

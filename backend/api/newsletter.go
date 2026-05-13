@@ -654,17 +654,7 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 				docID := doc.ID
 				rawPath := doc.RawPath
 				// Extract relative path (e.g., "users/1/raw/newsletter/foo" -> "raw/newsletter/foo")
-				var rawRelPath string
-				if strings.HasPrefix(rawPath, "users/") {
-					parts := strings.SplitN(rawPath, "/", 3)
-					if len(parts) >= 3 {
-						rawRelPath = parts[2]
-					} else {
-						rawRelPath = rawPath
-					}
-				} else {
-					rawRelPath = rawPath
-				}
+				rawRelPath := StripUserPrefix(rawPath)
 				go func() {
 					summary, err := ingest.GenerateSummary(userDir, rawRelPath, h.ClaudeBin)
 					if err != nil {

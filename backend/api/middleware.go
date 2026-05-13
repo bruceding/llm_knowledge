@@ -85,3 +85,17 @@ func GetUserIdStr(c echo.Context) string {
 	}
 	return userIdStr
 }
+
+// StripUserPrefix removes the "users/{userId}/" prefix from a path.
+// Returns the path relative to userDir for use with Claude CLI.
+// E.g., "users/1/raw/papers/foo" -> "raw/papers/foo"
+// Legacy paths without "users/" prefix are returned unchanged.
+func StripUserPrefix(path string) string {
+	if strings.HasPrefix(path, "users/") {
+		parts := strings.SplitN(path, "/", 3)
+		if len(parts) >= 3 {
+			return parts[2]
+		}
+	}
+	return path
+}
