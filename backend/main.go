@@ -199,6 +199,11 @@ func main() {
 			return c.String(http.StatusNotFound, "file not found")
 		}
 
+		// Force revalidation so browsers always check for updates
+		// This prevents stale content after re-clipping or backend code fixes
+		c.Response().Header().Set("Cache-Control", "no-cache")
+		c.Response().Header().Set("Vary", "Origin")
+
 		// Serve the file
 		return c.File(absFullPath)
 	})
