@@ -44,7 +44,7 @@ func TestSend_NonExistentBinary(t *testing.T) {
 	defer cancel()
 
 	eventCh := make(chan StreamEvent, 1)
-	err := client.Send(ctx, "test prompt", eventCh)
+	err := client.Send(ctx, "test prompt", eventCh, "")
 	close(eventCh)
 
 	if err == nil {

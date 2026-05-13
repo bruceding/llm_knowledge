@@ -97,10 +97,6 @@ func Init(path string) error {
 		DB.Migrator().DropIndex(&Tag{}, "idx_tags_name")
 	}
 
-	// Migrate document paths to user-partitioned structure
-	// Update raw_path and wiki_path to include "users/{userId}/" prefix
-	migrateDocumentPaths()
-
 	// Start session cleanup scheduler
 	startSessionCleanup()
 
@@ -147,9 +143,10 @@ func startSessionCleanup() {
 	}()
 }
 
-// migrateDocumentPaths updates raw_path and wiki_path to include user prefix
+// MigrateDocumentPaths updates raw_path and wiki_path to include user prefix
 // Old: "raw/papers/foo" -> New: "users/1/raw/papers/foo"
-func migrateDocumentPaths() {
+// This should be called AFTER file migration is complete.
+func MigrateDocumentPaths() {
 	// Check if migration needed by looking for paths without "users/" prefix
 	var needsMigration int64
 	DB.Model(&Document{}).Where("raw_path != '' AND raw_path NOT LIKE 'users/%'").Count(&needsMigration)

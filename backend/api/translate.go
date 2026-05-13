@@ -172,7 +172,7 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 	// Start Claude in goroutine
 	go func() {
 		defer close(eventCh)
-		if err := claudeClient.Send(ctx, prompt, eventCh, ""); err != nil {
+		if err := claudeClient.Send(ctx, prompt, eventCh, GetUserDir(c)); err != nil {
 			// Send error event
 			eventCh <- claude.StreamEvent{
 				Type:  "error",

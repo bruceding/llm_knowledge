@@ -54,9 +54,10 @@ func (h *MarkdownTranslateHandler) CheckMarkdownTranslationStatus(c echo.Context
 	if docID == "" {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "document id required"})
 	}
+	userId := GetCurrentUserId(c)
 
 	var doc db.Document
-	if err := db.DB.First(&doc, docID).Error; err != nil {
+	if err := db.DB.Where("id = ? AND user_id = ?", docID, userId).First(&doc).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
 		}
@@ -75,8 +76,10 @@ func (h *MarkdownTranslateHandler) CheckMarkdownTranslationStatus(c echo.Context
 	}
 
 	// Determine translation file path
-	translatedPath := h.getTranslatedPath(doc.RawPath, targetLang)
-	fullPath := filepath.Join(h.DataDir, translatedPath)
+	rawRelPath := StripUserPrefix(doc.RawPath)
+	translatedPath := h.getTranslatedPath(rawRelPath, targetLang)
+	userDir := GetUserDir(c)
+	fullPath := filepath.Join(userDir, translatedPath)
 
 	exists := false
 	if _, err := os.Stat(fullPath); err == nil {
@@ -85,7 +88,7 @@ func (h *MarkdownTranslateHandler) CheckMarkdownTranslationStatus(c echo.Context
 
 	return c.JSON(http.StatusOK, echo.Map{
 		"exists":     exists,
-		"path":       filepath.Join("/data", translatedPath),
+		"path":       translatedPath,
 		"targetLang": targetLang,
 	})
 }
@@ -142,8 +145,9 @@ func (h *MarkdownTranslateHandler) TranslateMarkdown(c echo.Context) error {
 	}
 
 	// Get document
+	userId := GetCurrentUserId(c)
 	var doc db.Document
-	if err := db.DB.First(&doc, req.DocID).Error; err != nil {
+	if err := db.DB.Where("id = ? AND user_id = ?", req.DocID, userId).First(&doc).Error; err != nil {
 		sendMarkdownSSEError(c, flusher, "document not found")
 		return nil
 	}
@@ -161,7 +165,7 @@ func (h *MarkdownTranslateHandler) TranslateMarkdown(c echo.Context) error {
 
 	// Get settings
 	var settings db.UserSettings
-	if err := db.DB.First(&settings).Error; err != nil {
+	if err := db.DB.Where("user_id = ?", userId).First(&settings).Error; err != nil {
 		sendMarkdownSSEError(c, flusher, "failed to get settings")
 		return nil
 	}
@@ -177,8 +181,10 @@ func (h *MarkdownTranslateHandler) TranslateMarkdown(c echo.Context) error {
 	}
 
 	// Read source content
-	sourcePath := h.getSourcePath(doc.RawPath)
-	fullSourcePath := filepath.Join(h.DataDir, sourcePath)
+	rawRelPath := StripUserPrefix(doc.RawPath)
+	sourcePath := h.getSourcePath(rawRelPath)
+	userDir := GetUserDir(c)
+	fullSourcePath := filepath.Join(userDir, sourcePath)
 	content, err := os.ReadFile(fullSourcePath)
 	if err != nil {
 		sendMarkdownSSEError(c, flusher, "source file not found")

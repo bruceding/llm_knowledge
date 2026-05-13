@@ -22,18 +22,16 @@ type PagesHandler struct {
 // POST /api/documents/:id/generate-pages
 func (h *PagesHandler) GeneratePages(c echo.Context) error {
 	id := c.Param("id")
+	userId := GetCurrentUserId(c)
 
 	var doc db.Document
-	result := db.DB.First(&doc, id)
+	result := db.DB.Where("id = ? AND user_id = ?", id, userId).First(&doc)
 	if result.Error != nil {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
 	}
 
-	if doc.SourceType != "pdf" {
-		return c.JSON(http.StatusBadRequest, echo.Map{"error": "only PDF documents can generate page images"})
-	}
-
-	pdfPath := filepath.Join(h.DataDir, doc.RawPath, "paper.pdf")
+	userDir := GetUserDir(c)
+	pdfPath := filepath.Join(userDir, StripUserPrefix(doc.RawPath), "paper.pdf")
 	if _, err := os.Stat(pdfPath); os.IsNotExist(err) {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "PDF file not found"})
 	}
@@ -97,14 +95,16 @@ func (h *PagesHandler) GeneratePages(c echo.Context) error {
 // GET /api/documents/:id/pages-status
 func (h *PagesHandler) CheckPages(c echo.Context) error {
 	id := c.Param("id")
+	userId := GetCurrentUserId(c)
 
 	var doc db.Document
-	result := db.DB.First(&doc, id)
+	result := db.DB.Where("id = ? AND user_id = ?", id, userId).First(&doc)
 	if result.Error != nil {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
 	}
 
-	pagesDir := filepath.Join(h.DataDir, doc.RawPath, "pages")
+	userDir := GetUserDir(c)
+	pagesDir := filepath.Join(userDir, StripUserPrefix(doc.RawPath), "pages")
 	if _, err := os.Stat(pagesDir); os.IsNotExist(err) {
 		return c.JSON(http.StatusOK, echo.Map{
 			"exists":    false,

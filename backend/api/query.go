@@ -158,7 +158,9 @@ func (h *QueryHandler) Message(c echo.Context) error {
 	// Load images if provided
 	var imageData []claude.ImageData
 	for _, imgPath := range req.Images {
-		img, err := loadImageData(h.DataDir, imgPath)
+		// Strip user prefix if present (frontend may send full path)
+		relImgPath := StripUserPrefix(imgPath)
+		img, err := loadImageData(userDir, relImgPath)
 		if err != nil {
 			log.Printf("[query] Failed to load image %s: %v", imgPath, err)
 			continue

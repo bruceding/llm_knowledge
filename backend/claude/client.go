@@ -71,7 +71,7 @@ func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamE
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
-		"--allowedTools", "Read", "Write", "Edit", "Bash",
+		"--allowedTools", "Read", "Write", "Edit",
 		"--dangerously-skip-permissions",
 	)
 	if workDir != "" {

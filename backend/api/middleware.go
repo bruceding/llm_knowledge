@@ -93,7 +93,7 @@ func GetUserIdStr(c echo.Context) string {
 func StripUserPrefix(path string) string {
 	if strings.HasPrefix(path, "users/") {
 		parts := strings.SplitN(path, "/", 3)
-		if len(parts) >= 3 {
+		if len(parts) >= 3 && parts[2] != "" {
 			return parts[2]
 		}
 	}

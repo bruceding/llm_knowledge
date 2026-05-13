@@ -235,19 +235,22 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 	log.Printf("[delete] Deleting document id=%d title=%q sourceType=%s rawPath=%q wikiPath=%q userId=%d remoteAddr=%s",
 		doc.ID, doc.Title, doc.SourceType, doc.RawPath, doc.WikiPath, userId, c.RealIP())
 
+	userDir := GetUserDir(c)
+
 	// Delete associated raw files if RawPath is set
 	if doc.RawPath != "" {
-		rawPath := filepath.Join(h.DataDir, doc.RawPath)
+		rawRelPath := StripUserPrefix(doc.RawPath)
+		rawPath := filepath.Join(userDir, rawRelPath)
 		if _, err := os.Stat(rawPath); err == nil {
 			// RSS articles are single .md files in a shared feed directory
-			if strings.HasPrefix(doc.RawPath, "raw/rss/") {
+			if strings.HasPrefix(rawRelPath, "raw/rss/") {
 				os.Remove(rawPath)
 			} else {
 				// For papers/web clips, RawPath is the document's own directory
 				// (e.g. raw/web/{title}/ or raw/papers/{name}/).
 				// Check if other documents reference the same directory before removing.
 				var refCount int64
-				db.DB.Model(&db.Document{}).Where("raw_path = ? AND id != ?", doc.RawPath, doc.ID).Count(&refCount)
+				db.DB.Model(&db.Document{}).Where("raw_path = ? AND id != ? AND user_id = ?", doc.RawPath, doc.ID, userId).Count(&refCount)
 				if refCount == 0 {
 					os.RemoveAll(rawPath)
 				} else {
@@ -259,14 +262,14 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 
 	// Delete associated wiki files if WikiPath is set
 	if doc.WikiPath != "" {
-		wikiPath := filepath.Join(h.DataDir, doc.WikiPath)
+		wikiRelPath := StripUserPrefix(doc.WikiPath)
+		wikiPath := filepath.Join(userDir, wikiRelPath)
 		if _, err := os.Stat(wikiPath); err == nil {
 			os.Remove(wikiPath)
 		}
 	}
 
 	// Clean wiki content (entities, topics, index files) related to this document
-	userDir := GetUserDir(c)
 	wikiDir := filepath.Join(userDir, "wiki")
 	docSlug := doc.Slug
 	if docSlug == "" {

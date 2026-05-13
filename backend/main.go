@@ -56,7 +56,12 @@ func main() {
 	}
 
 	// Migrate existing files to user-partitioned structure (if needed)
+	// This MUST happen BEFORE db.MigrateDocumentPaths so file lookup uses old paths
 	migrateFilesToUserPartition(cfg.DataDir)
+
+	// Migrate document paths in database to user-partitioned structure
+	// This MUST happen AFTER file migration is complete
+	db.MigrateDocumentPaths()
 
 	// Set global data directory for middleware to compute userDir
 	api.SetDataDir(cfg.DataDir)
@@ -125,7 +130,8 @@ func main() {
 		}
 
 		// Check if path starts with userDir (prevents path traversal)
-		if !strings.HasPrefix(absFullPath, absUserDir) {
+		// Must check with separator to prevent prefix collision (e.g., /data/users/1 matching /data/users/10)
+		if !strings.HasPrefix(absFullPath, absUserDir+string(filepath.Separator)) && absFullPath != absUserDir {
 			return c.String(http.StatusForbidden, "access denied")
 		}
 
@@ -356,10 +362,17 @@ func main() {
 // to user-partitioned structure based on document ownership in database.
 func migrateFilesToUserPartition(dataDir string) {
 	usersPath := filepath.Join(dataDir, "users")
+	markerFile := filepath.Join(usersPath, ".migration_complete")
 
-	// If users/ already exists, migration already done
-	if _, err := os.Stat(usersPath); err == nil {
+	// If marker file exists, migration already completed successfully
+	if _, err := os.Stat(markerFile); err == nil {
 		return
+	}
+
+	// If users/ exists but marker doesn't, previous migration crashed - cleanup and retry
+	if _, err := os.Stat(usersPath); err == nil {
+		log.Printf("[migration] Found incomplete migration, cleaning up users/ directory")
+		os.RemoveAll(usersPath)
 	}
 
 	// Check if old structure exists
@@ -375,6 +388,9 @@ func migrateFilesToUserPartition(dataDir string) {
 		wikiExists = true
 	}
 	if !rawExists && !wikiExists {
+		// No files to migrate, create marker to indicate fresh install
+		os.MkdirAll(usersPath, 0755)
+		os.WriteFile(markerFile, []byte("completed"), 0644)
 		return
 	}
 
@@ -392,21 +408,44 @@ func migrateFilesToUserPartition(dataDir string) {
 		embedfs.InitUserDirs(dataDir, user.ID)
 	}
 
+	// Track failures to prevent data loss
+	var rawFailures int
+	var wikiFailures int
+
 	// Migrate raw files based on document ownership
 	if rawExists {
-		migrateRawFiles(dataDir, oldRawPath)
+		rawFailures = migrateRawFiles(dataDir, oldRawPath)
 	}
 
 	// Migrate wiki files based on document ownership
 	if wikiExists {
-		migrateWikiFiles(dataDir, oldWikiPath)
+		wikiFailures = migrateWikiFiles(dataDir, oldWikiPath)
 	}
 
-	log.Printf("[migration] File migration completed")
+	// Only remove old directories if all migrations succeeded
+	if rawFailures == 0 && rawExists {
+		os.RemoveAll(oldRawPath)
+		log.Printf("[migration] Removed old raw/ directory")
+	}
+	if wikiFailures == 0 && wikiExists {
+		os.RemoveAll(oldWikiPath)
+		log.Printf("[migration] Removed old wiki/ directory")
+	}
+
+	// Write marker file only if all migrations succeeded
+	if rawFailures == 0 && wikiFailures == 0 {
+		os.WriteFile(markerFile, []byte("completed"), 0644)
+		log.Printf("[migration] File migration completed successfully")
+	} else {
+		log.Printf("[migration] File migration completed with %d raw failures, %d wiki failures. Old directories preserved.", rawFailures, wikiFailures)
+	}
 }
 
 // migrateRawFiles moves raw files to user directories based on document ownership
-func migrateRawFiles(dataDir string, oldRawPath string) {
+// Returns number of failed migrations
+func migrateRawFiles(dataDir string, oldRawPath string) int {
+	var failures int
+
 	// Walk through all files in raw/ directory
 	err := filepath.Walk(oldRawPath, func(oldPath string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
@@ -416,11 +455,12 @@ func migrateRawFiles(dataDir string, oldRawPath string) {
 		// Get relative path from raw/
 		relPath, err := filepath.Rel(oldRawPath, oldPath)
 		if err != nil {
+			failures++
 			return nil
 		}
 
 		// Find document that owns this file
-		// Match against both old path format and possible variations
+		// Match against old path format (before DB migration)
 		oldRawRelPath := "raw/" + relPath
 
 		var doc db.Document
@@ -447,10 +487,12 @@ func migrateRawFiles(dataDir string, oldRawPath string) {
 		// Ensure target directory exists
 		os.MkdirAll(filepath.Dir(newPath), 0755)
 
-		// Move file
-		log.Printf("[migration] Moving %s -> users/%d/raw/%s", oldPath, doc.UserID, relPath)
-		if err := os.Rename(oldPath, newPath); err != nil {
-			log.Printf("[migration] Warning: failed to move %s: %v", oldPath, err)
+		// Copy file ( safer than rename for cross-device)
+		if err := copyFile(oldPath, newPath); err != nil {
+			log.Printf("[migration] Failed to copy %s: %v", oldPath, err)
+			failures++
+		} else {
+			log.Printf("[migration] Copied %s -> users/%d/raw/%s", oldPath, doc.UserID, relPath)
 		}
 
 		return nil
@@ -459,14 +501,13 @@ func migrateRawFiles(dataDir string, oldRawPath string) {
 		log.Printf("[migration] Error walking raw directory: %v", err)
 	}
 
-	// Remove empty old raw directory
-	os.RemoveAll(oldRawPath)
+	return failures
 }
 
 // migrateWikiFiles moves wiki files to user directories based on document ownership
-func migrateWikiFiles(dataDir string, oldWikiPath string) {
-	// Wiki files are structured differently - sources/, entities/, topics/, index.md, log.md
-	// Sources files are linked to documents, others are shared metadata
+// Returns number of failed migrations
+func migrateWikiFiles(dataDir string, oldWikiPath string) int {
+	var failures int
 
 	// Walk through all files in wiki/ directory
 	err := filepath.Walk(oldWikiPath, func(oldPath string, info os.FileInfo, err error) error {
@@ -477,6 +518,7 @@ func migrateWikiFiles(dataDir string, oldWikiPath string) {
 		// Get relative path from wiki/
 		relPath, err := filepath.Rel(oldWikiPath, oldPath)
 		if err != nil {
+			failures++
 			return nil
 		}
 
@@ -502,10 +544,12 @@ func migrateWikiFiles(dataDir string, oldWikiPath string) {
 		// Ensure target directory exists
 		os.MkdirAll(filepath.Dir(newPath), 0755)
 
-		// Move file
-		log.Printf("[migration] Moving %s -> users/%d/wiki/%s", oldPath, ownerID, relPath)
-		if err := os.Rename(oldPath, newPath); err != nil {
-			log.Printf("[migration] Warning: failed to move %s: %v", oldPath, err)
+		// Copy file (safer than rename for cross-device)
+		if err := copyFile(oldPath, newPath); err != nil {
+			log.Printf("[migration] Failed to copy %s: %v", oldPath, err)
+			failures++
+		} else {
+			log.Printf("[migration] Copied %s -> users/%d/wiki/%s", oldPath, ownerID, relPath)
 		}
 
 		return nil
@@ -514,6 +558,32 @@ func migrateWikiFiles(dataDir string, oldWikiPath string) {
 		log.Printf("[migration] Error walking wiki directory: %v", err)
 	}
 
-	// Remove empty old wiki directory
-	os.RemoveAll(oldWikiPath)
+	return failures
+}
+
+// copyFile copies a file from src to dst
+func copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = io.Copy(destFile, sourceFile)
+	if err != nil {
+		return err
+	}
+
+	// Preserve file mode
+	sourceInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	return os.Chmod(dst, sourceInfo.Mode())
 }
