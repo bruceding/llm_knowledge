@@ -369,10 +369,10 @@ func migrateFilesToUserPartition(dataDir string) {
 		return
 	}
 
-	// If users/ exists but marker doesn't, previous migration crashed - cleanup and retry
+	// If users/ exists but marker doesn't, previous migration crashed
+	// Don't delete - copyFile is idempotent, so re-running migration is safe
 	if _, err := os.Stat(usersPath); err == nil {
-		log.Printf("[migration] Found incomplete migration, cleaning up users/ directory")
-		os.RemoveAll(usersPath)
+		log.Printf("[migration] Found incomplete migration, users/ directory already exists - skipping cleanup (copyFile is idempotent)")
 	}
 
 	// Check if old structure exists

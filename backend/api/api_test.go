@@ -25,7 +25,7 @@ func setupTestDB(t *testing.T) {
 	db.DB = testDB
 
 	// Auto migrate
-	testDB.AutoMigrate(&db.Document{}, &db.Tag{})
+	testDB.AutoMigrate(&db.User{}, &db.Session{}, &db.Document{}, &db.Tag{})
 }
 
 // cleanupTestDB removes the test database file
@@ -45,8 +45,8 @@ func TestPagesHandler_CheckPages(t *testing.T) {
 
 	// Create test data directory
 	dataDir := t.TempDir()
-	rawPath := "papers/test-paper"
-	pagesDir := filepath.Join(dataDir, rawPath, "pages")
+	rawPath := "users/1/raw/papers/test-paper"
+	pagesDir := filepath.Join(dataDir, "users", "1", "raw", "papers", "test-paper", "pages")
 	os.MkdirAll(pagesDir, 0755)
 
 	// Create test document
@@ -54,6 +54,7 @@ func TestPagesHandler_CheckPages(t *testing.T) {
 		Title:      "Test Paper",
 		RawPath:    rawPath,
 		SourceType: "pdf",
+		UserID:     1,
 	}
 	db.DB.Create(&doc)
 
@@ -72,6 +73,9 @@ func TestPagesHandler_CheckPages(t *testing.T) {
 	c := e.NewContext(req, rec)
 	c.SetParamNames("id")
 	c.SetParamValues("1")
+	c.Set("userId", uint(1))
+	c.Set("userDir", filepath.Join(dataDir, "users", "1"))
+	c.Set("userIdStr", "1")
 
 	err := handler.CheckPages(c)
 	if err != nil {
@@ -89,7 +93,11 @@ func TestPagesHandler_CheckPages(t *testing.T) {
 		t.Errorf("expected exists=true, got %v", result["exists"])
 	}
 
-	pageCount := result["page_count"].(float64)
+	pageCountVal, ok := result["page_count"]
+	if !ok || pageCountVal == nil {
+		t.Fatalf("page_count not found in response: %v", result)
+	}
+	pageCount := pageCountVal.(float64)
 	if pageCount != 3 {
 		t.Errorf("expected page_count=3, got %d", int(pageCount))
 	}
@@ -104,8 +112,9 @@ func TestPagesHandler_CheckPages_NotFound(t *testing.T) {
 	// Create test document without pages
 	doc := db.Document{
 		Title:      "Test Paper",
-		RawPath:    "papers/no-pages",
+		RawPath:    "users/1/raw/papers/no-pages",
 		SourceType: "pdf",
+		UserID:     1,
 	}
 	db.DB.Create(&doc)
 
@@ -117,6 +126,9 @@ func TestPagesHandler_CheckPages_NotFound(t *testing.T) {
 	c := e.NewContext(req, rec)
 	c.SetParamNames("id")
 	c.SetParamValues("1")
+	c.Set("userId", uint(1))
+	c.Set("userDir", filepath.Join(dataDir, "users", "1"))
+	c.Set("userIdStr", "1")
 
 	err := handler.CheckPages(c)
 	if err != nil {

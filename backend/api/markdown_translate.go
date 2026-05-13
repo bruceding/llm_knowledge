@@ -88,7 +88,7 @@ func (h *MarkdownTranslateHandler) CheckMarkdownTranslationStatus(c echo.Context
 
 	return c.JSON(http.StatusOK, echo.Map{
 		"exists":     exists,
-		"path":       translatedPath,
+		"path":       filepath.Join("/data", translatedPath),
 		"targetLang": targetLang,
 	})
 }
@@ -245,8 +245,8 @@ func (h *MarkdownTranslateHandler) TranslateMarkdown(c echo.Context) error {
 	}
 
 	// Save translated content
-	translatedPath := h.getTranslatedPath(doc.RawPath, req.TargetLang)
-	fullTranslatedPath := filepath.Join(h.DataDir, translatedPath)
+	translatedPath := h.getTranslatedPath(rawRelPath, req.TargetLang)
+	fullTranslatedPath := filepath.Join(userDir, translatedPath)
 
 	// Ensure directory exists for Web documents
 	if !strings.HasSuffix(doc.RawPath, ".md") {

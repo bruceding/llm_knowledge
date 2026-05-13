@@ -134,7 +134,7 @@ func (h *DocNoteHandler) PushToWiki(c echo.Context) error {
 	}
 
 	var doc db.Document
-	if err := db.DB.First(&doc, note.DocumentID).Error; err != nil {
+	if err := db.DB.Where("id = ? AND user_id = ?", note.DocumentID, userId).First(&doc).Error; err != nil {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
 	}
 

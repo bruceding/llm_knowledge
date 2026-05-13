@@ -52,11 +52,15 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid targetLang, must be 'zh' or 'en'"})
 	}
 
-	// Get document
+	// Get document (with user authorization check)
+	userId := GetCurrentUserId(c)
 	var doc db.Document
-	if err := db.DB.First(&doc, req.DocID).Error; err != nil {
+	if err := db.DB.Where("id = ? AND user_id = ?", req.DocID, userId).First(&doc).Error; err != nil {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
 	}
+
+	userDir := GetUserDir(c)
+	rawRelPath := StripUserPrefix(doc.RawPath)
 
 	// Check if raw path exists
 	if doc.RawPath == "" {
@@ -65,10 +69,10 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 
 	// For PDF documents, generate page images if not exist
 	if doc.SourceType == "pdf" {
-		pagesDir := filepath.Join(h.DataDir, doc.RawPath, "pages")
+		pagesDir := filepath.Join(userDir, rawRelPath, "pages")
 		if _, err := os.Stat(pagesDir); os.IsNotExist(err) {
 			// Generate page images
-			pdfPath := filepath.Join(h.DataDir, doc.RawPath, "paper.pdf")
+			pdfPath := filepath.Join(userDir, rawRelPath, "paper.pdf")
 			os.MkdirAll(pagesDir, 0755)
 			pdftoppmCmd := exec.Command("pdftoppm", "-png", "-r", "100", pdfPath, filepath.Join(pagesDir, "page"))
 			if err := pdftoppmCmd.Run(); err != nil {
@@ -94,7 +98,7 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 	}
 
 	// Read source content
-	rawPath := filepath.Join(h.DataDir, doc.RawPath, "paper.md")
+	rawPath := filepath.Join(userDir, rawRelPath, "paper.md")
 	content, err := os.ReadFile(rawPath)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": fmt.Sprintf("failed to read source content: %v", err)})
@@ -209,7 +213,7 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 
 	// Save translated content to file
 	translatedFilename := fmt.Sprintf("paper_%s.md", req.TargetLang)
-	translatedPath := filepath.Join(h.DataDir, doc.RawPath, translatedFilename)
+	translatedPath := filepath.Join(userDir, rawRelPath, translatedFilename)
 	if err := os.WriteFile(translatedPath, []byte(fullContent.String()), 0644); err != nil {
 		log.Printf("failed to save translated content: %v", err)
 		// Send error event to client

@@ -135,7 +135,9 @@ func (h *PDFTranslateHandler) TranslatePDF(c echo.Context) error {
 	}
 
 	// PDF paths
-	pdfDir := filepath.Join(h.DataDir, doc.RawPath)
+	userDir := GetUserDir(c)
+	rawRelPath := StripUserPrefix(doc.RawPath)
+	pdfDir := filepath.Join(userDir, rawRelPath)
 	sourcePdf := filepath.Join(pdfDir, "paper.pdf")
 	translatedPdf := filepath.Join(pdfDir, fmt.Sprintf("paper_%s.pdf", targetLang))
 
@@ -148,7 +150,7 @@ func (h *PDFTranslateHandler) TranslatePDF(c echo.Context) error {
 	// Check if translated PDF already exists
 	if _, err := os.Stat(translatedPdf); err == nil {
 		sendSSEEvent(c, "complete", echo.Map{
-			"translatedPdf": filepath.Join("/data", doc.RawPath, fmt.Sprintf("paper_%s.pdf", targetLang)),
+			"translatedPdf": filepath.Join("/data", rawRelPath, fmt.Sprintf("paper_%s.pdf", targetLang)),
 			"targetLang":    targetLang,
 		})
 		return nil
@@ -265,7 +267,7 @@ func (h *PDFTranslateHandler) TranslatePDF(c echo.Context) error {
 
 	// Send completion event
 	sendSSEEvent(c, "complete", echo.Map{
-		"translatedPdf": filepath.Join("/data", doc.RawPath, fmt.Sprintf("paper_%s.pdf", targetLang)),
+		"translatedPdf": filepath.Join("/data", rawRelPath, fmt.Sprintf("paper_%s.pdf", targetLang)),
 		"targetLang":    targetLang,
 	})
 

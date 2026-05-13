@@ -650,8 +650,21 @@ func loadImageData(dataDir string, imagePath string) (claude.ImageData, error) {
 	relPath := strings.TrimPrefix(imagePath, "/data/")
 	fullPath := filepath.Join(dataDir, relPath)
 
+	// Path traversal containment check
+	absBase, err := filepath.Abs(dataDir)
+	if err != nil {
+		return claude.ImageData{}, fmt.Errorf("path error")
+	}
+	absFull, err := filepath.Abs(fullPath)
+	if err != nil {
+		return claude.ImageData{}, fmt.Errorf("path error")
+	}
+	if !strings.HasPrefix(absFull, absBase+string(filepath.Separator)) && absFull != absBase {
+		return claude.ImageData{}, fmt.Errorf("access denied")
+	}
+
 	// Read file
-	data, err := os.ReadFile(fullPath)
+	data, err := os.ReadFile(absFull)
 	if err != nil {
 		return claude.ImageData{}, fmt.Errorf("failed to read image: %w", err)
 	}

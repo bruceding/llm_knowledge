@@ -157,18 +157,22 @@ func MigrateDocumentPaths() {
 	log.Printf("[migration] Migrating %d document paths to user-partitioned structure", needsMigration)
 
 	// Update raw_path: prepend "users/{user_id}/"
-	DB.Exec(`
+	if result := DB.Exec(`
 		UPDATE documents
 		SET raw_path = 'users/' || user_id || '/' || raw_path
 		WHERE raw_path != '' AND raw_path NOT LIKE 'users/%'
-	`)
+	`); result.Error != nil {
+		log.Printf("[migration] Failed to update raw_path: %v", result.Error)
+	}
 
 	// Update wiki_path: prepend "users/{user_id}/"
-	DB.Exec(`
+	if result := DB.Exec(`
 		UPDATE documents
 		SET wiki_path = 'users/' || user_id || '/' || wiki_path
 		WHERE wiki_path != '' AND wiki_path NOT LIKE 'users/%'
-	`)
+	`); result.Error != nil {
+		log.Printf("[migration] Failed to update wiki_path: %v", result.Error)
+	}
 
 	log.Printf("[migration] Document path migration completed")
 }

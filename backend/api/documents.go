@@ -321,7 +321,9 @@ func (h *DocHandler) ReExtract(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "only PDF documents can be re-extracted"})
 	}
 
-	pdfPath := filepath.Join(h.DataDir, doc.RawPath, "paper.pdf")
+	userDir := GetUserDir(c)
+	rawRelPath := StripUserPrefix(doc.RawPath)
+	pdfPath := filepath.Join(userDir, rawRelPath, "paper.pdf")
 	if _, err := os.Stat(pdfPath); os.IsNotExist(err) {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "PDF file not found"})
 	}
@@ -331,7 +333,7 @@ func (h *DocHandler) ReExtract(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to extract text: " + err.Error()})
 	}
 
-	mdPath := filepath.Join(h.DataDir, doc.RawPath, "paper.md")
+	mdPath := filepath.Join(userDir, rawRelPath, "paper.md")
 	if err := os.WriteFile(mdPath, []byte(extracted.FullText), 0644); err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to write markdown file"})
 	}
@@ -358,7 +360,9 @@ func (h *DocHandler) LLMExtract(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "only PDF documents can be LLM-extracted"})
 	}
 
-	pdfPath := filepath.Join(h.DataDir, doc.RawPath, "paper.pdf")
+	userDir := GetUserDir(c)
+	rawRelPath := StripUserPrefix(doc.RawPath)
+	pdfPath := filepath.Join(userDir, rawRelPath, "paper.pdf")
 	if _, err := os.Stat(pdfPath); os.IsNotExist(err) {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "PDF file not found"})
 	}
@@ -411,7 +415,7 @@ func (h *DocHandler) LLMExtract(c echo.Context) error {
 	}
 
 	// Process each page with Claude CLI
-	outputDir := filepath.Join(h.DataDir, doc.RawPath)
+	outputDir := filepath.Join(userDir, rawRelPath)
 	os.MkdirAll(outputDir, 0755)
 	assetsDir := filepath.Join(outputDir, "assets")
 	os.MkdirAll(assetsDir, 0755)
