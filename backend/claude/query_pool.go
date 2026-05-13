@@ -471,7 +471,8 @@ func (p *QuerySessionPool) Remove(convID uint) {
 // Extracted from SessionPool.StartSession for reuse.
 // No init message is sent — the first real user message triggers system.init,
 // so session creation returns immediately without waiting for Claude CLI to boot.
-func StartSession(ctx context.Context, claudeBin string, dataDir string, systemPrompt string) (*InteractiveSession, error) {
+// userDir is the user's directory (cmd.Dir) for Claude session isolation and security restriction.
+func StartSession(ctx context.Context, claudeBin string, userDir string, systemPrompt string) (*InteractiveSession, error) {
 	args := []string{
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
@@ -484,8 +485,17 @@ func StartSession(ctx context.Context, claudeBin string, dataDir string, systemP
 		args = append(args, "--system-prompt", systemPrompt)
 	}
 
+	// Add security settings path if available (generated once at startup)
+	settingsPath := GetSettingsPath()
+	if settingsPath != "" {
+		args = append(args, "--settings", settingsPath)
+	}
+
+	// Build environment with ALLOWED_DIR
+	env := BuildSecureEnv(userDir)
+
 	ctx, cancel := context.WithCancel(ctx)
-	cmd := buildCmd(ctx, claudeBin, args, dataDir)
+	cmd := buildCmdWithEnv(ctx, claudeBin, args, userDir, env)
 
 	stdinPipe, stdoutPipe, stderrPipe, err := createPipes(cmd)
 	if err != nil {
@@ -537,7 +547,8 @@ func StartSession(ctx context.Context, claudeBin string, dataDir string, systemP
 
 // StartResumedSession creates a new InteractiveSession that resumes a previous conversation.
 // No init message is sent — the first real user message triggers system.init.
-func StartResumedSession(ctx context.Context, claudeBin string, dataDir string, prevSessionID string, systemPrompt string) (*InteractiveSession, error) {
+// userDir is the user's directory (cmd.Dir) for Claude session isolation and security restriction.
+func StartResumedSession(ctx context.Context, claudeBin string, userDir string, prevSessionID string, systemPrompt string) (*InteractiveSession, error) {
 	args := []string{
 		"--resume", prevSessionID,
 		"--output-format", "stream-json",
@@ -551,8 +562,17 @@ func StartResumedSession(ctx context.Context, claudeBin string, dataDir string, 
 		args = append(args, "--system-prompt", systemPrompt)
 	}
 
+	// Add security settings path if available (generated once at startup)
+	settingsPath := GetSettingsPath()
+	if settingsPath != "" {
+		args = append(args, "--settings", settingsPath)
+	}
+
+	// Build environment with ALLOWED_DIR
+	env := BuildSecureEnv(userDir)
+
 	ctx, cancel := context.WithCancel(ctx)
-	cmd := buildCmd(ctx, claudeBin, args, dataDir)
+	cmd := buildCmdWithEnv(ctx, claudeBin, args, userDir, env)
 
 	stdinPipe, stdoutPipe, stderrPipe, err := createPipes(cmd)
 	if err != nil {

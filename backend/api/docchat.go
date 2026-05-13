@@ -68,7 +68,8 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 	// Start new session with ownership
 	// Use context.Background() — request context gets cancelled when handler returns,
 	// which would kill the Claude subprocess via exec.CommandContext.
-	session, err := h.Pool.StartSession(context.Background(), docInfo, userId, uint(docId))
+	userDir := GetUserDir(c)
+	session, err := h.Pool.StartSession(context.Background(), docInfo, userId, uint(docId), userDir)
 	if err != nil {
 		log.Printf("[docchat] Failed to start session: %v", err)
 		writeSSE(echo.Map{"type": "error", "error": "failed to start session"})

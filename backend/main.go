@@ -55,6 +55,21 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
+	// Initialize security hooks for Claude CLI
+	// The scripts directory contains path-validator.py for file access restriction
+	scriptsDir := os.Getenv("LLM_SCRIPTS_DIR")
+	if scriptsDir == "" {
+		// Default: look for scripts in the backend directory
+		// In production, this would be /opt/llm-knowledge/scripts
+		execPath, _ := os.Executable()
+		if execPath != "" {
+			scriptsDir = filepath.Join(filepath.Dir(execPath), "scripts")
+		}
+	}
+	if err := claude.InitSecurityConfig(scriptsDir); err != nil {
+		log.Printf("[main] Warning: failed to initialize security config: %v", err)
+	}
+
 	// Check and install pdf2zh asynchronously
 	pdf2zh.CheckAndInstall(cfg.PDF2ZhVenvDir)
 

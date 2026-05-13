@@ -24,27 +24,31 @@ This security hook restricts Claude CLI's `Read` tool to only access files withi
 
 ## How It Works
 
-### 1. Hook Loading Flow
+### 1. Hook Loading Flow (Optimized - Settings file generated once at startup)
 
 ```
-Go Backend                          Claude CLI Process
-    │                                     │
-    │ 1. Get userDir (e.g., /opt/.../users/1)
-    │                                     │
-    │ 2. GenerateSecuritySettings(userDir)
-    │    → creates /tmp/claude-security-{pid}.json
-    │                                     │
-    │ 3. Build args with --settings path  │
-    │                                     │
-    │ 4. Build env with ALLOWED_DIR=...   │
-    │                                     │
-    │ 5. exec.CommandContext(...)         │
-    │─────────────────────────────────────▶
-    │                                     │
-    │                          Claude CLI loads hooks from settings.json
-    │                          Hook script reads ALLOWED_DIR from env
-    │                          Read tool calls → PreToolUse hook validates path
-    │                                     │
+Go Backend Startup
+    │
+    │ InitSecurityConfig(scriptsDir)
+    │   → Generate /tmp/claude-security-{pid}.json (ONE TIME)
+    │   → Cache in globalSecurityConfig.SettingsPath
+    │
+    ↓
+User Request (Doc Chat / Query)
+    │
+    │ GetSettingsPath() → Returns cached path
+    │ BuildSecureEnv(userDir) → Returns ALLOWED_DIR=/data/users/{userId}
+    │
+    │ exec.CommandContext(..., --settings {cachedPath}, ...)
+    │
+    ↓
+Claude CLI Process (each user gets own process with own ALLOWED_DIR)
+    │
+    │ Load hooks from cached settings.json
+    │ Read ALLOWED_DIR from environment
+    │
+    │ Read tool called → PreToolUse hook validates path
+    │                     → Checks: sensitive path? outside ALLOWED_DIR? → DENY/ALLOW
 ```
 
 ### 2. Path Validation Logic
