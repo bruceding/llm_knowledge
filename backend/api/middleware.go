@@ -1,12 +1,22 @@
 package api
 
 import (
+	"llm-knowledge/config"
 	"llm-knowledge/db"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 )
+
+// GlobalDataDir is set during initialization in main.go
+var GlobalDataDir string
+
+// SetDataDir sets the global data directory for middleware use
+func SetDataDir(dataDir string) {
+	GlobalDataDir = dataDir
+}
 
 // AuthMiddleware validates session tokens and auto-renews sessions
 func AuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -39,8 +49,11 @@ func AuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 			db.DB.Save(&session)
 		}
 
-		// Inject userId into context
+		// Inject userId and userDir into context
 		c.Set("userId", session.UserID)
+		userDir := config.GetUserDir(GlobalDataDir, session.UserID)
+		c.Set("userDir", userDir)
+		c.Set("userIdStr", strconv.FormatUint(uint64(session.UserID), 10))
 
 		return next(c)
 	}
@@ -53,4 +66,36 @@ func GetCurrentUserId(c echo.Context) uint {
 		return 0
 	}
 	return userId
+}
+
+// GetUserDir extracts userDir from context
+func GetUserDir(c echo.Context) string {
+	userDir, ok := c.Get("userDir").(string)
+	if !ok || userDir == "" {
+		return ""
+	}
+	return userDir
+}
+
+// GetUserIdStr extracts userId as string from context
+func GetUserIdStr(c echo.Context) string {
+	userIdStr, ok := c.Get("userIdStr").(string)
+	if !ok {
+		return ""
+	}
+	return userIdStr
+}
+
+// StripUserPrefix removes the "users/{userId}/" prefix from a path.
+// Returns the path relative to userDir for use with Claude CLI.
+// E.g., "users/1/raw/papers/foo" -> "raw/papers/foo"
+// Legacy paths without "users/" prefix are returned unchanged.
+func StripUserPrefix(path string) string {
+	if strings.HasPrefix(path, "users/") {
+		parts := strings.SplitN(path, "/", 3)
+		if len(parts) >= 3 && parts[2] != "" {
+			return parts[2]
+		}
+	}
+	return path
 }

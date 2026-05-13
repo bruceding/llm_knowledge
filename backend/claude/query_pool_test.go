@@ -208,8 +208,9 @@ func TestQuerySessionPool_GetOrCreate_BackgroundContext(t *testing.T) {
 	defer pool.Close()
 
 	ctx := context.Background()
+	userDir := t.TempDir()
 
-	qs, err := pool.GetOrCreate(ctx, 1, "test prompt")
+	qs, err := pool.GetOrCreate(ctx, 1, "test prompt", userDir)
 	if err != nil {
 		t.Fatalf("GetOrCreate failed: %v", err)
 	}
@@ -224,7 +225,7 @@ func TestQuerySessionPool_GetOrCreate_BackgroundContext(t *testing.T) {
 	}
 
 	// Verify second call returns same session
-	qs2, err := pool.GetOrCreate(ctx, 1, "test prompt")
+	qs2, err := pool.GetOrCreate(ctx, 1, "test prompt", userDir)
 	if err != nil {
 		t.Fatalf("second GetOrCreate failed: %v", err)
 	}
@@ -246,8 +247,9 @@ func TestQuerySessionPool_Remove(t *testing.T) {
 	defer pool.Close()
 
 	ctx := context.Background()
+	userDir := t.TempDir()
 
-	_, err = pool.GetOrCreate(ctx, 42, "test prompt")
+	_, err = pool.GetOrCreate(ctx, 42, "test prompt", userDir)
 	if err != nil {
 		t.Fatalf("GetOrCreate failed: %v", err)
 	}
@@ -284,8 +286,9 @@ func TestQuerySessionPool_SessionSurvivesRequestCancel(t *testing.T) {
 
 	// Simulate what the handler does AFTER the fix: context.Background()
 	bgCtx := context.Background()
+	userDir := t.TempDir()
 
-	qs, err := pool.GetOrCreate(bgCtx, 100, "你是一个测试助手，简短回答")
+	qs, err := pool.GetOrCreate(bgCtx, 100, "你是一个测试助手，简短回答", userDir)
 	if err != nil {
 		t.Fatalf("GetOrCreate failed: %v", err)
 	}
@@ -353,8 +356,9 @@ func TestQuerySessionPool_RequestContextKillsSession(t *testing.T) {
 
 	// Simulate the OLD broken behavior: use a cancellable request context
 	reqCtx, reqCancel := context.WithCancel(context.Background())
+	userDir := t.TempDir()
 
-	qs, err := pool.GetOrCreate(reqCtx, 200, "你是一个测试助手，简短回答")
+	qs, err := pool.GetOrCreate(reqCtx, 200, "你是一个测试助手，简短回答", userDir)
 	if err != nil {
 		t.Fatalf("GetOrCreate failed: %v", err)
 	}

@@ -8,6 +8,13 @@ interface PDFTranslationViewProps {
   translating?: boolean
 }
 
+// Helper to add token query param for static resources
+function addTokenParam(url: string): string {
+  const token = localStorage.getItem('token')
+  if (!token) return url
+  return `${url}?token=${encodeURIComponent(token)}`
+}
+
 // Parse translated content by page markers
 function parseTranslatedPages(content: string): Map<number, string> {
   const pages = new Map<number, string>()
@@ -54,7 +61,7 @@ export default function PDFTranslationView({
           <div className="mb-6">
             <div className="bg-gray-100 rounded-lg p-2">
               <img
-                src={`/data/${rawPath}/pages/page_${pageNum}.png`}
+                src={addTokenParam(`/data/${rawPath}/pages/page_${pageNum}.png`)}
                 alt={`Page ${pageNum}`}
                 className="max-w-full mx-auto rounded shadow-sm"
                 loading="lazy"

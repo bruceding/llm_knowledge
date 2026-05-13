@@ -3,12 +3,14 @@ package api
 import (
 	"io"
 	"llm-knowledge/db"
+	"llm-knowledge/fs"
 	"llm-knowledge/ingest"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,7 +18,7 @@ import (
 )
 
 type RawHandler struct {
-	DataDir  string
+	DataDir   string // Global data dir for shared resources
 	ClaudeBin string // Path to Claude CLI binary
 }
 
@@ -44,7 +46,15 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 	// Create paper directory name from filename (without .pdf extension)
 	// Use filepath.Base to prevent path traversal attacks
 	name := strings.TrimSuffix(filepath.Base(file.Filename), ".pdf")
-	dir := filepath.Join(h.DataDir, "raw", "papers", name)
+
+	userId := GetCurrentUserId(c)
+	userDir := GetUserDir(c)
+	userIdStr := strconv.FormatUint(uint64(userId), 10)
+
+	// Ensure user directory exists
+	fs.InitUserDirs(h.DataDir, userId)
+
+	dir := filepath.Join(userDir, "raw", "papers", name)
 
 	// Create directory structure: raw/papers/{name}/ and raw/papers/{name}/assets/
 	if err := os.MkdirAll(filepath.Join(dir, "assets"), 0755); err != nil {
@@ -75,11 +85,8 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to write markdown file"})
 	}
 
-	// Create Document record in database
-	rawRelPath := filepath.Join("raw", "papers", name)
-	mdRelPath := filepath.Join("raw", "papers", name, "paper.md")
-
-	userId := GetCurrentUserId(c)
+	// Create Document record in database - path includes user prefix
+	rawRelPath := filepath.Join("users", userIdStr, "raw", "papers", name)
 
 	doc := db.Document{
 		UserID:     userId,
@@ -105,7 +112,7 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 	if h.ClaudeBin != "" {
 		// Generate summary asynchronously
 		go func() {
-			summary, err := ingest.GenerateSummary(h.DataDir, rawRelPath, h.ClaudeBin)
+			summary, err := ingest.GenerateSummary(userDir, "raw/papers/"+name, h.ClaudeBin)
 			if err != nil {
 				log.Printf("[api] summary generation failed for %s: %v", name, err)
 			} else {
@@ -113,15 +120,14 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 				log.Printf("[api] summary generated for %s", name)
 			}
 		}()
-
 	}
 
 	return c.JSON(http.StatusOK, echo.Map{
-		"id":       doc.ID,
-		"path":     dir,
-		"message":  "PDF uploaded and text extracted",
-		"pages":    len(extracted.Pages),
-		"rawPath":  mdRelPath,
+		"id":      doc.ID,
+		"path":    dir,
+		"message": "PDF uploaded and text extracted",
+		"pages":   len(extracted.Pages),
+		"rawPath": rawRelPath + "/paper.md",
 	})
 }
 
@@ -168,8 +174,15 @@ func (h *RawHandler) UploadPDFFromURL(c echo.Context) error {
 	// Extract filename from URL path or Content-Disposition header
 	name := extractPDFName(parsedURL, resp.Header)
 
+	userId := GetCurrentUserId(c)
+	userDir := GetUserDir(c)
+	userIdStr := strconv.FormatUint(uint64(userId), 10)
+
+	// Ensure user directory exists
+	fs.InitUserDirs(h.DataDir, userId)
+
 	// Create directory structure
-	dir := filepath.Join(h.DataDir, "raw", "papers", name)
+	dir := filepath.Join(userDir, "raw", "papers", name)
 	if err := os.MkdirAll(filepath.Join(dir, "assets"), 0755); err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create directory structure"})
 	}
@@ -198,11 +211,8 @@ func (h *RawHandler) UploadPDFFromURL(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to write markdown file"})
 	}
 
-	// Create Document record in database
-	rawRelPath := filepath.Join("raw", "papers", name)
-	mdRelPath := filepath.Join("raw", "papers", name, "paper.md")
-
-	userId := GetCurrentUserId(c)
+	// Create Document record in database - path includes user prefix
+	rawRelPath := filepath.Join("users", userIdStr, "raw", "papers", name)
 
 	doc := db.Document{
 		UserID:     userId,
@@ -225,7 +235,7 @@ func (h *RawHandler) UploadPDFFromURL(c echo.Context) error {
 	// Trigger async summary generation
 	if h.ClaudeBin != "" {
 		go func() {
-			summary, err := ingest.GenerateSummary(h.DataDir, rawRelPath, h.ClaudeBin)
+			summary, err := ingest.GenerateSummary(userDir, "raw/papers/"+name, h.ClaudeBin)
 			if err != nil {
 				log.Printf("[api] summary generation failed for %s: %v", name, err)
 			} else {
@@ -240,7 +250,7 @@ func (h *RawHandler) UploadPDFFromURL(c echo.Context) error {
 		"path":    dir,
 		"message": "PDF downloaded and text extracted",
 		"pages":   len(extracted.Pages),
-		"rawPath": mdRelPath,
+		"rawPath": rawRelPath + "/paper.md",
 	})
 }
 

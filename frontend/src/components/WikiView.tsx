@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useTranslation } from 'react-i18next'
+import { getAuthHeaders } from '../api'
 
 export default function WikiView() {
   const params = useParams<{ '*': string }>()
@@ -23,7 +24,7 @@ export default function WikiView() {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`/data/wiki/${wikiPath}.md`)
+      const res = await fetch(`/data/wiki/${wikiPath}.md`, { headers: getAuthHeaders() })
       if (!res.ok) {
         if (res.status === 404) {
           setError(t('wikiView.notFound'))
@@ -44,7 +45,7 @@ export default function WikiView() {
   const loadAvailablePages = async () => {
     try {
       // Fetch wiki index to get available pages with their full paths
-      const res = await fetch('/data/wiki/index.md')
+      const res = await fetch('/data/wiki/index.md', { headers: getAuthHeaders() })
       if (res.ok) {
         const indexContent = await res.text()
         // Extract full link paths from index

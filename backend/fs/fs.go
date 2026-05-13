@@ -4,6 +4,7 @@ import (
 	"embed"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 //go:embed dist/*
@@ -110,4 +111,35 @@ func writeIfNotExist(path, content string) error {
 
 	// Write the file
 	return os.WriteFile(path, []byte(content), 0644)
+}
+
+// InitUserDirs creates the directory structure for a specific user
+func InitUserDirs(dataDir string, userId uint) error {
+	userDir := filepath.Join(dataDir, "users", strconv.FormatUint(uint64(userId), 10))
+	dirs := []string{
+		"raw/papers",
+		"raw/articles",
+		"raw/web",
+		"raw/rss",
+		"raw/newsletter",
+		"wiki/entities",
+		"wiki/topics",
+		"wiki/sources",
+		"cache/images",
+	}
+	for _, d := range dirs {
+		if err := os.MkdirAll(filepath.Join(userDir, d), 0755); err != nil {
+			return err
+		}
+	}
+
+	// Create initial wiki files
+	if err := writeIfNotExist(filepath.Join(userDir, "wiki/index.md"), "# Index\n\nWelcome to your knowledge base.\n\n"); err != nil {
+		return err
+	}
+	if err := writeIfNotExist(filepath.Join(userDir, "wiki/log.md"), "# Log\n\n"); err != nil {
+		return err
+	}
+
+	return nil
 }

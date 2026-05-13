@@ -29,14 +29,18 @@ func (h *PDFTranslateHandler) CheckTranslationStatus(c echo.Context) error {
 	if docID == "" {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "document id required"})
 	}
+	userId := GetCurrentUserId(c)
 
 	var doc db.Document
-	if err := db.DB.First(&doc, docID).Error; err != nil {
+	if err := db.DB.Where("id = ? AND user_id = ?", docID, userId).First(&doc).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
 		}
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to get document"})
 	}
+
+	userDir := GetUserDir(c)
+	rawRelPath := StripUserPrefix(doc.RawPath)
 
 	// Determine target language based on source
 	targetLang := "zh"
@@ -45,7 +49,7 @@ func (h *PDFTranslateHandler) CheckTranslationStatus(c echo.Context) error {
 	}
 
 	// Check if translated PDF exists
-	pdfDir := filepath.Join(h.DataDir, doc.RawPath)
+	pdfDir := filepath.Join(userDir, rawRelPath)
 	translatedPdfName := fmt.Sprintf("paper_%s.pdf", targetLang)
 	translatedPdfPath := filepath.Join(pdfDir, translatedPdfName)
 
@@ -54,9 +58,10 @@ func (h *PDFTranslateHandler) CheckTranslationStatus(c echo.Context) error {
 		exists = true
 	}
 
+	// Return path relative to userDir for frontend
 	return c.JSON(http.StatusOK, echo.Map{
-		"exists":    exists,
-		"path":      filepath.Join("/data", doc.RawPath, translatedPdfName),
+		"exists":     exists,
+		"path":       filepath.Join("/data", rawRelPath, translatedPdfName),
 		"targetLang": targetLang,
 	})
 }
@@ -78,8 +83,9 @@ func (h *PDFTranslateHandler) TranslatePDF(c echo.Context) error {
 	}
 
 	// Get document
+	userId := GetCurrentUserId(c)
 	var doc db.Document
-	if err := db.DB.First(&doc, input.DocID).Error; err != nil {
+	if err := db.DB.Where("id = ? AND user_id = ?", input.DocID, userId).First(&doc).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			sendSSEError(c, "document not found")
 			return nil
@@ -90,7 +96,7 @@ func (h *PDFTranslateHandler) TranslatePDF(c echo.Context) error {
 
 	// Get settings
 	var settings db.UserSettings
-	if err := db.DB.First(&settings).Error; err != nil {
+	if err := db.DB.Where("user_id = ?", userId).First(&settings).Error; err != nil {
 		sendSSEError(c, "failed to get settings")
 		return nil
 	}
@@ -129,7 +135,9 @@ func (h *PDFTranslateHandler) TranslatePDF(c echo.Context) error {
 	}
 
 	// PDF paths
-	pdfDir := filepath.Join(h.DataDir, doc.RawPath)
+	userDir := GetUserDir(c)
+	rawRelPath := StripUserPrefix(doc.RawPath)
+	pdfDir := filepath.Join(userDir, rawRelPath)
 	sourcePdf := filepath.Join(pdfDir, "paper.pdf")
 	translatedPdf := filepath.Join(pdfDir, fmt.Sprintf("paper_%s.pdf", targetLang))
 
@@ -142,7 +150,7 @@ func (h *PDFTranslateHandler) TranslatePDF(c echo.Context) error {
 	// Check if translated PDF already exists
 	if _, err := os.Stat(translatedPdf); err == nil {
 		sendSSEEvent(c, "complete", echo.Map{
-			"translatedPdf": filepath.Join("/data", doc.RawPath, fmt.Sprintf("paper_%s.pdf", targetLang)),
+			"translatedPdf": filepath.Join("/data", rawRelPath, fmt.Sprintf("paper_%s.pdf", targetLang)),
 			"targetLang":    targetLang,
 		})
 		return nil
@@ -259,7 +267,7 @@ func (h *PDFTranslateHandler) TranslatePDF(c echo.Context) error {
 
 	// Send completion event
 	sendSSEEvent(c, "complete", echo.Map{
-		"translatedPdf": filepath.Join("/data", doc.RawPath, fmt.Sprintf("paper_%s.pdf", targetLang)),
+		"translatedPdf": filepath.Join("/data", rawRelPath, fmt.Sprintf("paper_%s.pdf", targetLang)),
 		"targetLang":    targetLang,
 	})
 

@@ -165,12 +165,27 @@ func (h *DocHandler) Publish(c echo.Context) error {
 
 	// Trigger wiki ingest if raw content exists and ClaudeBin is configured
 	if doc.RawPath != "" && h.ClaudeBin != "" {
-		wikiDir := filepath.Join(h.DataDir, "wiki")
+		userDir := GetUserDir(c)
+		userIdStr := GetUserIdStr(c)
+
+		// Extract relative path from doc.RawPath (which is "users/{userId}/raw/...")
+		// Claude CLI runs with cmd.Dir = userDir, so paths should be relative to userDir
+		rawRelPath := StripUserPrefix(doc.RawPath)
+
+		// Build absolute path for existence check
 		var mdPath string
-		if strings.HasSuffix(doc.RawPath, ".md") {
-			mdPath = filepath.Join(h.DataDir, doc.RawPath)
+		if strings.HasSuffix(rawRelPath, ".md") {
+			mdPath = filepath.Join(userDir, rawRelPath)
 		} else {
-			mdPath = filepath.Join(h.DataDir, doc.RawPath, "paper.md")
+			mdPath = filepath.Join(userDir, rawRelPath, "paper.md")
+		}
+
+		// Build relative path for Claude (relative to userDir)
+		var claudeRelPath string
+		if strings.HasSuffix(rawRelPath, ".md") {
+			claudeRelPath = rawRelPath
+		} else {
+			claudeRelPath = rawRelPath + "/paper.md"
 		}
 
 		if _, err := os.Stat(mdPath); err == nil {
@@ -181,12 +196,12 @@ func (h *DocHandler) Publish(c echo.Context) error {
 				docSlug = doc.Title // fallback for legacy records
 			}
 			go func() {
-				p := ingest.NewPipeline(wikiDir, h.ClaudeBin)
+				p := ingest.NewPipeline(userDir, h.ClaudeBin)
 				ctx := context.Background()
-				if err := p.Ingest(ctx, mdPath, docSlug, docID); err != nil {
+				if err := p.Ingest(ctx, claudeRelPath, docSlug, docID); err != nil {
 					log.Printf("[api] wiki ingest failed for %d: %v", docID, err)
 				} else {
-					wikiRelPath := filepath.Join("wiki", "sources", docSlug+".md")
+					wikiRelPath := filepath.Join("users", userIdStr, "wiki", "sources", docSlug+".md")
 					db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("wiki_path", wikiRelPath)
 					log.Printf("[api] wiki ingest completed for %d: %s", docID, wikiRelPath)
 				}
@@ -220,19 +235,22 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 	log.Printf("[delete] Deleting document id=%d title=%q sourceType=%s rawPath=%q wikiPath=%q userId=%d remoteAddr=%s",
 		doc.ID, doc.Title, doc.SourceType, doc.RawPath, doc.WikiPath, userId, c.RealIP())
 
+	userDir := GetUserDir(c)
+
 	// Delete associated raw files if RawPath is set
 	if doc.RawPath != "" {
-		rawPath := filepath.Join(h.DataDir, doc.RawPath)
+		rawRelPath := StripUserPrefix(doc.RawPath)
+		rawPath := filepath.Join(userDir, rawRelPath)
 		if _, err := os.Stat(rawPath); err == nil {
 			// RSS articles are single .md files in a shared feed directory
-			if strings.HasPrefix(doc.RawPath, "raw/rss/") {
+			if strings.HasPrefix(rawRelPath, "raw/rss/") {
 				os.Remove(rawPath)
 			} else {
 				// For papers/web clips, RawPath is the document's own directory
 				// (e.g. raw/web/{title}/ or raw/papers/{name}/).
 				// Check if other documents reference the same directory before removing.
 				var refCount int64
-				db.DB.Model(&db.Document{}).Where("raw_path = ? AND id != ?", doc.RawPath, doc.ID).Count(&refCount)
+				db.DB.Model(&db.Document{}).Where("raw_path = ? AND id != ? AND user_id = ?", doc.RawPath, doc.ID, userId).Count(&refCount)
 				if refCount == 0 {
 					os.RemoveAll(rawPath)
 				} else {
@@ -244,14 +262,15 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 
 	// Delete associated wiki files if WikiPath is set
 	if doc.WikiPath != "" {
-		wikiPath := filepath.Join(h.DataDir, doc.WikiPath)
+		wikiRelPath := StripUserPrefix(doc.WikiPath)
+		wikiPath := filepath.Join(userDir, wikiRelPath)
 		if _, err := os.Stat(wikiPath); err == nil {
 			os.Remove(wikiPath)
 		}
 	}
 
 	// Clean wiki content (entities, topics, index files) related to this document
-	wikiDir := filepath.Join(h.DataDir, "wiki")
+	wikiDir := filepath.Join(userDir, "wiki")
 	docSlug := doc.Slug
 	if docSlug == "" {
 		docSlug = doc.Title // fallback for legacy records
@@ -268,7 +287,7 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 	// This prevents "ghost" records from lingering after a delete + re-import cycle
 	if doc.RawPath != "" {
 		var ghostDocs []db.Document
-		if err := db.DB.Unscoped().Where("raw_path = ? AND id != ? AND deleted_at IS NOT NULL", doc.RawPath, doc.ID).Find(&ghostDocs).Error; err == nil {
+		if err := db.DB.Unscoped().Where("raw_path = ? AND id != ? AND user_id = ? AND deleted_at IS NOT NULL", doc.RawPath, doc.ID, userId).Find(&ghostDocs).Error; err == nil {
 			for _, ghost := range ghostDocs {
 				db.DB.Unscoped().Delete(&ghost)
 				log.Printf("[delete] Hard-deleted ghost record id=%d with same raw_path=%q", ghost.ID, doc.RawPath)
@@ -302,7 +321,9 @@ func (h *DocHandler) ReExtract(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "only PDF documents can be re-extracted"})
 	}
 
-	pdfPath := filepath.Join(h.DataDir, doc.RawPath, "paper.pdf")
+	userDir := GetUserDir(c)
+	rawRelPath := StripUserPrefix(doc.RawPath)
+	pdfPath := filepath.Join(userDir, rawRelPath, "paper.pdf")
 	if _, err := os.Stat(pdfPath); os.IsNotExist(err) {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "PDF file not found"})
 	}
@@ -312,7 +333,7 @@ func (h *DocHandler) ReExtract(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to extract text: " + err.Error()})
 	}
 
-	mdPath := filepath.Join(h.DataDir, doc.RawPath, "paper.md")
+	mdPath := filepath.Join(userDir, rawRelPath, "paper.md")
 	if err := os.WriteFile(mdPath, []byte(extracted.FullText), 0644); err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to write markdown file"})
 	}
@@ -339,7 +360,9 @@ func (h *DocHandler) LLMExtract(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "only PDF documents can be LLM-extracted"})
 	}
 
-	pdfPath := filepath.Join(h.DataDir, doc.RawPath, "paper.pdf")
+	userDir := GetUserDir(c)
+	rawRelPath := StripUserPrefix(doc.RawPath)
+	pdfPath := filepath.Join(userDir, rawRelPath, "paper.pdf")
 	if _, err := os.Stat(pdfPath); os.IsNotExist(err) {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "PDF file not found"})
 	}
@@ -381,9 +404,10 @@ func (h *DocHandler) LLMExtract(c echo.Context) error {
 		end = totalPages
 	}
 
-	// Create temp directory for images
-	tempDir := filepath.Join("/tmp", "pdf_pages")
+	// Create user-scoped temp directory for images (avoid cross-user race)
+	tempDir := filepath.Join("/tmp", fmt.Sprintf("pdf_pages_%d_%d", userId, doc.ID))
 	os.MkdirAll(tempDir, 0755)
+	defer os.RemoveAll(tempDir)
 
 	// Convert PDF to images
 	pdftoppmCmd := exec.Command("pdftoppm", "-png", "-r", "150", "-f", startPage, "-l", endPage, pdfPath, filepath.Join(tempDir, "page"))
@@ -392,7 +416,7 @@ func (h *DocHandler) LLMExtract(c echo.Context) error {
 	}
 
 	// Process each page with Claude CLI
-	outputDir := filepath.Join(h.DataDir, doc.RawPath)
+	outputDir := filepath.Join(userDir, rawRelPath)
 	os.MkdirAll(outputDir, 0755)
 	assetsDir := filepath.Join(outputDir, "assets")
 	os.MkdirAll(assetsDir, 0755)
@@ -462,13 +486,15 @@ func (h *DocHandler) HTMLExtract(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "only PDF documents can be converted to HTML"})
 	}
 
-	pdfPath := filepath.Join(h.DataDir, doc.RawPath, "paper.pdf")
+	userDir := GetUserDir(c)
+	rawRelPath := StripUserPrefix(doc.RawPath)
+	pdfPath := filepath.Join(userDir, rawRelPath, "paper.pdf")
 	if _, err := os.Stat(pdfPath); os.IsNotExist(err) {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "PDF file not found"})
 	}
 
 	// Create HTML output directory
-	htmlDir := filepath.Join(h.DataDir, doc.RawPath, "html")
+	htmlDir := filepath.Join(userDir, rawRelPath, "html")
 	os.RemoveAll(htmlDir)
 	os.MkdirAll(htmlDir, 0755)
 
@@ -495,7 +521,7 @@ func (h *DocHandler) HTMLExtract(c echo.Context) error {
 		"id":         doc.ID,
 		"html_dir":   htmlDir,
 		"html_pages": htmlFiles,
-		"first_page": "/data/" + doc.RawPath + "/html/page-1.html",
+		"first_page": filepath.Join("/data", rawRelPath, "html/page-1.html"),
 		"message":    "PDF converted to HTML successfully",
 	})
 }
@@ -545,8 +571,14 @@ func (h *DocHandler) RegenerateSummary(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "document has no raw content"})
 	}
 
+	// Get user directory for summary generation
+	userDir := GetUserDir(c)
+
+	// Extract relative path from doc.RawPath (e.g., "users/1/raw/papers/foo" -> "raw/papers/foo")
+	rawRelPath := StripUserPrefix(doc.RawPath)
+
 	// Generate summary
-	summary, err := ingest.GenerateSummary(h.DataDir, doc.RawPath, claudeBin)
+	summary, err := ingest.GenerateSummary(userDir, rawRelPath, claudeBin)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to generate summary: " + err.Error()})
 	}
