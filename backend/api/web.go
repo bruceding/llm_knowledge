@@ -1333,7 +1333,7 @@ func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, origi
 		return c.JSON(200, echo.Map{
 			"id":      existingDoc.ID,
 			"title":   existingDoc.Title,
-			"path":    filepath.Join(h.DataDir, existingDoc.RawPath),
+			"path":    filepath.Join(userDir, StripUserPrefix(existingDoc.RawPath)),
 			"url":     req.URL,
 			"message": "Document already exists",
 		})
@@ -1515,7 +1515,7 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 		return c.JSON(200, echo.Map{
 			"id":      existingDoc.ID,
 			"title":   existingDoc.Title,
-			"path":    filepath.Join(h.DataDir, existingDoc.RawPath),
+			"path":    filepath.Join(userDir, StripUserPrefix(existingDoc.RawPath)),
 			"url":     req.URL,
 			"message": "Document already exists",
 		})

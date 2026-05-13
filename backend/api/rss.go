@@ -159,7 +159,7 @@ func (h *RSSHandler) DeleteFeed(c echo.Context) error {
 	// Delete physical files for inbox documents only
 	for _, doc := range inboxDocs {
 		if doc.RawPath != "" {
-			fullPath := filepath.Join(h.DataDir, doc.RawPath)
+			fullPath := filepath.Join(config.GetUserDir(h.DataDir, userId), StripUserPrefix(doc.RawPath))
 			os.Remove(fullPath)
 		}
 	}

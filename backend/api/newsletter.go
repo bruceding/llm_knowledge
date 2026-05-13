@@ -194,7 +194,7 @@ func (h *NewsletterHandler) DeleteConfig(c echo.Context) error {
 	db.DB.Where("source_type = ? AND user_id = ? AND status = ?", "newsletter", userId, "inbox").Find(&inboxDocs)
 	for _, doc := range inboxDocs {
 		if doc.RawPath != "" {
-			os.Remove(filepath.Join(h.DataDir, doc.RawPath))
+			os.Remove(filepath.Join(config.GetUserDir(h.DataDir, userId), StripUserPrefix(doc.RawPath)))
 		}
 	}
 	db.DB.Where("source_type = ? AND user_id = ? AND status = ?", "newsletter", userId, "inbox").Delete(&db.Document{})

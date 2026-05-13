@@ -175,9 +175,9 @@ func (h *DocHandler) Publish(c echo.Context) error {
 		// Build absolute path for existence check
 		var mdPath string
 		if strings.HasSuffix(rawRelPath, ".md") {
-			mdPath = filepath.Join(h.DataDir, doc.RawPath)
+			mdPath = filepath.Join(userDir, rawRelPath)
 		} else {
-			mdPath = filepath.Join(h.DataDir, doc.RawPath, "paper.md")
+			mdPath = filepath.Join(userDir, rawRelPath, "paper.md")
 		}
 
 		// Build relative path for Claude (relative to userDir)
