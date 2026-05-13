@@ -61,7 +61,7 @@ func (h *PDFTranslateHandler) CheckTranslationStatus(c echo.Context) error {
 	// Return path relative to userDir for frontend
 	return c.JSON(http.StatusOK, echo.Map{
 		"exists":     exists,
-		"path":       filepath.Join(rawRelPath, translatedPdfName),
+		"path":       filepath.Join("/data", rawRelPath, translatedPdfName),
 		"targetLang": targetLang,
 	})
 }

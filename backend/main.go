@@ -61,7 +61,13 @@ func main() {
 
 	// Migrate document paths in database to user-partitioned structure
 	// This MUST happen AFTER file migration is complete
-	db.MigrateDocumentPaths()
+	// Only run if file migration completed successfully (marker file exists)
+	migrationMarker := filepath.Join(cfg.DataDir, "users", ".migration_complete")
+	if _, err := os.Stat(migrationMarker); err == nil {
+		db.MigrateDocumentPaths()
+	} else {
+		log.Printf("[migration] Skipping DB path migration - file migration incomplete")
+	}
 
 	// Set global data directory for middleware to compute userDir
 	api.SetDataDir(cfg.DataDir)

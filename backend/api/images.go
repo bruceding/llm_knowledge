@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -55,7 +54,6 @@ func (h *ImagesHandler) Upload(c echo.Context) error {
 	}
 
 	userDir := GetUserDir(c)
-	userIdStr := strconv.FormatUint(uint64(userId), 10)
 
 	// Ensure user directory exists
 	fs.InitUserDirs(h.DataDir, userId)
@@ -119,7 +117,7 @@ func (h *ImagesHandler) Upload(c echo.Context) error {
 	log.Printf("[images] Saved image %s (%d bytes)", filename, len(decoded))
 
 	return c.JSON(http.StatusOK, ImageUploadResponse{
-		Path:     "/data/users/" + userIdStr + "/cache/images/" + filename,
+		Path:     "/data/cache/images/" + filename,
 		Filename: filename,
 	})
 }

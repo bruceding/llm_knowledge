@@ -287,7 +287,7 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 	// This prevents "ghost" records from lingering after a delete + re-import cycle
 	if doc.RawPath != "" {
 		var ghostDocs []db.Document
-		if err := db.DB.Unscoped().Where("raw_path = ? AND id != ? AND deleted_at IS NOT NULL", doc.RawPath, doc.ID).Find(&ghostDocs).Error; err == nil {
+		if err := db.DB.Unscoped().Where("raw_path = ? AND id != ? AND user_id = ? AND deleted_at IS NOT NULL", doc.RawPath, doc.ID, userId).Find(&ghostDocs).Error; err == nil {
 			for _, ghost := range ghostDocs {
 				db.DB.Unscoped().Delete(&ghost)
 				log.Printf("[delete] Hard-deleted ghost record id=%d with same raw_path=%q", ghost.ID, doc.RawPath)
@@ -404,9 +404,10 @@ func (h *DocHandler) LLMExtract(c echo.Context) error {
 		end = totalPages
 	}
 
-	// Create temp directory for images
-	tempDir := filepath.Join("/tmp", "pdf_pages")
+	// Create user-scoped temp directory for images (avoid cross-user race)
+	tempDir := filepath.Join("/tmp", fmt.Sprintf("pdf_pages_%d_%d", userId, doc.ID))
 	os.MkdirAll(tempDir, 0755)
+	defer os.RemoveAll(tempDir)
 
 	// Convert PDF to images
 	pdftoppmCmd := exec.Command("pdftoppm", "-png", "-r", "150", "-f", startPage, "-l", endPage, pdfPath, filepath.Join(tempDir, "page"))
