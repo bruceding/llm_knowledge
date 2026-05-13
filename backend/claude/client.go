@@ -65,28 +65,25 @@ type RawEvent struct {
 func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamEvent, workDir string) error {
 	// SECURITY NOTE: --bare skips all PreToolUse/PostToolUse hooks, including
 	// the path-validator. This is intentional for automated ingest scenarios that
-	// need Write/Edit access. Ensure the prompt content is trusted and workDir
-	// is set to the user's isolated directory as a compensating control.
-	// Use --allowedTools to pre-approve file operations
-	// Use --dangerously-skip-permissions for non-interactive ingest scenarios
-	args := []string{}
-	// Add security settings if available (currently skipped by --bare, but
-	// included for forward-compatibility if --bare is removed later)
-	if settingsPath := GetSettingsPath(); settingsPath != "" {
-		args = append(args, "--settings", settingsPath)
-	}
-	args = append(args,
+	// need Write/Edit access. Compensating controls:
+	//   - --allowedTools restricts available tools
+	//   - cmd.Dir confines the working directory
+	//   - Prompt content is system-constructed (not user-controlled)
+	//   - ALLOWED_DIR is set in environment for forward-compatibility if --bare is removed
+	// Do NOT remove --bare without first validating that the path-validator hook
+	// correctly handles Write/Edit tool inputs.
+	args := []string{
 		"--bare",
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--allowedTools", "Read", "Write", "Edit",
 		"--dangerously-skip-permissions",
-	)
+	}
 	cmd := exec.CommandContext(ctx, c.BinPath, args...)
 	if workDir != "" {
 		cmd.Dir = workDir
-		// Set ALLOWED_DIR environment for security hooks (forward-compat)
+		// Set ALLOWED_DIR for forward-compatibility if --bare is removed later
 		if env := BuildSecureEnv(workDir); len(env) > 0 {
 			cmd.Env = env
 		}

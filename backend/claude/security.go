@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	cryptorand "crypto/rand"
 )
 
 // SecurityConfig manages file access security for Claude CLI sessions
@@ -105,7 +107,11 @@ func generateSettingsFile(scriptsDir string) (string, error) {
 
 	// Write to temp file with PID (one file per backend process)
 	// Use 0600 permissions to prevent other users from reading the hook config
-	settingsPath := filepath.Join(os.TempDir(), fmt.Sprintf("claude-security-%d.json", os.Getpid()))
+	rnd := make([]byte, 8)
+	if _, err := cryptorand.Read(rnd); err != nil {
+		return "", fmt.Errorf("failed to generate random suffix: %w", err)
+	}
+	settingsPath := filepath.Join(os.TempDir(), fmt.Sprintf("claude-security-%x.json", rnd))
 	if err := os.WriteFile(settingsPath, jsonData, 0600); err != nil {
 		return "", fmt.Errorf("failed to write settings file: %w", err)
 	}

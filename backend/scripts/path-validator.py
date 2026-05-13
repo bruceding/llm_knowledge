@@ -7,12 +7,15 @@ It restricts access to:
 1. Only files within the ALLOWED_DIR (user's data directory)
 2. Blocks access to sensitive system paths
 
+Fail-closed: if ALLOWED_DIR is not set, ALL access is denied.
+
 Supports: Read, Glob, Grep, LS tools
 
 Usage:
   Environment variables:
     ALLOWED_DIR - The allowed base directory for file access
                   (e.g., /opt/llm-knowledge/data/users/1)
+                  REQUIRED — hook denies all access if not set.
 
   Deployed at: /opt/llm-knowledge/scripts/path-validator.py
 
@@ -34,10 +37,10 @@ import sys
 import os
 import re
 
-# Sensitive path patterns - only applied to paths OUTSIDE ALLOWED_DIR
-# Paths within ALLOWED_DIR are always allowed (user's own data)
+# Sensitive path patterns (defense-in-depth, checked even within ALLOWED_DIR)
+# These cover both direct paths and macOS /private symlink targets
 SENSITIVE_PATH_PATTERNS = [
-    # System configuration and secrets
+    # System configuration and secrets (Linux)
     r'^/etc/shadow$',
     r'^/etc/passwd$',
     r'^/etc/gshadow$',
@@ -48,6 +51,15 @@ SENSITIVE_PATH_PATTERNS = [
     r'^/sys/',
     r'^/var/log/',
     r'^/var/run/',
+
+    # macOS symlink targets (/etc -> /private/etc, /var -> /private/var)
+    r'^/private/etc/shadow$',
+    r'^/private/etc/passwd$',
+    r'^/private/etc/gshadow$',
+    r'^/private/etc/ssh/',
+    r'^/private/etc/ssl/(private|certs)',
+    r'^/private/var/log/',
+    r'^/private/var/run/',
 
     # User credentials - Linux
     r'^/home/.*/\.ssh/',
@@ -75,7 +87,7 @@ _COMPILED_PATTERNS = [re.compile(p) for p in SENSITIVE_PATH_PATTERNS]
 
 
 def is_sensitive_path(path):
-    """Check if path matches any sensitive pattern. Only for paths outside ALLOWED_DIR."""
+    """Check if path matches any sensitive pattern."""
     norm_path = os.path.normpath(path)
     for compiled in _COMPILED_PATTERNS:
         try:
@@ -101,7 +113,7 @@ def extract_paths_from_input(tool_name, tool_input):
 
     Different tools use different field names:
     - Read: file_path
-    - Glob: pattern (treated as a path)
+    - Glob: path (root dir) + pattern (glob pattern, used as fallback path hint)
     - Grep: path (root directory to search)
     - LS: path (directory to list)
     """
@@ -111,11 +123,17 @@ def extract_paths_from_input(tool_name, tool_input):
         if fp:
             paths.append(fp)
     elif tool_name == "Glob":
-        pattern = tool_input.get("pattern", "")
-        if pattern and not pattern.startswith("**"):  # Skip wildcard-only patterns
-            paths.append(pattern)
+        # Glob tool accepts both 'path' (root dir) and 'pattern' (glob expression)
+        # 'path' takes priority as it explicitly sets the search root
+        p = tool_input.get("path", "")
+        if p:
+            paths.append(p)
+        else:
+            # Fallback: extract base path from pattern (before first wildcard)
+            pattern = tool_input.get("pattern", "")
+            if pattern and not pattern.startswith("**"):
+                paths.append(pattern)
     elif tool_name == "Grep":
-        # Grep has 'path' (root dir) field
         p = tool_input.get("path", "")
         if p:
             paths.append(p)
@@ -144,26 +162,25 @@ def validate_path(file_path, allowed_dir):
     if not file_path:
         return True, None
 
+    # Fail-closed: no allowed_dir means no access
+    if not allowed_dir:
+        return False, "Access denied: no allowed directory configured"
+
     # Resolve allowed_dir once
-    if allowed_dir:
-        try:
-            allowed_dir = os.path.realpath(allowed_dir)
-        except Exception:
-            allowed_dir = os.path.normpath(allowed_dir)
+    try:
+        allowed_dir = os.path.realpath(allowed_dir)
+    except Exception:
+        allowed_dir = os.path.normpath(allowed_dir)
 
     resolved_path = resolve_path(file_path, allowed_dir)
 
-    # First check: allowed directory restriction (with proper path boundary)
-    if allowed_dir and not is_path_within_dir(resolved_path, allowed_dir):
-        # Path is outside allowed dir — check if it's also a sensitive path
-        if is_sensitive_path(resolved_path):
-            return False, "Access denied: sensitive file"
-        return False, "Access denied: path outside allowed directory"
-
-    # Path is within allowed dir — allow (user's own data)
-    # Still check sensitive paths for defense-in-depth, but only block system paths
+    # Defense-in-depth: block sensitive paths regardless of location
     if is_sensitive_path(resolved_path):
         return False, "Access denied: sensitive file"
+
+    # Directory boundary check (with proper path boundary via os.sep)
+    if not is_path_within_dir(resolved_path, allowed_dir):
+        return False, "Access denied: path outside allowed directory"
 
     return True, None
 
@@ -198,6 +215,10 @@ def main():
 
     # Get allowed directory from environment
     allowed_dir = os.environ.get("ALLOWED_DIR", "")
+
+    # Fail-closed: deny if ALLOWED_DIR is not configured
+    if not allowed_dir:
+        deny("ALLOWED_DIR not configured — access denied by default")
 
     # Extract tool name and input
     tool_name = data.get("tool_name", "")
