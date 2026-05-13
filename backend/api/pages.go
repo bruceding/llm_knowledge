@@ -30,8 +30,13 @@ func (h *PagesHandler) GeneratePages(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
 	}
 
+	if doc.SourceType != "pdf" {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "only PDF documents can generate page images"})
+	}
+
 	userDir := GetUserDir(c)
-	pdfPath := filepath.Join(userDir, StripUserPrefix(doc.RawPath), "paper.pdf")
+	rawRelPath := StripUserPrefix(doc.RawPath)
+	pdfPath := filepath.Join(userDir, rawRelPath, "paper.pdf")
 	if _, err := os.Stat(pdfPath); os.IsNotExist(err) {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "PDF file not found"})
 	}
@@ -54,7 +59,7 @@ func (h *PagesHandler) GeneratePages(c echo.Context) error {
 	}
 
 	// Create pages directory
-	pagesDir := filepath.Join(h.DataDir, doc.RawPath, "pages")
+	pagesDir := filepath.Join(userDir, rawRelPath, "pages")
 	os.MkdirAll(pagesDir, 0755)
 
 	// Generate page images using pdftoppm

@@ -481,13 +481,15 @@ func (h *DocHandler) HTMLExtract(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "only PDF documents can be converted to HTML"})
 	}
 
-	pdfPath := filepath.Join(h.DataDir, doc.RawPath, "paper.pdf")
+	userDir := GetUserDir(c)
+	rawRelPath := StripUserPrefix(doc.RawPath)
+	pdfPath := filepath.Join(userDir, rawRelPath, "paper.pdf")
 	if _, err := os.Stat(pdfPath); os.IsNotExist(err) {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "PDF file not found"})
 	}
 
 	// Create HTML output directory
-	htmlDir := filepath.Join(h.DataDir, doc.RawPath, "html")
+	htmlDir := filepath.Join(userDir, rawRelPath, "html")
 	os.RemoveAll(htmlDir)
 	os.MkdirAll(htmlDir, 0755)
 
@@ -514,7 +516,7 @@ func (h *DocHandler) HTMLExtract(c echo.Context) error {
 		"id":         doc.ID,
 		"html_dir":   htmlDir,
 		"html_pages": htmlFiles,
-		"first_page": "/data/" + doc.RawPath + "/html/page-1.html",
+		"first_page": filepath.Join("/data", rawRelPath, "html/page-1.html"),
 		"message":    "PDF converted to HTML successfully",
 	})
 }

@@ -118,7 +118,7 @@ func (h *QueryHandler) Message(c echo.Context) error {
 	}
 
 	// Build system prompt
-	systemPrompt := h.buildSystemPrompt(req.DocID)
+	systemPrompt := h.buildSystemPrompt(req.DocID, userId)
 
 	// Get user directory for session isolation
 	userDir := GetUserDir(c)
@@ -250,7 +250,7 @@ func (h *QueryHandler) ResumeConversation(c echo.Context) error {
 	}
 
 	// Build system prompt
-	systemPrompt := h.buildSystemPrompt(0)
+	systemPrompt := h.buildSystemPrompt(0, userId)
 
 	// Get user directory for session isolation
 	userDir := GetUserDir(c)
@@ -332,7 +332,7 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 		// This prevents concurrent resume attempts and registers a callback
 		// to update the DB when the real session_id arrives.
 		bgCtx := context.Background()
-		systemPrompt := h.buildSystemPrompt(0)
+		systemPrompt := h.buildSystemPrompt(0, userId)
 		userDir := GetUserDir(c)
 		var err error
 		qs, _, err = h.Pool.GetOrResume(bgCtx, convID, conv.SessionID, systemPrompt, userDir, func(cid uint, newSID string) {
@@ -623,15 +623,17 @@ func (h *QueryHandler) DeleteConversation(c echo.Context) error {
 }
 
 // buildSystemPrompt constructs the system prompt pointing to wiki file paths.
-func (h *QueryHandler) buildSystemPrompt(docID uint) string {
+func (h *QueryHandler) buildSystemPrompt(docID uint, userId uint) string {
 	var prompt strings.Builder
 
 	prompt.WriteString("你是一个知识库助手。知识库文件在 wiki/ 目录下，wiki/index.md 是索引。请使用 Read、Glob、Grep 等工具读取相关文件回答用户问题。如果文件内容不足以回答，可以使用你自己的知识补充。")
 
 	if docID > 0 {
 		var doc db.Document
-		if err := db.DB.First(&doc, docID).Error; err == nil && doc.WikiPath != "" {
-			prompt.WriteString(fmt.Sprintf(" 重点关注: %s", doc.WikiPath))
+		if err := db.DB.Where("id = ? AND user_id = ?", docID, userId).First(&doc).Error; err == nil && doc.WikiPath != "" {
+			// Strip user prefix since Claude CWD is already in userDir
+			wikiRelPath := StripUserPrefix(doc.WikiPath)
+			prompt.WriteString(fmt.Sprintf(" 重点关注: %s", wikiRelPath))
 		}
 	}
 
