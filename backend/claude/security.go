@@ -82,8 +82,8 @@ func generateSettingsFile(scriptsDir string) (string, error) {
 		return "", fmt.Errorf("path-validator.py not found at %s", validatorPath)
 	}
 
-	// Hook all file-access tools to prevent bypass via Glob/Grep/LS
-	hookedTools := []string{"Read", "Glob", "Grep", "LS"}
+	// Hook all file-access tools to prevent bypass via Glob/Grep/LS/Write/Edit
+	hookedTools := []string{"Read", "Write", "Edit", "Glob", "Grep", "LS"}
 	preToolUseHooks := make([]HookMatcher, 0, len(hookedTools))
 	for _, tool := range hookedTools {
 		preToolUseHooks = append(preToolUseHooks, HookMatcher{
@@ -121,11 +121,6 @@ func generateSettingsFile(scriptsDir string) (string, error) {
 	}
 
 	return settingsPath, nil
-}
-
-// GetSecurityConfig returns the global security configuration
-func GetSecurityConfig() *SecurityConfig {
-	return globalSecurityConfig
 }
 
 // GetSettingsPath returns the path to the settings.json file
@@ -166,11 +161,6 @@ func BuildSecureEnv(allowedDir string) []string {
 	}
 
 	return append(filtered, fmt.Sprintf("ALLOWED_DIR=%s", allowedDir))
-}
-
-// IsSecurityEnabled returns true if security hooks are configured
-func IsSecurityEnabled() bool {
-	return globalSecurityConfig != nil && globalSecurityConfig.ScriptsDir != "" && globalSecurityConfig.SettingsPath != ""
 }
 
 // CleanupSecuritySettings removes the settings file (call on server shutdown)

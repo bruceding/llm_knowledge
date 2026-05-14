@@ -63,27 +63,19 @@ type RawEvent struct {
 // The caller should close the channel after Send returns.
 // If workDir is non-empty, the command runs in that directory.
 func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamEvent, workDir string) error {
-	// SECURITY NOTE: --bare skips all PreToolUse/PostToolUse hooks, including
-	// the path-validator. This is intentional for automated ingest scenarios that
-	// need Write/Edit access. Compensating controls:
-	//   - --allowedTools restricts available tools
-	//   - cmd.Dir confines the working directory
-	//   - Prompt content is system-constructed (not user-controlled)
-	//   - ALLOWED_DIR is set in environment for forward-compatibility if --bare is removed
-	// Do NOT remove --bare without first validating that the path-validator hook
-	// correctly handles Write/Edit tool inputs.
 	args := []string{
-		"--bare",
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--allowedTools", "Read", "Write", "Edit",
 		"--dangerously-skip-permissions",
 	}
+	if settingsPath := GetSettingsPath(); settingsPath != "" {
+		args = append(args, "--settings", settingsPath)
+	}
 	cmd := exec.CommandContext(ctx, c.BinPath, args...)
 	if workDir != "" {
 		cmd.Dir = workDir
-		// Set ALLOWED_DIR for forward-compatibility if --bare is removed later
 		if env := BuildSecureEnv(workDir); len(env) > 0 {
 			cmd.Env = env
 		}

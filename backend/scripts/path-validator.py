@@ -112,13 +112,13 @@ def extract_paths_from_input(tool_name, tool_input):
     """Extract file paths from tool_input based on tool type.
 
     Different tools use different field names:
-    - Read: file_path
+    - Read/Write/Edit: file_path
     - Glob: path (root dir) + pattern (glob pattern, used as fallback path hint)
     - Grep: path (root directory to search)
     - LS: path (directory to list)
     """
     paths = []
-    if tool_name == "Read":
+    if tool_name in ("Read", "Write", "Edit"):
         fp = tool_input.get("file_path", "")
         if fp:
             paths.append(fp)
