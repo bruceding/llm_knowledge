@@ -73,6 +73,21 @@ func main() {
 	// Set global data directory for middleware to compute userDir
 	api.SetDataDir(cfg.DataDir)
 
+	// Initialize security hooks for Claude CLI
+	// The scripts directory contains path-validator.py for file access restriction
+	scriptsDir := os.Getenv("LLM_SCRIPTS_DIR")
+	if scriptsDir == "" {
+		// Default: look for scripts in the backend directory
+		// In production, this would be /opt/llm-knowledge/scripts
+		execPath, _ := os.Executable()
+		if execPath != "" {
+			scriptsDir = filepath.Join(filepath.Dir(execPath), "scripts")
+		}
+	}
+	if err := claude.InitSecurityConfig(scriptsDir); err != nil {
+		log.Printf("[main] Warning: failed to initialize security config: %v", err)
+	}
+
 	// Check and install pdf2zh asynchronously
 	pdf2zh.CheckAndInstall(cfg.PDF2ZhVenvDir)
 
@@ -183,6 +198,11 @@ func main() {
 		if _, err := os.Stat(absFullPath); err != nil {
 			return c.String(http.StatusNotFound, "file not found")
 		}
+
+		// Force revalidation so browsers always check for updates
+		// This prevents stale content after re-clipping or backend code fixes
+		c.Response().Header().Set("Cache-Control", "no-cache")
+		c.Response().Header().Set("Vary", "Origin")
 
 		// Serve the file
 		return c.File(absFullPath)
@@ -395,6 +415,10 @@ func main() {
 	// Close all Claude session pools to kill child processes
 	querySessionPool.Close()
 	sessionPool.Close()
+
+
+	// Clean up security settings temp file
+	claude.CleanupSecuritySettings()
 
 	// Close database connection (cleanup sessions)
 	db.Close()

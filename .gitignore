@@ -3,7 +3,7 @@
 
 # Local deployment scripts
 build-if-needed.sh
-scripts/
+/scripts/
 
 .worktrees/
 backend/fs/dist/

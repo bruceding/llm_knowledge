@@ -4,6 +4,8 @@
 build:
 	cd frontend && npm run build
 	cd backend && CGO_ENABLED=1 go build -o ../llm-knowledge .
+	@mkdir -p scripts
+	@cp backend/scripts/path-validator.py scripts/ && chmod +x scripts/path-validator.py
 
 # Build and run the binary
 run: build

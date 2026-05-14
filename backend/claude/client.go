@@ -63,19 +63,22 @@ type RawEvent struct {
 // The caller should close the channel after Send returns.
 // If workDir is non-empty, the command runs in that directory.
 func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamEvent, workDir string) error {
-	// Use --bare to skip hooks for faster execution in automated scenarios
-	// Use --allowedTools to pre-approve file operations
-	// Use --dangerously-skip-permissions for non-interactive ingest scenarios
-	cmd := exec.CommandContext(ctx, c.BinPath,
-		"--bare",
+	args := []string{
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--allowedTools", "Read", "Write", "Edit",
 		"--dangerously-skip-permissions",
-	)
+	}
+	if settingsPath := GetSettingsPath(); settingsPath != "" {
+		args = append(args, "--settings", settingsPath)
+	}
+	cmd := exec.CommandContext(ctx, c.BinPath, args...)
 	if workDir != "" {
 		cmd.Dir = workDir
+		if env := BuildSecureEnv(workDir); len(env) > 0 {
+			cmd.Env = env
+		}
 	}
 	cmd.Stdin = strings.NewReader(prompt)
 
@@ -176,15 +179,24 @@ func (c *Client) SendSimple(ctx context.Context, prompt string) (string, error) 
 // This is faster than stream-json mode for simple tasks like generating summaries.
 // If workDir is non-empty, the command runs in that directory.
 func (c *Client) SendSimpleWithRead(ctx context.Context, prompt string, workDir string) (string, error) {
-	cmd := exec.CommandContext(ctx, c.BinPath,
-		"--bare",
+	args := []string{
 		"-p",
 		"--allowedTools", "Read",
 		"--dangerously-skip-permissions",
-		prompt,
-	)
+	}
+	// Add security settings if available
+	if settingsPath := GetSettingsPath(); settingsPath != "" {
+		args = append(args, "--settings", settingsPath)
+	}
+	args = append(args, prompt)
+
+	cmd := exec.CommandContext(ctx, c.BinPath, args...)
 	if workDir != "" {
 		cmd.Dir = workDir
+		// Set ALLOWED_DIR environment for security hooks
+		if env := BuildSecureEnv(workDir); len(env) > 0 {
+			cmd.Env = env
+		}
 	}
 	out, err := cmd.Output()
 	if err != nil {

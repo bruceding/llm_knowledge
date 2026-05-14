@@ -105,6 +105,17 @@ func buildCmd(ctx context.Context, claudeBin string, args []string, dataDir stri
 	return cmd
 }
 
+// buildCmdWithEnv builds a command with a pre-filtered environment.
+// extraEnv should come from BuildSecureEnv which already filters duplicates.
+func buildCmdWithEnv(ctx context.Context, claudeBin string, args []string, dataDir string, extraEnv []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, claudeBin, args...)
+	cmd.Dir = dataDir
+	if len(extraEnv) > 0 {
+		cmd.Env = extraEnv
+	}
+	return cmd
+}
+
 func createPipes(cmd *exec.Cmd) (io.Writer, io.Reader, io.Reader, error) {
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
@@ -141,7 +152,14 @@ func waitForInit(session *InteractiveSession, timeout time.Duration) error {
 }
 
 // StartSession creates a new Claude session with user/document ownership
+// userDir is the user's directory for file isolation (defaults to p.dataDir if empty)
 func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID uint, docID uint, userDir string) (*InteractiveSession, error) {
+	// Use userDir if provided, otherwise use dataDir for backward compatibility
+	workDir := userDir
+	if workDir == "" {
+		workDir = p.dataDir
+	}
+
 	args := []string{
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
@@ -154,9 +172,17 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 	systemPrompt := fmt.Sprintf("用户正在询问文档相关问题。%s 请使用 Read 工具读取相关文件回答。如果文件内容不足以回答，可以使用你自己的知识补充。", docInfo)
 	args = append(args, "--system-prompt", systemPrompt)
 
+	// Add security settings path if available (generated once at startup)
+	settingsPath := GetSettingsPath()
+	if settingsPath != "" {
+		args = append(args, "--settings", settingsPath)
+	}
+
+	// Build environment with ALLOWED_DIR
+	env := BuildSecureEnv(workDir)
+
 	ctx, cancel := context.WithCancel(ctx)
-	// Use userDir instead of p.dataDir for isolation
-	cmd := buildCmd(ctx, p.claudeBin, args, userDir)
+	cmd := buildCmdWithEnv(ctx, p.claudeBin, args, workDir, env)
 
 	stdinPipe, stdoutPipe, stderrPipe, err := createPipes(cmd)
 	if err != nil {
