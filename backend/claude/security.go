@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	cryptorand "crypto/rand"
@@ -191,16 +192,15 @@ var DangerousDisallowedTools = []string{
 // Callers should append their own --output-format / --input-format / --print /
 // --resume / --system-prompt flags around the returned slice.
 //
-// Panics if allowedTools contains any entry from DangerousDisallowedTools — that
-// is a programming error (the conflicting flags would leave behavior up to CLI
-// internals), and we want it caught at startup rather than at runtime in prod.
-func BuildSecureArgs(allowedTools []string) []string {
+// Returns an error if allowedTools contains any entry from DangerousDisallowedTools.
+// That is a programming error (the conflicting flags would leave behavior up to CLI
+// internals), but we surface it as an error rather than panic so a buggy caller
+// inside a goroutine can't crash the whole server process.
+func BuildSecureArgs(allowedTools []string) ([]string, error) {
 	for _, t := range allowedTools {
-		for _, dangerous := range DangerousDisallowedTools {
-			if t == dangerous {
-				panic(fmt.Sprintf("BuildSecureArgs: allowedTools contains dangerous tool %q; "+
-					"this conflicts with --disallowedTools and must be a programming error", t))
-			}
+		if slices.Contains(DangerousDisallowedTools, t) {
+			return nil, fmt.Errorf("BuildSecureArgs: allowedTools contains dangerous tool %q; "+
+				"this conflicts with --disallowedTools and must be a programming error", t)
 		}
 	}
 
@@ -219,7 +219,7 @@ func BuildSecureArgs(allowedTools []string) []string {
 		args = append(args, "--settings", settingsPath)
 	}
 
-	return args
+	return args, nil
 }
 
 // CleanupSecuritySettings removes the settings file (call on server shutdown)
