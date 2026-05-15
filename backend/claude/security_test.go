@@ -76,10 +76,27 @@ func TestBuildSecureArgs_BypassFlagPresent(t *testing.T) {
 // of tools that must never be reachable. Adding a new dangerous tool to the
 // product should add it here too.
 func TestDangerousDisallowedTools_CoversKnownAttackVectors(t *testing.T) {
-	required := []string{"Bash", "Task", "NotebookEdit", "KillShell", "BashOutput"}
+	required := []string{"Bash", "Task", "NotebookEdit", "KillShell", "BashOutput", "SlashCommand"}
 	for _, tool := range required {
 		if !slices.Contains(DangerousDisallowedTools, tool) {
 			t.Errorf("DangerousDisallowedTools missing required tool %q", tool)
 		}
+	}
+}
+
+// TestBuildSecureArgs_PanicsOnAllowedDangerousOverlap verifies BuildSecureArgs
+// rejects programming errors where a caller passes a dangerous tool name into
+// allowedTools. Without this guard, the CLI would receive conflicting
+// --allowedTools and --disallowedTools entries with undefined precedence.
+func TestBuildSecureArgs_PanicsOnAllowedDangerousOverlap(t *testing.T) {
+	for _, dangerous := range DangerousDisallowedTools {
+		t.Run(dangerous, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf("expected panic when allowedTools contains %q, got none", dangerous)
+				}
+			}()
+			BuildSecureArgs([]string{"Read", dangerous})
+		})
 	}
 }

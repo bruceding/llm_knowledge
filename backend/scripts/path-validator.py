@@ -11,8 +11,10 @@ Fail-closed: if ALLOWED_DIR is not set, ALL access is denied.
 
 Supports:
   - Path-bound tools (Read, Write, Edit, Glob, Grep, LS): validated against ALLOWED_DIR
-  - Always-denied tools (Bash, NotebookEdit): denied unconditionally as defense-in-depth.
-    These should also be on the CLI's --disallowedTools list; the hook is a backstop.
+  - Always-denied tools (Bash, BashOutput, KillShell, NotebookEdit, SlashCommand, Task):
+    denied unconditionally as defense-in-depth. These should also be on the CLI's
+    --disallowedTools list; the hook is a backstop. The set MUST mirror
+    DangerousDisallowedTools in backend/claude/security.go.
 
 Usage:
   Environment variables:
@@ -81,7 +83,7 @@ _COMPILED_PATTERNS = [re.compile(p) for p in SENSITIVE_PATH_PATTERNS]
 # accept inputs we cannot meaningfully validate from a hook (NotebookEdit). Production
 # sessions must not use them; the CLI's --disallowedTools is the primary gate, this is
 # a backstop in case the flag is misconfigured.
-ALWAYS_DENIED_TOOLS = frozenset({"Bash", "BashOutput", "KillShell", "NotebookEdit", "Task"})
+ALWAYS_DENIED_TOOLS = frozenset({"Bash", "BashOutput", "KillShell", "NotebookEdit", "SlashCommand", "Task"})
 
 
 def is_sensitive_path(path):

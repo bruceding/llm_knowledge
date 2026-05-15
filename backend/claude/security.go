@@ -82,15 +82,14 @@ func generateSettingsFile(scriptsDir string) (string, error) {
 		return "", fmt.Errorf("path-validator.py not found at %s", validatorPath)
 	}
 
-	// Hook all file-access and execution tools as defense-in-depth.
-	// Even if --disallowedTools is misconfigured, the hook will deny these tools.
-	// The "always-denied" set must match ALWAYS_DENIED_TOOLS in path-validator.py.
-	hookedTools := []string{
-		// Path-validated tools — checked against ALLOWED_DIR
-		"Read", "Write", "Edit", "Glob", "Grep", "LS",
-		// Always-denied tools — backstop for --disallowedTools
-		"Bash", "BashOutput", "KillShell", "NotebookEdit", "Task",
-	}
+	// Hook all file-access and execution tools as defense-in-depth. Even if
+	// --disallowedTools is misconfigured, the hook will deny these tools.
+	//
+	// The always-denied half is derived from DangerousDisallowedTools so the
+	// CLI flag list and the hook list cannot drift apart. ALWAYS_DENIED_TOOLS
+	// in path-validator.py must mirror DangerousDisallowedTools as well.
+	pathValidatedTools := []string{"Read", "Write", "Edit", "Glob", "Grep", "LS"}
+	hookedTools := append(pathValidatedTools, DangerousDisallowedTools...)
 	preToolUseHooks := make([]HookMatcher, 0, len(hookedTools))
 	for _, tool := range hookedTools {
 		preToolUseHooks = append(preToolUseHooks, HookMatcher{
@@ -191,7 +190,20 @@ var DangerousDisallowedTools = []string{
 //
 // Callers should append their own --output-format / --input-format / --print /
 // --resume / --system-prompt flags around the returned slice.
+//
+// Panics if allowedTools contains any entry from DangerousDisallowedTools — that
+// is a programming error (the conflicting flags would leave behavior up to CLI
+// internals), and we want it caught at startup rather than at runtime in prod.
 func BuildSecureArgs(allowedTools []string) []string {
+	for _, t := range allowedTools {
+		for _, dangerous := range DangerousDisallowedTools {
+			if t == dangerous {
+				panic(fmt.Sprintf("BuildSecureArgs: allowedTools contains dangerous tool %q; "+
+					"this conflicts with --disallowedTools and must be a programming error", t))
+			}
+		}
+	}
+
 	args := make([]string, 0, 8)
 
 	if len(allowedTools) > 0 {
