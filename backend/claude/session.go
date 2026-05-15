@@ -152,13 +152,12 @@ func waitForInit(session *InteractiveSession, timeout time.Duration) error {
 }
 
 // StartSession creates a new Claude session with user/document ownership
-// userDir is the user's directory for file isolation (defaults to p.dataDir if empty)
+// userDir is required for file isolation - returns an error if empty
 func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID uint, docID uint, userDir string) (*InteractiveSession, error) {
-	// Use userDir if provided, otherwise use dataDir for backward compatibility
-	workDir := userDir
-	if workDir == "" {
-		workDir = p.dataDir
+	if userDir == "" {
+		return nil, fmt.Errorf("userDir is required for session isolation")
 	}
+	workDir := userDir
 
 	secureArgs, err := BuildSecureArgs([]string{"Read"})
 	if err != nil {

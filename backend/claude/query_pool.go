@@ -476,6 +476,9 @@ func (p *QuerySessionPool) Remove(convID uint) {
 // so session creation returns immediately without waiting for Claude CLI to boot.
 // userDir is the user's directory (cmd.Dir) for Claude session isolation and security restriction.
 func StartSession(ctx context.Context, claudeBin string, userDir string, systemPrompt string) (*InteractiveSession, error) {
+	if userDir == "" {
+		return nil, fmt.Errorf("userDir is required for session isolation")
+	}
 	secureArgs, err := BuildSecureArgs([]string{"Read", "Glob", "Grep", "LS"})
 	if err != nil {
 		return nil, fmt.Errorf("build secure args: %w", err)
