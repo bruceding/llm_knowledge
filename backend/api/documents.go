@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"llm-knowledge/claude"
 	"llm-knowledge/db"
 	"llm-knowledge/ingest"
 	"log"
@@ -428,6 +429,16 @@ func (h *DocHandler) LLMExtract(c echo.Context) error {
 	}
 	defer mdFile.Close()
 
+	// Hoisted out of the per-page loop — these don't vary by page and the
+	// symlink resolution inside BuildSecureEnv shouldn't run N times. If
+	// BuildSecureArgs ever fails it fails identically for every page, so it's
+	// a request-level error not a per-page one.
+	secureArgs, err := claude.BuildSecureArgs([]string{"Read"})
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to build secure args: " + err.Error()})
+	}
+	secureEnv := claude.BuildSecureEnv(tempDir)
+
 	for i := start; i <= end; i++ {
 		// Image filename format: page-01.png, page-02.png
 		pageImg := filepath.Join(tempDir, fmt.Sprintf("page-%02d.png", i))
@@ -447,11 +458,14 @@ func (h *DocHandler) LLMExtract(c echo.Context) error {
 		// Write page header
 		mdFile.WriteString("\n---\n\n## Page " + strconv.Itoa(i) + "\n\n")
 
-		// Call Claude CLI
-		claudeCmd := exec.Command("claude", "--model", "sonnet", "--allowed-tools", "Read", "-p",
+		// Call Claude CLI. Uses the hoisted secure args/env so every page goes
+		// through --disallowedTools + the path-validator hook with ALLOWED_DIR
+		// scoped narrowly to the per-call temp dir.
+		cmdArgs := append([]string{"--model", "sonnet"}, secureArgs...)
+		cmdArgs = append(cmdArgs, "-p",
 			"读取图片 "+pageImg+"，将其转换为 Markdown 格式。保留标题层级、段落结构、表格。如果有图片，用 ![描述](assets/img_"+strconv.Itoa(i)+".png) 标记。如果有公式，用 LaTeX 格式。直接输出内容，不要解释。")
-
-		claudeCmd.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
+		claudeCmd := exec.Command("claude", cmdArgs...)
+		claudeCmd.Env = secureEnv
 		output, err := claudeCmd.Output()
 		if err != nil {
 			mdFile.WriteString("[Error processing page " + strconv.Itoa(i) + ": " + err.Error() + "]\n")
