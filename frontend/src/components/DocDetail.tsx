@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -42,6 +42,7 @@ export default function DocDetail() {
   const navigate = useNavigate()
   const { t, i18n } = useTranslation()
   const { confirm, dialog: confirmDialog } = useConfirm()
+  const contentScrollRef = useRef<HTMLDivElement | null>(null)
   const [document, setDocument] = useState<Document | null>(null)
   const [wikiContent, setWikiContent] = useState<string>('')
   const [rawContent, setRawContent] = useState<string>('') // For RSS/web markdown content
@@ -127,6 +128,37 @@ export default function DocDetail() {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [document, navigate, t, confirm])
+
+  // Vim-like scroll shortcuts on the content area: j/k line scroll, g/G to top/bottom
+  useEffect(() => {
+    const SCROLL_STEP = 40
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      const el = contentScrollRef.current
+      if (!el) return
+      switch (e.key) {
+        case 'j':
+          e.preventDefault()
+          el.scrollBy({ top: SCROLL_STEP, behavior: 'smooth' })
+          break
+        case 'k':
+          e.preventDefault()
+          el.scrollBy({ top: -SCROLL_STEP, behavior: 'smooth' })
+          break
+        case 'g':
+          e.preventDefault()
+          el.scrollTo({ top: 0, behavior: 'smooth' })
+          break
+        case 'G':
+          e.preventDefault()
+          el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+          break
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   // Load document and content
   useEffect(() => {
@@ -673,7 +705,7 @@ export default function DocDetail() {
         </div>
 
         {/* Content area */}
-        <div className="flex-1 overflow-auto">
+        <div ref={contentScrollRef} className="flex-1 overflow-auto" data-testid="doc-content-scroll">
           {viewMode === 'html' && htmlContent ? (
             <iframe
               srcDoc={htmlContent}
