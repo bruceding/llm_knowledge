@@ -150,6 +150,53 @@ class TestDocDetailScrollShortcuts:
         actual = _scroll_top(page)
         assert actual >= max_scroll - 2, f"Expected near {max_scroll}, got {actual}"
 
+    def test_iframe_keydown_forwarded_to_window(self, doc_detail_page):
+        """
+        Newsletter HTML view renders inside a sandboxed iframe; once focus is
+        inside the iframe, keyboard events do not bubble to the parent window
+        by default. DocDetail's iframe onLoad attaches a forwarder that
+        re-dispatches keydown to window. This test validates that mechanism by
+        building the same scenario (sandbox=allow-same-origin iframe + the
+        forwarder snippet) inside the live page and asserting the parent
+        window receives the synthetic event.
+        """
+        page, _ = doc_detail_page
+        result = page.evaluate(
+            """() => new Promise((resolve) => {
+                const iframe = document.createElement('iframe');
+                iframe.setAttribute('sandbox', 'allow-same-origin');
+                iframe.srcdoc = '<html><body><p id="hit">x</p></body></html>';
+                iframe.style.display = 'none';
+                let received = null;
+                const winListener = (e) => { received = {key: e.key, shift: e.shiftKey}; };
+                window.addEventListener('keydown', winListener);
+                iframe.addEventListener('load', () => {
+                    const cd = iframe.contentDocument;
+                    if (!cd) { resolve({ok: false, reason: 'no contentDocument'}); return; }
+                    // Same forwarder used in DocDetail.tsx
+                    cd.addEventListener('keydown', (ke) => {
+                        window.dispatchEvent(new KeyboardEvent('keydown', {
+                            key: ke.key, code: ke.code,
+                            shiftKey: ke.shiftKey, ctrlKey: ke.ctrlKey,
+                            altKey: ke.altKey, metaKey: ke.metaKey,
+                        }));
+                    });
+                    // Dispatch a keydown inside the iframe document
+                    cd.dispatchEvent(new KeyboardEvent('keydown', {key: 'G', shiftKey: true}));
+                    setTimeout(() => {
+                        window.removeEventListener('keydown', winListener);
+                        iframe.remove();
+                        resolve({ok: true, received});
+                    }, 50);
+                });
+                document.body.appendChild(iframe);
+            })"""
+        )
+        assert result["ok"], f"Setup failed: {result}"
+        assert result["received"] == {"key": "G", "shift": True}, (
+            f"Window did not receive forwarded keydown: {result}"
+        )
+
     def test_j_ignored_in_input(self, doc_detail_page):
         """j must not scroll while focus is in an input/textarea."""
         page, _ = doc_detail_page

@@ -723,6 +723,18 @@ export default function DocDetail() {
                 resizeIframe()
                 const observer = new ResizeObserver(resizeIframe)
                 observer.observe(iframe.contentDocument.documentElement)
+
+                // Forward iframe keydown to parent window so window-level shortcuts (j/k/g/G/o/d) still fire
+                iframe.contentDocument.addEventListener('keydown', (ke) => {
+                  window.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: ke.key,
+                    code: ke.code,
+                    shiftKey: ke.shiftKey,
+                    ctrlKey: ke.ctrlKey,
+                    altKey: ke.altKey,
+                    metaKey: ke.metaKey,
+                  }))
+                })
               }}
             />
           ) : viewMode === 'pdf' && pdfUrl ? (
