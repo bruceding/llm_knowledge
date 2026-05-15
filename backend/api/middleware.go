@@ -68,6 +68,29 @@ func GetCurrentUserId(c echo.Context) uint {
 	return userId
 }
 
+// IsAdmin checks if the current user has admin role
+func IsAdmin(c echo.Context) bool {
+	userId := GetCurrentUserId(c)
+	if userId == 0 {
+		return false
+	}
+	var user db.User
+	if err := db.DB.First(&user, userId).Error; err != nil {
+		return false
+	}
+	return user.Role == "admin"
+}
+
+// AdminMiddleware requires the authenticated user to have admin role
+func AdminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if !IsAdmin(c) {
+			return c.JSON(403, echo.Map{"error": "admin access required"})
+		}
+		return next(c)
+	}
+}
+
 // GetUserDir extracts userDir from context
 func GetUserDir(c echo.Context) string {
 	userDir, ok := c.Get("userDir").(string)

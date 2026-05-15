@@ -1,19 +1,25 @@
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import i18n from '../i18n'
-import { fetchSettings, updateSettings, getIMAPConfig, updateIMAPConfig, deleteIMAPConfig, testIMAPConnection, listIMAPFolders } from '../api'
+import { fetchSettings, updateSettings, fetchGlobalSettings, updateGlobalSettings, getIMAPConfig, updateIMAPConfig, deleteIMAPConfig, testIMAPConnection, listIMAPFolders } from '../api'
 
 export default function SettingsPage() {
   const { t } = useTranslation()
   const [currentLang, setCurrentLang] = useState<'en' | 'zh'>('en')
-  const [translationEnabled, setTranslationEnabled] = useState(false)
-  const [apiBase, setApiBase] = useState('')
-  const [apiKey, setApiKey] = useState('')
-  const [modelName, setModelName] = useState('')
+  const [isAdmin, setIsAdmin] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [success, setSuccess] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Global translation settings (admin only)
+  const [translationEnabled, setTranslationEnabled] = useState(false)
+  const [apiBase, setApiBase] = useState('https://dashscope.aliyuncs.com/compatible-mode/v1')
+  const [apiKey, setApiKey] = useState('')
+  const [modelName, setModelName] = useState('deepseek-v4-flash')
+  const [globalSaving, setGlobalSaving] = useState(false)
+  const [globalSuccess, setGlobalSuccess] = useState(false)
+  const [globalError, setGlobalError] = useState<string | null>(null)
 
   // IMAP state
   const [imapHost, setImapHost] = useState('')
@@ -43,11 +49,22 @@ export default function SettingsPage() {
     try {
       const s = await fetchSettings()
       setCurrentLang(s.language)
-      setTranslationEnabled(s.translationEnabled)
-      setApiBase(s.translationApiBase || 'https://dashscope.aliyuncs.com/compatible-mode/v1')
-      setApiKey(s.translationApiKey || '')
-      setModelName(s.translationModel || 'deepseek-v4-flash')
+      setIsAdmin(s.isAdmin)
       i18n.changeLanguage(s.language)
+
+      // Load global settings if admin
+      if (s.isAdmin) {
+        try {
+          const gs = await fetchGlobalSettings()
+          setTranslationEnabled(gs.translationEnabled)
+          setApiBase(gs.translationApiBase || 'https://dashscope.aliyuncs.com/compatible-mode/v1')
+          setApiKey(gs.translationApiKey || '')
+          setModelName(gs.translationModel || 'deepseek-v4-flash')
+        } catch (err) {
+          console.error('Failed to load global settings:', err)
+        }
+      }
+
       // Load IMAP config
       try {
         const imapRes = await getIMAPConfig()
@@ -80,10 +97,6 @@ export default function SettingsPage() {
     try {
       await updateSettings({
         language: currentLang,
-        translationEnabled,
-        translationApiBase: apiBase,
-        translationApiKey: apiKey,
-        translationModel: modelName,
       })
       i18n.changeLanguage(currentLang)
       setSuccess(true)
@@ -92,6 +105,26 @@ export default function SettingsPage() {
       setError(err instanceof Error ? err.message : 'Failed to save settings')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleGlobalTranslationSave = async () => {
+    setGlobalSaving(true)
+    setGlobalSuccess(false)
+    setGlobalError(null)
+    try {
+      await updateGlobalSettings({
+        translationEnabled,
+        translationApiBase: apiBase,
+        translationApiKey: apiKey,
+        translationModel: modelName,
+      })
+      setGlobalSuccess(true)
+      setTimeout(() => setGlobalSuccess(false), 3000)
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : 'Failed to save global settings')
+    } finally {
+      setGlobalSaving(false)
     }
   }
 
@@ -211,73 +244,101 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* PDF Translation Section */}
-      <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
-        <h3 className="text-lg font-medium text-gray-800 mb-2">{t('settings.pdfTranslation')}</h3>
-        <p className="text-sm text-gray-600 mb-4">{t('settings.pdfTranslationHint')}</p>
-
-        {/* Enable toggle */}
-        <div className="flex items-center gap-3 mb-4">
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={translationEnabled}
-              onChange={(e) => setTranslationEnabled(e.target.checked)}
-              className="sr-only peer"
-            />
-            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
-          </label>
-          <span className="text-sm text-gray-700">{t('settings.enableTranslation')}</span>
-        </div>
-
-        {/* API Configuration - only show when enabled */}
-        {translationEnabled && (
-          <div className="space-y-4 mt-4 p-4 bg-gray-50 rounded-lg">
-            {/* API Base URL */}
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">
-                {t('settings.apiBaseUrl')}
-              </label>
-              <input
-                type="text"
-                value={apiBase}
-                onChange={(e) => setApiBase(e.target.value)}
-                placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
-                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
-            </div>
-
-            {/* API Key */}
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">
-                {t('settings.apiKey')}
-              </label>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="sk-..."
-                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
-              <p className="text-xs text-gray-500 mt-1">{t('settings.apiKeyWarning')}</p>
-            </div>
-
-            {/* Model Name */}
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">
-                {t('settings.modelName')}
-              </label>
-              <input
-                type="text"
-                value={modelName}
-                onChange={(e) => setModelName(e.target.value)}
-                placeholder="deepseek-v4-flash"
-                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
-            </div>
+      {/* Global Translation Section (Admin Only) */}
+      {isAdmin && (
+        <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
+          <div className="flex items-center gap-2 mb-2">
+            <h3 className="text-lg font-medium text-gray-800">{t('settings.pdfTranslation')}</h3>
+            <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full">Admin</span>
           </div>
-        )}
-      </div>
+          <p className="text-sm text-gray-600 mb-4">{t('settings.pdfTranslationHint')}</p>
+
+          {/* Enable toggle */}
+          <div className="flex items-center gap-3 mb-4">
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={translationEnabled}
+                onChange={(e) => setTranslationEnabled(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
+            </label>
+            <span className="text-sm text-gray-700">{t('settings.enableTranslation')}</span>
+          </div>
+
+          {/* API Configuration - only show when enabled */}
+          {translationEnabled && (
+            <div className="space-y-4 mt-4 p-4 bg-gray-50 rounded-lg">
+              {/* API Base URL */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">
+                  {t('settings.apiBaseUrl')}
+                </label>
+                <input
+                  type="text"
+                  value={apiBase}
+                  onChange={(e) => setApiBase(e.target.value)}
+                  placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+
+              {/* API Key */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">
+                  {t('settings.apiKey')}
+                </label>
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="sk-..."
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                <p className="text-xs text-gray-500 mt-1">{t('settings.apiKeyWarning')}</p>
+              </div>
+
+              {/* Model Name */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">
+                  {t('settings.modelName')}
+                </label>
+                <input
+                  type="text"
+                  value={modelName}
+                  onChange={(e) => setModelName(e.target.value)}
+                  placeholder="deepseek-v4-flash"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+
+              {/* Save button for global settings */}
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={handleGlobalTranslationSave}
+                  disabled={globalSaving}
+                  className="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500 text-sm"
+                >
+                  {globalSaving ? t('common.loading') : t('common.save')}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {globalSuccess && (
+            <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+              {t('settings.saved')}
+            </div>
+          )}
+
+          {globalError && (
+            <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+              {t('common.error')}: {globalError}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Newsletter IMAP Section */}
       <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">

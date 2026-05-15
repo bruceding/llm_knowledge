@@ -103,7 +103,17 @@ export interface SSEEvent {
 // User settings types
 export interface UserSettings {
   id: number
+  userId: number
   language: 'en' | 'zh'
+  isAdmin: boolean
+  translationEnabled: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+// Global settings types (admin only)
+export interface GlobalSettings {
+  id: number
   translationEnabled: boolean
   translationApiBase: string
   translationApiKey: string

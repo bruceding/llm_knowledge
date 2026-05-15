@@ -279,6 +279,13 @@ func main() {
 	apiGroup.GET("/settings", settingsH.GetSettings)
 	apiGroup.PUT("/settings", settingsH.UpdateSettings)
 
+	// Admin API (protected + admin role required)
+	adminGroup := apiGroup.Group("/admin", api.AdminMiddleware)
+	adminSettingsH := &api.AdminSettingsHandler{}
+	adminGroup.GET("/settings", adminSettingsH.GetGlobalSettings)
+	adminGroup.PUT("/settings", adminSettingsH.UpdateGlobalSettings)
+	adminGroup.GET("/translation-status", adminSettingsH.GetGlobalTranslationStatus)
+
 	// PDF Translation API (protected)
 	pdfTranslateH := &api.PDFTranslateHandler{
 		DataDir:       cfg.DataDir,

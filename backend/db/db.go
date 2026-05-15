@@ -28,11 +28,17 @@ func Init(path string) error {
 		&User{}, &Session{}, &Captcha{},
 		&Document{}, &Tag{}, &DocumentTag{},
 		&Conversation{}, &ConversationMessage{},
-		&UserSettings{}, &RSSFeed{}, &DocNote{}, &IMAPConfig{},
+		&UserSettings{}, &GlobalSettings{}, &RSSFeed{}, &DocNote{}, &IMAPConfig{},
 	)
 	if err != nil {
 		return err
 	}
+
+	// Migrate admin user to admin role
+	DB.Model(&User{}).Where("username = ? AND (role IS NULL OR role = '' OR role = 'user')", "admin").Update("role", "admin")
+
+	// Migrate existing per-user translation settings to global settings
+	MigrateTranslationToGlobal()
 
 	// Check if default user needed (migration for existing data)
 	var userCount int64
@@ -50,6 +56,7 @@ func Init(path string) error {
 				Username:          "admin",
 				PasswordHash:      string(hashedPassword),
 				Email:             "admin@localhost",
+				Role:              "admin",
 				MustChangePassword: true,
 			}
 			if err := tx.Create(&defaultUser).Error; err != nil {
@@ -141,6 +148,48 @@ func startSessionCleanup() {
 			}
 		}
 	}()
+}
+
+// MigrateTranslationToGlobal moves per-user translation settings to GlobalSettings.
+// Only runs once: if GlobalSettings already has a record, it skips.
+// Uses raw SQL since UserSettings no longer has translation fields in the Go struct,
+// but the old columns may still exist in the database from prior versions.
+func MigrateTranslationToGlobal() {
+	var count int64
+	DB.Model(&GlobalSettings{}).Count(&count)
+	if count > 0 {
+		return
+	}
+
+	// Check if old translation columns exist in user_settings table
+	if !DB.Migrator().HasColumn(&UserSettings{}, "translation_enabled") {
+		DB.Create(&GlobalSettings{})
+		return
+	}
+
+	// Read from old columns via raw SQL
+	type oldTranslationSettings struct {
+		TranslationEnabled bool
+		TranslationApiBase string
+		TranslationApiKey  string
+		TranslationModel   string
+	}
+	var oldSettings oldTranslationSettings
+	if err := DB.Table("user_settings").
+		Where("translation_enabled = ? OR translation_api_key != ?", true, "").
+		First(&oldSettings).Error; err != nil {
+		// No existing translation config, create empty GlobalSettings
+		DB.Create(&GlobalSettings{})
+		return
+	}
+
+	DB.Create(&GlobalSettings{
+		TranslationEnabled: oldSettings.TranslationEnabled,
+		TranslationApiBase: oldSettings.TranslationApiBase,
+		TranslationApiKey:  oldSettings.TranslationApiKey,
+		TranslationModel:   oldSettings.TranslationModel,
+	})
+	log.Printf("[migration] Migrated per-user translation settings to GlobalSettings")
 }
 
 // MigrateDocumentPaths updates raw_path and wiki_path to include user prefix
