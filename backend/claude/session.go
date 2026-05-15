@@ -160,23 +160,20 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 		workDir = p.dataDir
 	}
 
+	secureArgs, err := BuildSecureArgs([]string{"Read"})
+	if err != nil {
+		return nil, fmt.Errorf("build secure args: %w", err)
+	}
 	args := []string{
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
-		"--allowedTools", "Read",
-		"--dangerously-skip-permissions",
 	}
+	args = append(args, secureArgs...)
 
 	// Add system prompt with document context
 	systemPrompt := fmt.Sprintf("用户正在询问文档相关问题。%s 请使用 Read 工具读取相关文件回答。如果文件内容不足以回答，可以使用你自己的知识补充。", docInfo)
 	args = append(args, "--system-prompt", systemPrompt)
-
-	// Add security settings path if available (generated once at startup)
-	settingsPath := GetSettingsPath()
-	if settingsPath != "" {
-		args = append(args, "--settings", settingsPath)
-	}
 
 	// Build environment with ALLOWED_DIR
 	env := BuildSecureEnv(workDir)

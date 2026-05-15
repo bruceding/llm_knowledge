@@ -63,16 +63,16 @@ type RawEvent struct {
 // The caller should close the channel after Send returns.
 // If workDir is non-empty, the command runs in that directory.
 func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamEvent, workDir string) error {
+	secureArgs, err := BuildSecureArgs([]string{"Read", "Write", "Edit"})
+	if err != nil {
+		return fmt.Errorf("build secure args: %w", err)
+	}
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
-		"--allowedTools", "Read", "Write", "Edit",
-		"--dangerously-skip-permissions",
 	}
-	if settingsPath := GetSettingsPath(); settingsPath != "" {
-		args = append(args, "--settings", settingsPath)
-	}
+	args = append(args, secureArgs...)
 	cmd := exec.CommandContext(ctx, c.BinPath, args...)
 	if workDir != "" {
 		cmd.Dir = workDir
@@ -179,15 +179,12 @@ func (c *Client) SendSimple(ctx context.Context, prompt string) (string, error) 
 // This is faster than stream-json mode for simple tasks like generating summaries.
 // If workDir is non-empty, the command runs in that directory.
 func (c *Client) SendSimpleWithRead(ctx context.Context, prompt string, workDir string) (string, error) {
-	args := []string{
-		"-p",
-		"--allowedTools", "Read",
-		"--dangerously-skip-permissions",
+	secureArgs, err := BuildSecureArgs([]string{"Read"})
+	if err != nil {
+		return "", fmt.Errorf("build secure args: %w", err)
 	}
-	// Add security settings if available
-	if settingsPath := GetSettingsPath(); settingsPath != "" {
-		args = append(args, "--settings", settingsPath)
-	}
+	args := []string{"-p"}
+	args = append(args, secureArgs...)
 	args = append(args, prompt)
 
 	cmd := exec.CommandContext(ctx, c.BinPath, args...)

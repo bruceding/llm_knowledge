@@ -9,7 +9,12 @@ It restricts access to:
 
 Fail-closed: if ALLOWED_DIR is not set, ALL access is denied.
 
-Supports: Read, Glob, Grep, LS tools
+Supports:
+  - Path-bound tools (Read, Write, Edit, Glob, Grep, LS): validated against ALLOWED_DIR
+  - Always-denied tools (Bash, BashOutput, KillShell, NotebookEdit, SlashCommand, Task):
+    denied unconditionally as defense-in-depth. These should also be on the CLI's
+    --disallowedTools list; the hook is a backstop. The set MUST mirror
+    DangerousDisallowedTools in backend/claude/security.go.
 
 Usage:
   Environment variables:
@@ -18,18 +23,6 @@ Usage:
                   REQUIRED — hook denies all access if not set.
 
   Deployed at: /opt/llm-knowledge/scripts/path-validator.py
-
-  Loaded via settings.json:
-    {
-      "hooks": {
-        "PreToolUse": [
-          {"matcher": "Read",  "hooks": [{"type": "command", "command": "..."}]},
-          {"matcher": "Glob",  "hooks": [{"type": "command", "command": "..."}]},
-          {"matcher": "Grep",  "hooks": [{"type": "command", "command": "..."}]},
-          {"matcher": "LS",    "hooks": [{"type": "command", "command": "..."}]}
-        ]
-      }
-    }
 """
 
 import json
@@ -84,6 +77,13 @@ SENSITIVE_PATH_PATTERNS = [
 
 # Pre-compile patterns for performance
 _COMPILED_PATTERNS = [re.compile(p) for p in SENSITIVE_PATH_PATTERNS]
+
+# Tools that are denied unconditionally (defense-in-depth backstop for --disallowedTools).
+# These tools either bypass the directory sandbox (Bash → arbitrary shell commands) or
+# accept inputs we cannot meaningfully validate from a hook (NotebookEdit). Production
+# sessions must not use them; the CLI's --disallowedTools is the primary gate, this is
+# a backstop in case the flag is misconfigured.
+ALWAYS_DENIED_TOOLS = frozenset({"Bash", "BashOutput", "KillShell", "NotebookEdit", "SlashCommand", "Task"})
 
 
 def is_sensitive_path(path):
@@ -226,6 +226,11 @@ def main():
 
     if not isinstance(tool_input, dict):
         tool_input = {}
+
+    # Backstop: deny tools that should never run in production sessions.
+    # The CLI's --disallowedTools should already block these; this hook is defense-in-depth.
+    if tool_name in ALWAYS_DENIED_TOOLS:
+        deny(f"Access denied: tool '{tool_name}' is not permitted")
 
     # Extract paths based on tool type
     paths = extract_paths_from_input(tool_name, tool_input)

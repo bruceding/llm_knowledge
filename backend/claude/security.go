@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	cryptorand "crypto/rand"
@@ -82,8 +83,14 @@ func generateSettingsFile(scriptsDir string) (string, error) {
 		return "", fmt.Errorf("path-validator.py not found at %s", validatorPath)
 	}
 
-	// Hook all file-access tools to prevent bypass via Glob/Grep/LS/Write/Edit
-	hookedTools := []string{"Read", "Write", "Edit", "Glob", "Grep", "LS"}
+	// Hook all file-access and execution tools as defense-in-depth. Even if
+	// --disallowedTools is misconfigured, the hook will deny these tools.
+	//
+	// The always-denied half is derived from DangerousDisallowedTools so the
+	// CLI flag list and the hook list cannot drift apart. ALWAYS_DENIED_TOOLS
+	// in path-validator.py must mirror DangerousDisallowedTools as well.
+	pathValidatedTools := []string{"Read", "Write", "Edit", "Glob", "Grep", "LS"}
+	hookedTools := append(pathValidatedTools, DangerousDisallowedTools...)
 	preToolUseHooks := make([]HookMatcher, 0, len(hookedTools))
 	for _, tool := range hookedTools {
 		preToolUseHooks = append(preToolUseHooks, HookMatcher{
@@ -161,6 +168,58 @@ func BuildSecureEnv(allowedDir string) []string {
 	}
 
 	return append(filtered, fmt.Sprintf("ALLOWED_DIR=%s", allowedDir))
+}
+
+// DangerousDisallowedTools is the canonical list of tools that must never be allowed
+// in production sessions. --disallowedTools takes precedence over
+// --dangerously-skip-permissions, so listing them here yields a hard block.
+//
+// WebFetch/WebSearch are intentionally NOT included — they are useful and cannot
+// directly read local files. SSRF risk for WebFetch is tracked separately.
+var DangerousDisallowedTools = []string{
+	"Bash",
+	"Task",
+	"NotebookEdit",
+	"KillShell",
+	"BashOutput",
+	"SlashCommand",
+}
+
+// BuildSecureArgs returns the standard set of CLI args that enforce the project's
+// security model: a tool whitelist, an explicit blacklist of dangerous tools, the
+// permissions bypass, and the security settings file (when configured).
+//
+// Callers should append their own --output-format / --input-format / --print /
+// --resume / --system-prompt flags around the returned slice.
+//
+// Returns an error if allowedTools contains any entry from DangerousDisallowedTools.
+// That is a programming error (the conflicting flags would leave behavior up to CLI
+// internals), but we surface it as an error rather than panic so a buggy caller
+// inside a goroutine can't crash the whole server process.
+func BuildSecureArgs(allowedTools []string) ([]string, error) {
+	for _, t := range allowedTools {
+		if slices.Contains(DangerousDisallowedTools, t) {
+			return nil, fmt.Errorf("BuildSecureArgs: allowedTools contains dangerous tool %q; "+
+				"this conflicts with --disallowedTools and must be a programming error", t)
+		}
+	}
+
+	args := make([]string, 0, 8)
+
+	if len(allowedTools) > 0 {
+		args = append(args, "--allowedTools", strings.Join(allowedTools, ","))
+	}
+
+	args = append(args,
+		"--disallowedTools", strings.Join(DangerousDisallowedTools, ","),
+		"--dangerously-skip-permissions",
+	)
+
+	if settingsPath := GetSettingsPath(); settingsPath != "" {
+		args = append(args, "--settings", settingsPath)
+	}
+
+	return args, nil
 }
 
 // CleanupSecuritySettings removes the settings file (call on server shutdown)

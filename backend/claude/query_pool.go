@@ -476,22 +476,19 @@ func (p *QuerySessionPool) Remove(convID uint) {
 // so session creation returns immediately without waiting for Claude CLI to boot.
 // userDir is the user's directory (cmd.Dir) for Claude session isolation and security restriction.
 func StartSession(ctx context.Context, claudeBin string, userDir string, systemPrompt string) (*InteractiveSession, error) {
+	secureArgs, err := BuildSecureArgs([]string{"Read", "Glob", "Grep", "LS"})
+	if err != nil {
+		return nil, fmt.Errorf("build secure args: %w", err)
+	}
 	args := []string{
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
-		"--allowedTools", "Read", "Glob", "Grep", "LS",
-		"--dangerously-skip-permissions",
 	}
+	args = append(args, secureArgs...)
 
 	if systemPrompt != "" {
 		args = append(args, "--system-prompt", systemPrompt)
-	}
-
-	// Add security settings path if available (generated once at startup)
-	settingsPath := GetSettingsPath()
-	if settingsPath != "" {
-		args = append(args, "--settings", settingsPath)
 	}
 
 	// Build environment with ALLOWED_DIR
@@ -552,23 +549,20 @@ func StartSession(ctx context.Context, claudeBin string, userDir string, systemP
 // No init message is sent — the first real user message triggers system.init.
 // userDir is the user's directory (cmd.Dir) for Claude session isolation and security restriction.
 func StartResumedSession(ctx context.Context, claudeBin string, userDir string, prevSessionID string, systemPrompt string) (*InteractiveSession, error) {
+	secureArgs, err := BuildSecureArgs([]string{"Read", "Glob", "Grep", "LS"})
+	if err != nil {
+		return nil, fmt.Errorf("build secure args: %w", err)
+	}
 	args := []string{
 		"--resume", prevSessionID,
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
-		"--allowedTools", "Read", "Glob", "Grep", "LS",
-		"--dangerously-skip-permissions",
 	}
+	args = append(args, secureArgs...)
 
 	if systemPrompt != "" {
 		args = append(args, "--system-prompt", systemPrompt)
-	}
-
-	// Add security settings path if available (generated once at startup)
-	settingsPath := GetSettingsPath()
-	if settingsPath != "" {
-		args = append(args, "--settings", settingsPath)
 	}
 
 	// Build environment with ALLOWED_DIR
