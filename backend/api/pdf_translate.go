@@ -295,8 +295,9 @@ func filterPDF2ZhOutput(line string) string {
 		return ""
 	}
 
-	// Suppress temp file / cache paths
-	if strings.HasPrefix(trimmed, "/tmp/") || strings.HasPrefix(trimmed, "/root/.cache") ||
+	// Suppress anything that looks like an absolute path — never leak server
+	// filesystem layout / usernames to the frontend.
+	if strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, `\`) ||
 		strings.Contains(trimmed, "__MACOSX") || strings.Contains(trimmed, ".DS_Store") {
 		return ""
 	}
@@ -329,10 +330,8 @@ func filterPDF2ZhOutput(line string) string {
 		return trimmed
 	}
 
-	// Default: show the message if it looks meaningful
-	if len(trimmed) > 3 && !strings.HasPrefix(trimmed, "[") {
-		return trimmed
-	}
+	// Default: suppress. Only whitelisted, semantically meaningful messages are
+	// surfaced to the frontend; raw pdf2zh output is kept in backend logs only.
 	return ""
 }
 
