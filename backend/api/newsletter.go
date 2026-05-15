@@ -788,14 +788,27 @@ func extractViewInBrowserLink(htmlContent string) string {
 		"view online",
 		"view this email",
 		"view in your browser",
-		"在浏览器中查看",
 		"view it in your browser",
-		"read online",
 		"open in browser",
+		"read online",
+		"see online",
 		"view on",
 		"read on",
-		"see online",
+		"view full",
+		"read full",
+		"read more",
+		"view article",
+		"read full article",
+		"continue reading",
+		"在浏览器中查看",
 		"在网页中查看",
+		"网页查看",
+		"在线查看",
+		"查看全文",
+		"阅读全文",
+		"查看原文",
+		"阅读原文",
+		"点击查看",
 	}
 
 	var viewURL string
@@ -811,6 +824,36 @@ func extractViewInBrowserLink(htmlContent string) string {
 					return
 				}
 			}
+		}
+	})
+
+	if viewURL != "" {
+		return viewURL
+	}
+
+	// Fallback: loose keyword match for CTA-style links that didn't match exact patterns above
+	keywords := []string{"全文", "原文", "full article", "full story"}
+	doc.Find("a").Each(func(i int, s *goquery.Selection) {
+		if viewURL != "" {
+			return
+		}
+		text := strings.ToLower(strings.TrimSpace(s.Text()))
+		if text == "" {
+			return
+		}
+		for _, kw := range keywords {
+			if !strings.Contains(text, kw) {
+				continue
+			}
+			href, exists := s.Attr("href")
+			if !exists || href == "" {
+				continue
+			}
+			if !strings.HasPrefix(href, "http://") && !strings.HasPrefix(href, "https://") {
+				continue
+			}
+			viewURL = href
+			return
 		}
 	})
 
