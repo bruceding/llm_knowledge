@@ -94,15 +94,15 @@ func (h *PDFTranslateHandler) TranslatePDF(c echo.Context) error {
 		return nil
 	}
 
-	// Get settings
-	var settings db.UserSettings
-	if err := db.DB.Where("user_id = ?", userId).First(&settings).Error; err != nil {
-		sendSSEError(c, "failed to get settings")
+	// Get global settings
+	var settings db.GlobalSettings
+	if err := db.DB.First(&settings).Error; err != nil {
+		sendSSEError(c, "failed to get global settings")
 		return nil
 	}
 
 	if !settings.TranslationEnabled {
-		sendSSEError(c, "translation not enabled in settings")
+		sendSSEError(c, "translation not enabled")
 		return nil
 	}
 

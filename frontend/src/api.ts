@@ -1,4 +1,4 @@
-import type { Document, UpdateDocRequest, SSEEvent, UserSettings, Conversation, Message, LoginResponse, RegisterResponse, CaptchaResponse, IMAPConfigInput, IMAPConfigResponse, IMAPTestResult, IMAPFoldersResult, NewsletterSyncStatus } from './types'
+import type { Document, UpdateDocRequest, SSEEvent, UserSettings, GlobalSettings, Conversation, Message, LoginResponse, RegisterResponse, CaptchaResponse, IMAPConfigInput, IMAPConfigResponse, IMAPTestResult, IMAPFoldersResult, NewsletterSyncStatus } from './types'
 
 const API_BASE = '/api'
 
@@ -292,6 +292,23 @@ export async function updateSettings(settings: Partial<UserSettings>): Promise<U
     body: JSON.stringify(settings),
   })
   if (!res.ok) throw new Error('Failed to update settings')
+  return res.json()
+}
+
+// Admin Settings API
+export async function fetchGlobalSettings(): Promise<GlobalSettings> {
+  const res = await fetch(`${API_BASE}/admin/settings`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch global settings')
+  return res.json()
+}
+
+export async function updateGlobalSettings(settings: Partial<GlobalSettings>): Promise<GlobalSettings> {
+  const res = await fetch(`${API_BASE}/admin/settings`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify(settings),
+  })
+  if (!res.ok) throw new Error('Failed to update global settings')
   return res.json()
 }
 

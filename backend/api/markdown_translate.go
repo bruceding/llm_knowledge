@@ -163,15 +163,15 @@ func (h *MarkdownTranslateHandler) TranslateMarkdown(c echo.Context) error {
 		return nil
 	}
 
-	// Get settings
-	var settings db.UserSettings
-	if err := db.DB.Where("user_id = ?", userId).First(&settings).Error; err != nil {
-		sendMarkdownSSEError(c, flusher, "failed to get settings")
+	// Get global settings
+	var settings db.GlobalSettings
+	if err := db.DB.First(&settings).Error; err != nil {
+		sendMarkdownSSEError(c, flusher, "failed to get global settings")
 		return nil
 	}
 
 	if !settings.TranslationEnabled {
-		sendMarkdownSSEError(c, flusher, "translation not enabled in settings")
+		sendMarkdownSSEError(c, flusher, "translation not enabled")
 		return nil
 	}
 
