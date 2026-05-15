@@ -116,7 +116,8 @@ export default function SettingsPage() {
       await updateGlobalSettings({
         translationEnabled,
         translationApiBase: apiBase,
-        translationApiKey: apiKey,
+        // Only send API key if user actually entered a new value (not the mask placeholder)
+        ...(apiKey && !apiKey.startsWith('****') ? { translationApiKey: apiKey } : {}),
         translationModel: modelName,
       })
       setGlobalSuccess(true)

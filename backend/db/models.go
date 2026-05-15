@@ -71,7 +71,7 @@ type GlobalSettings struct {
 	ID                 uint      `gorm:"primaryKey" json:"id"`
 	TranslationEnabled bool      `gorm:"default:false" json:"translationEnabled"`
 	TranslationApiBase string    `gorm:"default:https://dashscope.aliyuncs.com/compatible-mode/v1" json:"translationApiBase"`
-	TranslationApiKey  string    `gorm:"" json:"translationApiKey"`
+	TranslationApiKey  string    `gorm:"" json:"-"` // never expose in API responses
 	TranslationModel   string    `gorm:"default:deepseek-v4-flash" json:"translationModel"`
 	CreatedAt          time.Time `json:"createdAt"`
 	UpdatedAt          time.Time `json:"updatedAt"`

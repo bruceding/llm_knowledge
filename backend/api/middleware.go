@@ -49,11 +49,17 @@ func AuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 			db.DB.Save(&session)
 		}
 
-		// Inject userId and userDir into context
+		// Inject userId, userDir, and userRole into context
 		c.Set("userId", session.UserID)
 		userDir := config.GetUserDir(GlobalDataDir, session.UserID)
 		c.Set("userDir", userDir)
 		c.Set("userIdStr", strconv.FormatUint(uint64(session.UserID), 10))
+
+		// Cache user role in context to avoid repeated DB lookups
+		var user db.User
+		if err := db.DB.First(&user, session.UserID).Error; err == nil {
+			c.Set("userRole", user.Role)
+		}
 
 		return next(c)
 	}
@@ -68,17 +74,11 @@ func GetCurrentUserId(c echo.Context) uint {
 	return userId
 }
 
-// IsAdmin checks if the current user has admin role
+// IsAdmin checks if the current user has admin role.
+// Reads role from context (cached by AuthMiddleware) to avoid per-request DB queries.
 func IsAdmin(c echo.Context) bool {
-	userId := GetCurrentUserId(c)
-	if userId == 0 {
-		return false
-	}
-	var user db.User
-	if err := db.DB.First(&user, userId).Error; err != nil {
-		return false
-	}
-	return user.Role == "admin"
+	role, ok := c.Get("userRole").(string)
+	return ok && role == "admin"
 }
 
 // AdminMiddleware requires the authenticated user to have admin role

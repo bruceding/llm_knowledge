@@ -284,7 +284,6 @@ func main() {
 	adminSettingsH := &api.AdminSettingsHandler{}
 	adminGroup.GET("/settings", adminSettingsH.GetGlobalSettings)
 	adminGroup.PUT("/settings", adminSettingsH.UpdateGlobalSettings)
-	adminGroup.GET("/translation-status", adminSettingsH.GetGlobalTranslationStatus)
 
 	// PDF Translation API (protected)
 	pdfTranslateH := &api.PDFTranslateHandler{

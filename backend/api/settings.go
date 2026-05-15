@@ -22,11 +22,7 @@ func (h *SettingsHandler) GetSettings(c echo.Context) error {
 
 	// Also return whether user is admin and translation status
 	isAdmin := IsAdmin(c)
-	var globalSettings db.GlobalSettings
-	db.DB.FirstOrCreate(&globalSettings, db.GlobalSettings{
-		TranslationApiBase: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-		TranslationModel:   "deepseek-v4-flash",
-	})
+	globalSettings, _ := ensureGlobalSettings()
 
 	return c.JSON(http.StatusOK, echo.Map{
 		"id":                 settings.ID,
@@ -69,11 +65,7 @@ func (h *SettingsHandler) UpdateSettings(c echo.Context) error {
 	}
 
 	isAdmin := IsAdmin(c)
-	var globalSettings db.GlobalSettings
-	db.DB.FirstOrCreate(&globalSettings, db.GlobalSettings{
-		TranslationApiBase: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-		TranslationModel:   "deepseek-v4-flash",
-	})
+	globalSettings, _ := ensureGlobalSettings()
 
 	return c.JSON(http.StatusOK, echo.Map{
 		"id":                 settings.ID,
