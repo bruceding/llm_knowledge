@@ -150,6 +150,53 @@ class TestDocDetailScrollShortcuts:
         actual = _scroll_top(page)
         assert actual >= max_scroll - 2, f"Expected near {max_scroll}, got {actual}"
 
+    def test_j_held_accelerates(self, doc_detail_page):
+        """
+        Holding j should scroll progressively further per repeat (capped),
+        not just base step * N. We simulate auto-repeat by dispatching
+        successive keydown events with repeat=true and compare the total
+        distance to the base-only fallback.
+        """
+        page, _ = doc_detail_page
+        # Make doc tall enough for a long scroll
+        # (seeded HTML already produces ~80 paragraphs of lorem ipsum)
+        scroll_height = _scroll_height(page)
+        client_height = _client_height(page)
+        assert scroll_height > client_height + 2000, "Need a tall doc to observe acceleration"
+
+        page.evaluate("() => document.body.focus()")
+        page.evaluate(
+            """() => {
+                const fire = (repeat) => window.dispatchEvent(
+                    new KeyboardEvent('keydown', {key: 'j', repeat})
+                );
+                fire(false);
+                for (let i = 0; i < 14; i++) fire(true);
+            }"""
+        )
+        page.wait_for_timeout(400)
+        accelerated = _scroll_top(page)
+
+        # Reset and replay 15 individual non-repeat presses (no acceleration)
+        page.evaluate(
+            "() => { document.querySelector('[data-testid=\"doc-content-scroll\"]').scrollTop = 0; }"
+        )
+        page.wait_for_timeout(100)
+        page.evaluate(
+            """() => {
+                for (let i = 0; i < 15; i++) {
+                    window.dispatchEvent(new KeyboardEvent('keydown', {key: 'j', repeat: false}));
+                }
+            }"""
+        )
+        page.wait_for_timeout(400)
+        non_accelerated = _scroll_top(page)
+
+        assert accelerated > non_accelerated * 1.3, (
+            f"Held j should scroll noticeably further than 15 single presses, "
+            f"got accelerated={accelerated} vs non_accelerated={non_accelerated}"
+        )
+
     def test_iframe_keydown_forwarded_to_window(self, doc_detail_page):
         """
         Newsletter HTML view renders inside a sandboxed iframe; once focus is

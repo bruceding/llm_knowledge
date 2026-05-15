@@ -129,23 +129,36 @@ export default function DocDetail() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [document, navigate, t, confirm])
 
-  // Vim-like scroll shortcuts on the content area: j/k line scroll, g/G to top/bottom
+  // Vim-like scroll shortcuts on the content area: j/k line scroll (with hold acceleration), g/G to top/bottom
   useEffect(() => {
-    const SCROLL_STEP = 40
+    const SCROLL_BASE = 50      // first press step (px)
+    const SCROLL_GROWTH = 15    // additional px per held repeat
+    const SCROLL_MAX = 220      // cap so it never feels runaway
+    let repeatCount = 0
+    let lastRepeatKey = ''
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
       if (e.metaKey || e.ctrlKey || e.altKey) return
       const el = contentScrollRef.current
       if (!el) return
+
+      if (e.key === 'j' || e.key === 'k') {
+        e.preventDefault()
+        if (e.repeat && lastRepeatKey === e.key) {
+          repeatCount++
+        } else {
+          repeatCount = 0
+          lastRepeatKey = e.key
+        }
+        const step = Math.min(SCROLL_BASE + repeatCount * SCROLL_GROWTH, SCROLL_MAX)
+        const dir = e.key === 'j' ? 1 : -1
+        // Smooth on initial press; instant on held repeats so animations don't queue and lag behind input
+        el.scrollBy({ top: dir * step, behavior: e.repeat ? 'auto' : 'smooth' })
+        return
+      }
+
       switch (e.key) {
-        case 'j':
-          e.preventDefault()
-          el.scrollBy({ top: SCROLL_STEP, behavior: 'smooth' })
-          break
-        case 'k':
-          e.preventDefault()
-          el.scrollBy({ top: -SCROLL_STEP, behavior: 'smooth' })
-          break
         case 'g':
           e.preventDefault()
           el.scrollTo({ top: 0, behavior: 'smooth' })
@@ -156,8 +169,18 @@ export default function DocDetail() {
           break
       }
     }
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === lastRepeatKey) {
+        repeatCount = 0
+        lastRepeatKey = ''
+      }
+    }
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    window.addEventListener('keyup', handleKeyUp)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('keyup', handleKeyUp)
+    }
   }, [])
 
   // Load document and content
