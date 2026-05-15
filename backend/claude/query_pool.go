@@ -480,18 +480,11 @@ func StartSession(ctx context.Context, claudeBin string, userDir string, systemP
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
-		"--allowedTools", "Read", "Glob", "Grep", "LS",
-		"--dangerously-skip-permissions",
 	}
+	args = append(args, BuildSecureArgs([]string{"Read", "Glob", "Grep", "LS"})...)
 
 	if systemPrompt != "" {
 		args = append(args, "--system-prompt", systemPrompt)
-	}
-
-	// Add security settings path if available (generated once at startup)
-	settingsPath := GetSettingsPath()
-	if settingsPath != "" {
-		args = append(args, "--settings", settingsPath)
 	}
 
 	// Build environment with ALLOWED_DIR
@@ -557,18 +550,11 @@ func StartResumedSession(ctx context.Context, claudeBin string, userDir string, 
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
-		"--allowedTools", "Read", "Glob", "Grep", "LS",
-		"--dangerously-skip-permissions",
 	}
+	args = append(args, BuildSecureArgs([]string{"Read", "Glob", "Grep", "LS"})...)
 
 	if systemPrompt != "" {
 		args = append(args, "--system-prompt", systemPrompt)
-	}
-
-	// Add security settings path if available (generated once at startup)
-	settingsPath := GetSettingsPath()
-	if settingsPath != "" {
-		args = append(args, "--settings", settingsPath)
 	}
 
 	// Build environment with ALLOWED_DIR

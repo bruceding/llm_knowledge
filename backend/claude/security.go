@@ -82,8 +82,15 @@ func generateSettingsFile(scriptsDir string) (string, error) {
 		return "", fmt.Errorf("path-validator.py not found at %s", validatorPath)
 	}
 
-	// Hook all file-access tools to prevent bypass via Glob/Grep/LS/Write/Edit
-	hookedTools := []string{"Read", "Write", "Edit", "Glob", "Grep", "LS"}
+	// Hook all file-access and execution tools as defense-in-depth.
+	// Even if --disallowedTools is misconfigured, the hook will deny these tools.
+	// The "always-denied" set must match ALWAYS_DENIED_TOOLS in path-validator.py.
+	hookedTools := []string{
+		// Path-validated tools — checked against ALLOWED_DIR
+		"Read", "Write", "Edit", "Glob", "Grep", "LS",
+		// Always-denied tools — backstop for --disallowedTools
+		"Bash", "BashOutput", "KillShell", "NotebookEdit", "Task",
+	}
 	preToolUseHooks := make([]HookMatcher, 0, len(hookedTools))
 	for _, tool := range hookedTools {
 		preToolUseHooks = append(preToolUseHooks, HookMatcher{
@@ -161,6 +168,46 @@ func BuildSecureEnv(allowedDir string) []string {
 	}
 
 	return append(filtered, fmt.Sprintf("ALLOWED_DIR=%s", allowedDir))
+}
+
+// DangerousDisallowedTools is the canonical list of tools that must never be allowed
+// in production sessions. --disallowedTools takes precedence over
+// --dangerously-skip-permissions, so listing them here yields a hard block.
+//
+// WebFetch/WebSearch are intentionally NOT included — they are useful and cannot
+// directly read local files. SSRF risk for WebFetch is tracked separately.
+var DangerousDisallowedTools = []string{
+	"Bash",
+	"Task",
+	"NotebookEdit",
+	"KillShell",
+	"BashOutput",
+	"SlashCommand",
+}
+
+// BuildSecureArgs returns the standard set of CLI args that enforce the project's
+// security model: a tool whitelist, an explicit blacklist of dangerous tools, the
+// permissions bypass, and the security settings file (when configured).
+//
+// Callers should append their own --output-format / --input-format / --print /
+// --resume / --system-prompt flags around the returned slice.
+func BuildSecureArgs(allowedTools []string) []string {
+	args := make([]string, 0, 8)
+
+	if len(allowedTools) > 0 {
+		args = append(args, "--allowedTools", strings.Join(allowedTools, ","))
+	}
+
+	args = append(args,
+		"--disallowedTools", strings.Join(DangerousDisallowedTools, ","),
+		"--dangerously-skip-permissions",
+	)
+
+	if settingsPath := GetSettingsPath(); settingsPath != "" {
+		args = append(args, "--settings", settingsPath)
+	}
+
+	return args
 }
 
 // CleanupSecuritySettings removes the settings file (call on server shutdown)

@@ -67,12 +67,8 @@ func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamE
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
-		"--allowedTools", "Read", "Write", "Edit",
-		"--dangerously-skip-permissions",
 	}
-	if settingsPath := GetSettingsPath(); settingsPath != "" {
-		args = append(args, "--settings", settingsPath)
-	}
+	args = append(args, BuildSecureArgs([]string{"Read", "Write", "Edit"})...)
 	cmd := exec.CommandContext(ctx, c.BinPath, args...)
 	if workDir != "" {
 		cmd.Dir = workDir
@@ -179,15 +175,8 @@ func (c *Client) SendSimple(ctx context.Context, prompt string) (string, error) 
 // This is faster than stream-json mode for simple tasks like generating summaries.
 // If workDir is non-empty, the command runs in that directory.
 func (c *Client) SendSimpleWithRead(ctx context.Context, prompt string, workDir string) (string, error) {
-	args := []string{
-		"-p",
-		"--allowedTools", "Read",
-		"--dangerously-skip-permissions",
-	}
-	// Add security settings if available
-	if settingsPath := GetSettingsPath(); settingsPath != "" {
-		args = append(args, "--settings", settingsPath)
-	}
+	args := []string{"-p"}
+	args = append(args, BuildSecureArgs([]string{"Read"})...)
 	args = append(args, prompt)
 
 	cmd := exec.CommandContext(ctx, c.BinPath, args...)
