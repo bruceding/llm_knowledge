@@ -9,6 +9,7 @@ import (
 	"llm-knowledge/db"
 	"llm-knowledge/fs"
 	"llm-knowledge/ingest"
+	"llm-knowledge/ssrf"
 	"net"
 	"net/http"
 	"net/url"
@@ -702,7 +703,7 @@ func downloadImageToAssets(imgURL, assetsDir, articleURL string) (string, error)
 		return "", fmt.Errorf("cannot resolve host")
 	}
 	for _, ip := range ips {
-		if isPrivateIP(ip.To4()) || isPrivateIP(ip.To16()) {
+		if ssrf.IsPrivateIP(ip.To4()) || ssrf.IsPrivateIP(ip.To16()) {
 			return "", fmt.Errorf("download from private network is not allowed")
 		}
 	}

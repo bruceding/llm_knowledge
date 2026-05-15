@@ -3,6 +3,7 @@ package blog
 import (
 	"fmt"
 	"io"
+	"llm-knowledge/ssrf"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,6 +19,9 @@ type ArticleLink struct {
 
 // FetchIndexPage fetches the HTML content of the index page
 func FetchIndexPage(indexURL string) (string, error) {
+	if err := ssrf.ValidateURLHost(indexURL); err != nil {
+		return "", err
+	}
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(indexURL)
 	if err != nil {
@@ -100,6 +104,9 @@ func ExtractArticleLinks(htmlContent, indexURL, linkSelector, linkExclude string
 
 // FetchArticleContent fetches article content and extracts it using the content selector
 func FetchArticleContent(articleURL, contentSelector string) (string, time.Time, error) {
+	if err := ssrf.ValidateURLHost(articleURL); err != nil {
+		return "", time.Time{}, err
+	}
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(articleURL)
 	if err != nil {

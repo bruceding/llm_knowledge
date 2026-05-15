@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -296,8 +297,9 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 			safeTitle = fmt.Sprintf("article-%d", time.Now().Unix())
 		}
 
-		rawPath := filepath.Join("raw", "blog", sanitizeFilename(feed.Name), safeTitle+".txt")
-		fullPath := filepath.Join(userDir, rawPath)
+		userIdStr := strconv.FormatUint(uint64(feed.UserID), 10)
+		rawPath := filepath.Join("users", userIdStr, "raw", "blog", sanitizeFilename(feed.Name), safeTitle+".txt")
+		fullPath := filepath.Join(h.DataDir, rawPath)
 
 		// Write content to file
 		if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
@@ -310,7 +312,7 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 			Title:      link.Title,
 			Slug:       safeTitle,
 			SourceType: "blog",
-			RawPath:    "u1/" + rawPath, // Add user prefix
+			RawPath:    rawPath,
 			SourceURL:  link.URL,
 			UserID:     feed.UserID,
 			BlogFeedID: feed.ID,
