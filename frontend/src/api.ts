@@ -601,3 +601,77 @@ export async function getNewsletterSyncStatus(): Promise<NewsletterSyncStatus> {
   if (!res.ok) throw new Error('Failed to get sync status')
   return res.json()
 }
+
+// Blog Feed API
+export interface BlogFeed {
+  id: number
+  name: string
+  indexUrl: string
+  platformType: string
+  linkSelector: string
+  contentSelector: string
+  linkExclude: string
+  autoSync: boolean
+  lastArticleDate: string
+  lastSyncAt: string
+  createdAt: string
+  articleCount: number
+}
+
+export interface AddBlogFeedResult {
+  feed: BlogFeed
+  needConfig?: boolean
+  message?: string
+  platformType?: string
+  detected?: boolean
+}
+
+export interface BlogSyncResult {
+  feedId: number
+  feedName: string
+  newArticles: number
+  total: number
+  downloadErrors: number
+  message: string
+  error?: string
+}
+
+export async function addBlogFeed(name: string, indexUrl: string, autoSync: boolean): Promise<AddBlogFeedResult> {
+  const res = await fetch(`${API_BASE}/blog/feeds`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ name, indexUrl, autoSync }),
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Failed to add blog feed')
+  return data
+}
+
+export async function listBlogFeeds(): Promise<BlogFeed[]> {
+  const res = await fetch(`${API_BASE}/blog/feeds`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to list blog feeds')
+  return res.json()
+}
+
+export async function configBlogFeed(id: number, linkSelector: string, contentSelector: string, linkExclude?: string): Promise<BlogFeed> {
+  const res = await fetch(`${API_BASE}/blog/feeds/${id}/config`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ linkSelector, contentSelector, linkExclude }),
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Failed to config blog feed')
+  return data
+}
+
+export async function syncBlogFeed(id: number): Promise<BlogSyncResult> {
+  const res = await fetch(`${API_BASE}/blog/feeds/${id}/sync`, { method: 'POST', headers: getHeaders() })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Failed to sync blog feed')
+  return data
+}
+
+export async function deleteBlogFeed(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/blog/feeds/${id}`, { method: 'DELETE', headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to delete blog feed')
+}
