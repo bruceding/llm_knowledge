@@ -29,6 +29,18 @@ import json
 import sys
 import os
 import re
+import ipaddress
+import socket
+from urllib.parse import urlparse
+
+# Cap DNS resolution latency for WebFetch validation. The Claude CLI hook
+# itself is bounded to 5s (HookMatcher.Timeout in security.go); a 2s cap on
+# DNS leaves headroom for everything else and forecloses a slow-DNS attack:
+# attacker-controlled NS responding slowly could otherwise push the hook past
+# its outer timeout, and CLI fail-open behavior on hook timeout would become a
+# bypass. setdefaulttimeout is process-global, but path-validator runs as a
+# short-lived subprocess so global state has no spillover.
+socket.setdefaulttimeout(2.0)
 
 # Sensitive path patterns (defense-in-depth, checked even within ALLOWED_DIR)
 # These cover both direct paths and macOS /private symlink targets
@@ -63,6 +75,11 @@ SENSITIVE_PATH_PATTERNS = [
     r'^/home/.*/\.gnupg/',
     r'^/home/.*/\.netrc$',
     r'^/home/.*/\.pgpass$',
+    r'^/home/.*/\.bash_history$',
+    r'^/home/.*/\.zsh_history$',
+    r'^/home/.*/\.python_history$',
+    r'^/home/.*/\.config/git/credentials$',
+    r'^/home/.*/\.git-credentials$',
 
     # User credentials - macOS
     r'^/Users/.*/\.ssh/',
@@ -73,6 +90,12 @@ SENSITIVE_PATH_PATTERNS = [
     r'^/Users/.*/\.gnupg/',
     r'^/Users/.*/\.netrc$',
     r'^/Users/.*/\.pgpass$',
+    r'^/Users/.*/\.bash_history$',
+    r'^/Users/.*/\.zsh_history$',
+    r'^/Users/.*/\.python_history$',
+    r'^/Users/.*/\.config/git/credentials$',
+    r'^/Users/.*/\.git-credentials$',
+    r'^/Users/.*/Library/Keychains/',
 ]
 
 # Pre-compile patterns for performance
@@ -84,6 +107,82 @@ _COMPILED_PATTERNS = [re.compile(p) for p in SENSITIVE_PATH_PATTERNS]
 # sessions must not use them; the CLI's --disallowedTools is the primary gate, this is
 # a backstop in case the flag is misconfigured.
 ALWAYS_DENIED_TOOLS = frozenset({"Bash", "BashOutput", "KillShell", "NotebookEdit", "SlashCommand", "Task"})
+
+# WebFetch URL scheme allowlist. file://, gopher://, ftp:// etc. either let the
+# tool read local files or talk to internal services, so we only allow plain HTTP(S).
+ALLOWED_WEBFETCH_SCHEMES = frozenset({"http", "https"})
+
+
+def is_blocked_ip(ip):
+    """Return True if ip is a loopback/link-local/private address.
+
+    Covers actual SSRF targets: loopback (127.0.0.0/8, ::1), link-local incl.
+    AWS/GCP/Azure metadata at 169.254.169.254 (169.254.0.0/16, fe80::/10),
+    RFC1918 private ranges, IPv6 ULA (fc00::/7), and 0.0.0.0 / :: which can
+    route to localhost on some stacks.
+
+    Intentionally NOT blocking is_reserved or is_multicast: those flags cover
+    things like Teredo tunneling (2001::/32) which Google and other public
+    services legitimately use, and would create false positives.
+    """
+    return (
+        ip.is_loopback
+        or ip.is_link_local
+        or ip.is_private
+        or ip.is_unspecified
+    )
+
+
+def validate_webfetch_url(url):
+    """Validate a WebFetch URL for SSRF risk. Returns (is_allowed, reason).
+
+    Defense-in-depth checks:
+      1. Reject malformed/empty URLs.
+      2. Restrict scheme to http/https — kills file:// and gopher:// pivots.
+      3. Reject literal IP hosts that fall in private/internal ranges.
+      4. For DNS hostnames, resolve all A/AAAA records and reject if ANY
+         resolves to a private/internal IP. This is best-effort against
+         DNS rebinding; the actual fetch will resolve again, so it can still
+         be raced, but the static check rejects the obvious attack patterns.
+    """
+    if not url:
+        return False, "Access denied: empty WebFetch URL"
+
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ALLOWED_WEBFETCH_SCHEMES:
+        return False, f"Access denied: WebFetch scheme '{parsed.scheme}' not allowed"
+
+    host = parsed.hostname
+    if not host:
+        return False, "Access denied: WebFetch URL missing host"
+
+    # Try as literal IP first — avoids unnecessary DNS lookups and catches
+    # raw-IP SSRF like http://127.0.0.1:6379/.
+    try:
+        ip = ipaddress.ip_address(host)
+        if is_blocked_ip(ip):
+            return False, f"Access denied: WebFetch target {host} is private/internal"
+        return True, None
+    except ValueError:
+        pass
+
+    # DNS hostname: resolve and reject if any address is internal.
+    try:
+        addrinfo = socket.getaddrinfo(host, None)
+    except Exception:
+        return False, f"Access denied: WebFetch DNS resolution failed for {host}"
+
+    for entry in addrinfo:
+        ip_str = entry[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False, f"Access denied: unparseable resolved IP {ip_str}"
+        if is_blocked_ip(ip):
+            return False, f"Access denied: host '{host}' resolves to private/internal IP {ip_str}"
+
+    return True, None
 
 
 def is_sensitive_path(path):
@@ -231,6 +330,15 @@ def main():
     # The CLI's --disallowedTools should already block these; this hook is defense-in-depth.
     if tool_name in ALWAYS_DENIED_TOOLS:
         deny(f"Access denied: tool '{tool_name}' is not permitted")
+
+    # WebFetch: validate URL for SSRF risk. WebFetch stays allowed (public
+    # internet is a legitimate use case) but private/internal targets are blocked.
+    if tool_name == "WebFetch":
+        url = tool_input.get("url", "")
+        is_allowed, reason = validate_webfetch_url(url)
+        if not is_allowed:
+            deny(reason)
+        sys.exit(0)
 
     # Extract paths based on tool type
     paths = extract_paths_from_input(tool_name, tool_input)
