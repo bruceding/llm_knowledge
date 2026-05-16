@@ -53,15 +53,15 @@ func TestDocChat_PersistsChatSessionIDOnInit(t *testing.T) {
 	session, err := pool.StartSession(
 		context.Background(),
 		"docInfo",
-		1,    // userID
+		uint(1),
 		docID,
-		tmp,  // userDir
-		"",   // prevSessionID — fresh start path
+		tmp,
+		"",
 		func(oldID, newID string) {
-			// Mirror the production callback installed in DocChatHandler.Stream.
 			db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("chat_session_id", newID)
 			callbackFired <- newID
 		},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -110,9 +110,9 @@ sleep 5
 
 	session, err := pool.StartSession(
 		context.Background(),
-		"docInfo", 1, 1, tmp,
+		"docInfo", uint(1), uint(1), tmp,
 		"", // no prevSessionID
-		nil,
+		nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -161,9 +161,9 @@ sleep 5
 
 	session, err := pool.StartSession(
 		context.Background(),
-		"docInfo", 1, 1, tmp,
+		"docInfo", uint(1), uint(1), tmp,
 		"prev-real-id-xyz",
-		nil,
+		nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -186,6 +186,102 @@ sleep 5
 	}
 	if !strings.Contains(string(data), "--resume prev-real-id-xyz") {
 		t.Errorf("args missing --resume prev-real-id-xyz: %s", data)
+	}
+}
+
+// TestDocChat_ResumeFailureClearsCachedID covers the regression flagged in
+// review: when --resume is attempted but Claude exits without ever emitting
+// system.init (stale prevSessionID, gone session file, etc.), the
+// onResumeFailed callback must fire so the caller can drop the broken id and
+// the next reconnect starts fresh instead of looping on the same failure.
+func TestDocChat_ResumeFailureClearsCachedID(t *testing.T) {
+	setupTestDB(t)
+	defer cleanupTestDB(t)
+
+	tmp := t.TempDir()
+	// Fake Claude that exits immediately with no stdout — emulates a stale
+	// resume id that the real CLI would reject.
+	binPath := filepath.Join(tmp, "fake-claude.sh")
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake bin: %v", err)
+	}
+
+	doc := db.Document{Title: "Test", UserID: 1, ChatSessionID: "stale-prev-id"}
+	if err := db.DB.Create(&doc).Error; err != nil {
+		t.Fatalf("create doc: %v", err)
+	}
+
+	pool := claude.NewSessionPool(tmp, binPath)
+	defer pool.Close()
+
+	failed := make(chan struct{}, 1)
+	docID := doc.ID
+	session, err := pool.StartSession(
+		context.Background(),
+		"docInfo", uint(1), docID, tmp,
+		"stale-prev-id",
+		nil,
+		func() {
+			db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("chat_session_id", "")
+			failed <- struct{}{}
+		},
+	)
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	defer session.Close()
+
+	select {
+	case <-failed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("onResumeFailed never fired after Claude exit without init")
+	}
+
+	var refreshed db.Document
+	if err := db.DB.First(&refreshed, docID).Error; err != nil {
+		t.Fatalf("reload doc: %v", err)
+	}
+	if refreshed.ChatSessionID != "" {
+		t.Errorf("Document.ChatSessionID = %q, want empty after resume failure", refreshed.ChatSessionID)
+	}
+}
+
+// TestDocChat_ResumeSuccessDoesNotInvokeFailureCallback ensures the resume
+// failure path doesn't false-positive when --resume actually succeeds.
+func TestDocChat_ResumeSuccessDoesNotInvokeFailureCallback(t *testing.T) {
+	setupTestDB(t)
+	defer cleanupTestDB(t)
+
+	tmp := t.TempDir()
+	fakeBin := writeFakeClaude(t, tmp, "resumed-ok")
+
+	pool := claude.NewSessionPool(tmp, fakeBin)
+	defer pool.Close()
+
+	failed := make(chan struct{}, 1)
+	session, err := pool.StartSession(
+		context.Background(),
+		"docInfo", uint(1), uint(1), tmp,
+		"prev-real-id",
+		nil,
+		func() { failed <- struct{}{} },
+	)
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	defer session.Close()
+
+	// Wait for init event (fake claude emits it, then idles), then close
+	// the session to force readEvents to wind down. Failure callback must
+	// NOT fire because init was observed.
+	time.Sleep(500 * time.Millisecond)
+	session.Close()
+
+	select {
+	case <-failed:
+		t.Fatal("onResumeFailed fired even though system.init was emitted")
+	case <-time.After(500 * time.Millisecond):
+		// expected: callback did not fire
 	}
 }
 
@@ -212,9 +308,9 @@ sleep 5
 
 	session, err := pool.StartSession(
 		context.Background(),
-		"docInfo", 1, 1, tmp,
+		"docInfo", uint(1), uint(1), tmp,
 		"local-1234567890",
-		nil,
+		nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)

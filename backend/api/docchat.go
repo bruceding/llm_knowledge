@@ -73,22 +73,35 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 	// Start session with ownership. Pass the document's stored ChatSessionID so
 	// Claude can --resume the prior conversation when the in-memory session has
 	// been cleaned up (120s idle timeout, server restart, SSE drop, etc.).
-	// The callback persists the new session_id back to the document row so the
-	// next resume uses the freshest id.
+	// The onRealSessionID callback persists the new session_id back to the doc;
+	// the onResumeFailed callback clears it so a stale id can't loop forever.
+	// fresh=1 (Clear Chat) drops any stored id before starting.
 	// Use context.Background() — request context gets cancelled when handler returns,
 	// which would kill the Claude subprocess via exec.CommandContext.
 	userDir := GetUserDir(c)
 	docIDForCallback := uint(docId)
+	prevSessionID := doc.ChatSessionID
+	if c.QueryParam("fresh") == "1" && prevSessionID != "" {
+		if err := db.DB.Model(&db.Document{}).Where("id = ?", docIDForCallback).Update("chat_session_id", "").Error; err != nil {
+			log.Printf("[docchat] Failed to clear chat_session_id for doc %d: %v", docIDForCallback, err)
+		}
+		prevSessionID = ""
+	}
 	session, err := h.Pool.StartSession(
 		context.Background(),
 		docInfo,
 		userId,
 		uint(docId),
 		userDir,
-		doc.ChatSessionID,
+		prevSessionID,
 		func(oldID, newID string) {
 			if err := db.DB.Model(&db.Document{}).Where("id = ?", docIDForCallback).Update("chat_session_id", newID).Error; err != nil {
 				log.Printf("[docchat] Failed to persist chat_session_id for doc %d: %v", docIDForCallback, err)
+			}
+		},
+		func() {
+			if err := db.DB.Model(&db.Document{}).Where("id = ?", docIDForCallback).Update("chat_session_id", "").Error; err != nil {
+				log.Printf("[docchat] Failed to clear stale chat_session_id for doc %d: %v", docIDForCallback, err)
 			}
 		},
 	)

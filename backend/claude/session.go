@@ -39,6 +39,8 @@ type InteractiveSession struct {
 	cancel         context.CancelFunc
 	initDone       chan struct{}             // closed when system.init event is received
 	onSessionID    func(oldID, newID string) // optional callback when real session_id arrives (for pool map + DB update)
+	triedResume    bool                      // set if --resume was passed; pairs with onResumeFailed
+	onResumeFailed func()                    // invoked if process exits without ever emitting system.init while triedResume is true
 }
 
 // SessionPool manages all active sessions
@@ -156,8 +158,13 @@ func waitForInit(session *InteractiveSession, timeout time.Duration) error {
 // so Claude restores the conversation history.
 // onRealSessionID, if non-nil, is invoked when the real session_id arrives via
 // system.init (in addition to the pool's own alias-registration callback).
+// onResumeFailed, if non-nil, is invoked when --resume was attempted but the
+// Claude process exited without ever emitting system.init — typically because
+// the prevSessionID was stale (session file gone, machine moved, etc.).
+// Callers should use this to clear the cached prevSessionID so the next attempt
+// starts fresh instead of looping on the same broken resume.
 // userDir is required for file isolation - returns an error if empty.
-func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID uint, docID uint, userDir string, prevSessionID string, onRealSessionID func(oldID, newID string)) (*InteractiveSession, error) {
+func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID uint, docID uint, userDir string, prevSessionID string, onRealSessionID func(oldID, newID string), onResumeFailed func()) (*InteractiveSession, error) {
 	if userDir == "" {
 		return nil, fmt.Errorf("userDir is required for session isolation")
 	}
@@ -223,22 +230,12 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 		}
 	}()
 
-	// In interactive mode (no --print), system.init only fires after the first
-	// user message, so don't block waiting for it. Use a fallback ID immediately;
-	// the real session_id will be captured by readEvents via onSessionID callback.
-	go session.readEvents()
-
+	// Set fallback session ID and wire callbacks BEFORE starting readEvents so
+	// system.init can never arrive on a still-nil onSessionID (data race).
 	session.mu.Lock()
 	if session.SessionID == "" {
 		session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
 	}
-	session.mu.Unlock()
-
-	// Register callback to add real session_id as alias when it arrives.
-	// Keep the old local-xxx key so reconnects with the stale ID still work
-	// (the frontend may not have received the session_update event yet).
-	// Chain caller-supplied onRealSessionID (e.g. DB persistence for --resume).
-	sessionID := session.GetSessionID()
 	session.onSessionID = func(oldID, newID string) {
 		p.mu.Lock()
 		p.sessions[newID] = session
@@ -248,6 +245,20 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 			onRealSessionID(oldID, newID)
 		}
 	}
+	if resuming {
+		// Track the fact that this session expects --resume to succeed; if
+		// readEvents finishes without ever firing system.init, onResumeFailed
+		// is invoked so the caller can drop the stale prevSessionID.
+		session.triedResume = true
+		session.onResumeFailed = onResumeFailed
+	}
+	sessionID := session.SessionID
+	session.mu.Unlock()
+
+	// In interactive mode (no --print), system.init only fires after the first
+	// user message, so don't block waiting for it. Use a fallback ID immediately;
+	// the real session_id will be captured by readEvents via onSessionID callback.
+	go session.readEvents()
 
 	p.mu.Lock()
 	p.sessions[sessionID] = session
@@ -473,15 +484,21 @@ func (s *InteractiveSession) StreamingContent() string {
 	return s.streamingContent.String()
 }
 
-// Close terminates the session (safe to call multiple times)
+// Close terminates the session (safe to call multiple times).
+// Killing the subprocess closes its stdout, which lets readEvents drain its
+// scan loop and close eventCh / streamChs as it exits — that's the only safe
+// place to close those channels, since closing them here would race with
+// readEvents trying to write.
 func (s *InteractiveSession) Close() {
 	s.closeOnce.Do(func() {
 		s.cancel()
 		if s.cmd.Process != nil {
 			s.cmd.Process.Kill()
 		}
-		close(s.eventCh)
-		log.Printf("[session] Closed session %s", s.SessionID)
+		s.mu.Lock()
+		sid := s.SessionID
+		s.mu.Unlock()
+		log.Printf("[session] Closed session %s", sid)
 	})
 }
 
@@ -627,10 +644,33 @@ func (s *InteractiveSession) readEvents() {
 	s.cmd.Wait()
 	log.Printf("[session] Claude process ended for session %s", s.SessionID)
 
+	// If --resume was attempted but Claude exited without ever emitting
+	// system.init, the prevSessionID was almost certainly stale (file gone,
+	// machine moved, format upgrade). Notify the caller so the cached id
+	// can be cleared — otherwise every reconnect loops on the same broken
+	// resume forever.
 	s.mu.Lock()
+	resumeFailed := false
+	if s.triedResume {
+		select {
+		case <-s.initDone:
+			// init fired — resume succeeded
+		default:
+			resumeFailed = true
+		}
+	}
+	cb := s.onResumeFailed
+	sid := s.SessionID
 	for _, ch := range s.streamChs {
 		close(ch)
 	}
 	s.streamChs = nil
 	s.mu.Unlock()
+	// Close eventCh exactly once, here, so external Close() callers don't race
+	// with the writes in the scan loop above.
+	close(s.eventCh)
+	if resumeFailed && cb != nil {
+		log.Printf("[session] --resume failed for session %s (no system.init before exit)", sid)
+		cb()
+	}
 }

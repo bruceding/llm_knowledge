@@ -87,6 +87,15 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   // to silently auto-reconnect after an unexpected drop.
   const activeRef = useRef(active)
   useEffect(() => { activeRef.current = active }, [active])
+  // Reconnect attempt counter; reset to 0 on successful `session` event.
+  // Bounded retries with exponential backoff prevent a stale ChatSessionID
+  // (or other persistent failure) from spawning Claude processes in a tight loop.
+  const reconnectAttemptRef = useRef(0)
+  const MAX_RECONNECT_ATTEMPTS = 8
+  // Forward ref to startNewSession; lets handleSSEEvent re-trigger a fresh
+  // /stream call (e.g. when a resend hits session_expired again) without
+  // participating in the callback dependency chain.
+  const startNewSessionRef = useRef<(fresh?: boolean) => void>(() => {})
 
   // Keep ref and store in sync
   useEffect(() => {
@@ -109,15 +118,28 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       const newSid = event.sessionId as string
       setSessionId(newSid)
       setConnecting(false)
+      // SSE is alive — reset the reconnect backoff so transient drops later
+      // don't immediately hit the retry cap.
+      reconnectAttemptRef.current = 0
       // If a message was pending due to session_expired, resend it now that the
-      // backend has a live (resumed) session bound to this sessionId.
+      // backend has a live (resumed) session bound to this sessionId. If the
+      // resend itself returns session_expired (HTTP 200, not a fetch error),
+      // re-queue the message and trigger another reconnect — otherwise the
+      // user's input would be silently dropped.
       if (pendingResendRef.current) {
         const msg = pendingResendRef.current
         pendingResendRef.current = null
-        void fetch('/api/doc-chat/message', {
+        fetch('/api/doc-chat/message', {
           method: 'POST',
           headers: getAuthHeaders(),
           body: JSON.stringify({ sessionId: newSid, message: msg })
+        }).then(res => res.json()).then(data => {
+          if (data?.isNewSession || data?.status === 'session_expired') {
+            pendingResendRef.current = msg
+            sessionIdRef.current = ''
+            setSessionId('')
+            startNewSessionRef.current()
+          }
         }).catch(err => {
           setError(err instanceof Error ? err.message : 'Failed to resend message')
           setMessages(prev => prev.filter(m => !m.isThinking))
@@ -216,6 +238,21 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   // processSSEStream trigger auto-reconnect without creating a callback cycle.
   const connectSSERef = useRef<() => void>(() => {})
 
+  // Schedule an auto-reconnect with exponential backoff + retry cap.
+  // Caller is responsible for guarding `activeRef.current` itself; this just
+  // limits the loop. Delay grows 500ms → 1s → 2s ... capped at 30s.
+  const scheduleReconnect = useCallback(() => {
+    if (!activeRef.current) return
+    if (reconnectAttemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
+      setError('Reconnect failed after multiple attempts')
+      return
+    }
+    const attempt = reconnectAttemptRef.current
+    reconnectAttemptRef.current++
+    const delay = Math.min(500 * (2 ** attempt), 30_000)
+    setTimeout(() => { if (activeRef.current) connectSSERef.current() }, delay)
+  }, [])
+
   // Shared SSE stream processor
   const processSSEStream = useCallback((res: Response, controller: AbortController) => {
     const reader = res.body?.getReader()
@@ -230,11 +267,10 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
         setConnecting(false)
         abortRef.current = null
         // Server closed the stream (session cleaned up, process exit, restart).
-        // If the panel is still visible, silently reconnect — connectSSE → /stream
-        // → backend --resume from DB so chat context survives.
-        if (activeRef.current) {
-          setTimeout(() => { if (activeRef.current) connectSSERef.current() }, 500)
-        }
+        // If the panel is still visible, silently reconnect — scheduleReconnect
+        // applies exponential backoff and a retry cap so a persistent failure
+        // (e.g. stale ChatSessionID) can't loop on the backend.
+        scheduleReconnect()
         return
       }
       buffer += decoder.decode(value, { stream: true })
@@ -253,10 +289,13 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     })
 
     return pump()
-  }, [handleSSEEvent])
+  }, [handleSSEEvent, scheduleReconnect])
 
-  // Start a brand new session
-  const startNewSession = useCallback(() => {
+  // Start a brand new session.
+  // fresh=true tells the backend to drop any stored ChatSessionID before
+  // calling Claude, so "Clear Chat" actually starts a new conversation
+  // instead of resuming the old one via --resume.
+  const startNewSession = useCallback((fresh: boolean = false) => {
     if (abortRef.current) {
       abortRef.current.abort()
     }
@@ -267,8 +306,11 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     setError(null)
 
     const headers = { ...getAuthHeaders(), 'Accept': 'text/event-stream' } as Record<string, string>
+    const url = fresh
+      ? `/api/doc-chat/stream?docId=${docId}&fresh=1`
+      : `/api/doc-chat/stream?docId=${docId}`
 
-    fetch(`/api/doc-chat/stream?docId=${docId}`, { headers, signal: controller.signal })
+    fetch(url, { headers, signal: controller.signal })
       .then(res => {
         if (!res.ok) throw new Error(`SSE request failed: ${res.status}`)
         return processSSEStream(res, controller)
@@ -276,12 +318,10 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       .catch(err => {
         if (err.name !== 'AbortError') {
           setConnecting(false)
-          if (activeRef.current) {
-            setTimeout(() => { if (activeRef.current) connectSSERef.current() }, 2000)
-          }
+          scheduleReconnect()
         }
       })
-  }, [docId, processSSEStream])
+  }, [docId, processSSEStream, scheduleReconnect])
 
   // Connect: try reconnecting to existing session, fall back to new
   const connectSSE = useCallback(() => {
@@ -320,9 +360,10 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       })
   }, [startNewSession, processSSEStream])
 
-  // Keep connectSSERef pointed at the latest connectSSE so processSSEStream
-  // can trigger auto-reconnect without participating in the callback dep chain.
+  // Keep refs pointed at the latest callbacks so handlers above can trigger
+  // them without participating in the useCallback dependency chain.
   useEffect(() => { connectSSERef.current = connectSSE }, [connectSSE])
+  useEffect(() => { startNewSessionRef.current = startNewSession }, [startNewSession])
 
   // Connect when active, disconnect when inactive.
   // Use a small delay to survive React StrictMode's unmount/remount cycle.
@@ -395,13 +436,17 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     }
   }
 
-  // Clear conversation
+  // Clear conversation. fresh=true tells the backend to wipe the stored
+  // ChatSessionID before launching Claude, otherwise /stream would silently
+  // --resume the conversation we just cleared.
   const handleClear = () => {
     setMessages([])
     setSessionId('')
     sessionIdRef.current = ''
+    pendingResendRef.current = null
+    reconnectAttemptRef.current = 0
     setError(null)
-    startNewSession()
+    startNewSession(true)
   }
 
   // Open note save modal
