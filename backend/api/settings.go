@@ -13,37 +13,41 @@ func (h *SettingsHandler) GetSettings(c echo.Context) error {
 	userId := GetCurrentUserId(c)
 	var settings db.UserSettings
 	result := db.DB.Where("user_id = ?", userId).FirstOrCreate(&settings, db.UserSettings{
-		UserID:             userId,
-		Language:           "en",
-		TranslationEnabled: false,
-		TranslationApiBase: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-		TranslationModel:   "deepseek-v4-flash",
+		UserID:   userId,
+		Language: "en",
 	})
 	if result.Error != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to get settings"})
 	}
-	return c.JSON(http.StatusOK, settings)
+
+	// Also return whether user is admin and translation status
+	isAdmin := IsAdmin(c)
+	globalSettings, _ := ensureGlobalSettings()
+
+	return c.JSON(http.StatusOK, echo.Map{
+		"id":                 settings.ID,
+		"userId":             settings.UserID,
+		"language":           settings.Language,
+		"createdAt":          settings.CreatedAt,
+		"updatedAt":          settings.UpdatedAt,
+		"isAdmin":            isAdmin,
+		"translationEnabled": globalSettings.TranslationEnabled,
+	})
 }
 
 func (h *SettingsHandler) UpdateSettings(c echo.Context) error {
 	userId := GetCurrentUserId(c)
 	var settings db.UserSettings
 	result := db.DB.Where("user_id = ?", userId).FirstOrCreate(&settings, db.UserSettings{
-		UserID:             userId,
-		Language:           "en",
-		TranslationApiBase: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-		TranslationModel:   "deepseek-v4-flash",
+		UserID:   userId,
+		Language: "en",
 	})
 	if result.Error != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to get settings"})
 	}
 
 	var input struct {
-		Language           string `json:"language"`
-		TranslationEnabled bool   `json:"translationEnabled"`
-		TranslationApiBase string `json:"translationApiBase"`
-		TranslationApiKey  string `json:"translationApiKey"`
-		TranslationModel   string `json:"translationModel"`
+		Language string `json:"language"`
 	}
 	if err := c.Bind(&input); err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid input"})
@@ -53,21 +57,23 @@ func (h *SettingsHandler) UpdateSettings(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "language must be 'en' or 'zh'"})
 	}
 
-	// 验证翻译配置
-	if input.TranslationEnabled && input.TranslationApiKey == "" {
-		return c.JSON(http.StatusBadRequest, echo.Map{"error": "API key required when translation is enabled"})
-	}
-
 	settings.UserID = userId
 	settings.Language = input.Language
-	settings.TranslationEnabled = input.TranslationEnabled
-	settings.TranslationApiBase = input.TranslationApiBase
-	settings.TranslationApiKey = input.TranslationApiKey
-	settings.TranslationModel = input.TranslationModel
 
 	if err := db.DB.Save(&settings).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to save settings"})
 	}
 
-	return c.JSON(http.StatusOK, settings)
+	isAdmin := IsAdmin(c)
+	globalSettings, _ := ensureGlobalSettings()
+
+	return c.JSON(http.StatusOK, echo.Map{
+		"id":                 settings.ID,
+		"userId":             settings.UserID,
+		"language":           settings.Language,
+		"createdAt":          settings.CreatedAt,
+		"updatedAt":          settings.UpdatedAt,
+		"isAdmin":            isAdmin,
+		"translationEnabled": globalSettings.TranslationEnabled,
+	})
 }

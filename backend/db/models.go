@@ -61,12 +61,18 @@ type ConversationMessage struct {
 }
 
 type UserSettings struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	UserID    uint      `gorm:"index;not null;default:1" json:"userId"`
+	Language  string    `gorm:"default:en" json:"language"` // 'en' or 'zh'
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type GlobalSettings struct {
 	ID                 uint      `gorm:"primaryKey" json:"id"`
-	UserID             uint      `gorm:"index;not null;default:1" json:"userId"`
-	Language           string    `gorm:"default:en" json:"language"` // 'en' or 'zh'
 	TranslationEnabled bool      `gorm:"default:false" json:"translationEnabled"`
 	TranslationApiBase string    `gorm:"default:https://dashscope.aliyuncs.com/compatible-mode/v1" json:"translationApiBase"`
-	TranslationApiKey  string    `gorm:"" json:"translationApiKey"`
+	TranslationApiKey  string    `gorm:"" json:"-"` // never expose in API responses
 	TranslationModel   string    `gorm:"default:deepseek-v4-flash" json:"translationModel"`
 	CreatedAt          time.Time `json:"createdAt"`
 	UpdatedAt          time.Time `json:"updatedAt"`
@@ -99,6 +105,7 @@ type User struct {
 	Username           string    `gorm:"unique;not null" json:"username"`
 	PasswordHash       string    `gorm:"not null" json:"-"`
 	Email              string    `gorm:"unique;not null" json:"email"`
+	Role               string    `gorm:"default:user" json:"role"` // admin, user
 	MustChangePassword bool      `gorm:"default:false" json:"mustChangePassword"`
 	CreatedAt          time.Time `json:"createdAt"`
 	UpdatedAt          time.Time `json:"updatedAt"`

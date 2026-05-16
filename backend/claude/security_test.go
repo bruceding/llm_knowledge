@@ -2,10 +2,14 @@ package claude
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestBuildSecureArgs_AlwaysContainsDisallowedTools is the regression test for the
@@ -114,6 +118,122 @@ func TestBuildSecureArgs_RejectsAllowedDangerousOverlap(t *testing.T) {
 			}
 			if args != nil {
 				t.Errorf("expected nil args on error, got %v", args)
+			}
+		})
+	}
+}
+
+// TestCleanupStaleSettings_AgeGated verifies that orphaned settings files
+// older than the cutoff are removed while recent files (potentially in use by
+// a parallel backend instance during a rolling restart) survive.
+func TestCleanupStaleSettings_AgeGated(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+
+	stalePath := filepath.Join(tmp, "claude-security-stale.json")
+	freshPath := filepath.Join(tmp, "claude-security-fresh.json")
+	unrelatedPath := filepath.Join(tmp, "other-file.json")
+
+	for _, p := range []string{stalePath, freshPath, unrelatedPath} {
+		if err := os.WriteFile(p, []byte("{}"), 0600); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+
+	// Backdate the stale file well past the cutoff. Fresh file gets default
+	// (just-now) mtime so it's safely on the keep side. Not parallel-safe due
+	// to t.Setenv on TMPDIR — do not add t.Parallel() to this test.
+	old := time.Now().Add(-2 * staleSettingsCutoff)
+	if err := os.Chtimes(stalePath, old, old); err != nil {
+		t.Fatalf("chtimes %s: %v", stalePath, err)
+	}
+
+	cleanupStaleSettings()
+
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Errorf("expected stale file removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(freshPath); err != nil {
+		t.Errorf("expected fresh file kept, stat err=%v", err)
+	}
+	if _, err := os.Stat(unrelatedPath); err != nil {
+		t.Errorf("expected unrelated file kept, stat err=%v", err)
+	}
+}
+
+// TestBuildSecureEnv_ResolvesSymlinks pins the macOS symlink-aware behavior:
+// /tmp on macOS is a symlink to /private/tmp, but path-validator.py calls
+// os.path.realpath(allowed_dir) and resolves it. If BuildSecureEnv left the
+// raw path, every path inside ALLOWED_DIR would mismatch and be denied.
+func TestBuildSecureEnv_ResolvesSymlinks(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("symlink layout for /tmp is macOS-specific")
+	}
+
+	tmp := t.TempDir() // typically /var/folders/.../T/... → realpath /private/var/...
+	resolved, err := filepath.EvalSymlinks(tmp)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", tmp, err)
+	}
+	if resolved == tmp {
+		t.Skipf("temp dir %q has no symlink layer; nothing to verify", tmp)
+	}
+
+	env := BuildSecureEnv(tmp)
+	want := "ALLOWED_DIR=" + resolved
+	if !slices.Contains(env, want) {
+		t.Errorf("BuildSecureEnv(%q) did not emit %q; env=%v", tmp, want, env)
+	}
+}
+
+// TestPathValidator_WebFetchSSRF drives path-validator.py with WebFetch payloads
+// and verifies that the SSRF defense correctly blocks private/internal targets
+// while letting plausible public-internet URLs through. Uses literal IPs for the
+// blocked cases so the test does not depend on the host's DNS resolver.
+func TestPathValidator_WebFetchSSRF(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+
+	const validatorPath = "../scripts/path-validator.py"
+	if _, err := os.Stat(validatorPath); err != nil {
+		t.Fatalf("validator script missing: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		url       string
+		wantBlock bool
+	}{
+		// Loopback / metadata / RFC1918 / IPv6 / non-http schemes — all blocked.
+		{"loopback_v4", "http://127.0.0.1:6379/", true},
+		{"aws_metadata", "http://169.254.169.254/latest/meta-data/", true},
+		{"rfc1918_10", "http://10.0.0.1/", true},
+		{"rfc1918_192", "http://192.168.1.1/", true},
+		{"rfc1918_172", "http://172.16.0.1/", true},
+		{"loopback_v6", "http://[::1]:8080/", true},
+		{"unspecified", "http://0.0.0.0/", true},
+		{"file_scheme", "file:///etc/passwd", true},
+		{"gopher_scheme", "gopher://internal/", true},
+		{"missing_host", "http:///path", true},
+		// Public-internet literal IP — allowed (1.1.1.1 is Cloudflare DNS).
+		{"public_ip", "http://1.1.1.1/", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("python3", validatorPath)
+			cmd.Env = []string{"ALLOWED_DIR=/tmp"}
+			payload := `{"tool_name":"WebFetch","tool_input":{"url":"` + tc.url + `"}}`
+			cmd.Stdin = strings.NewReader(payload)
+			err := cmd.Run()
+
+			gotBlocked := false
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 {
+				gotBlocked = true
+			}
+			if gotBlocked != tc.wantBlock {
+				t.Errorf("url=%q: gotBlocked=%v want=%v (err=%v)", tc.url, gotBlocked, tc.wantBlock, err)
 			}
 		})
 	}

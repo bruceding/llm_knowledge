@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	cryptorand "crypto/rand"
 )
@@ -73,9 +74,57 @@ func InitSecurityConfig(scriptsDir string) error {
 	return nil
 }
 
+// staleSettingsCutoff is how old a claude-security-*.json file must be before
+// cleanupStaleSettings will reap it. Picked long enough that a parallel
+// backend instance — even one that has been running for days — is not at risk
+// of having its active settings file deleted by a newly starting peer.
+//
+// Why 7 days: backend mtime is set once at startup and never refreshed, so the
+// cutoff effectively bounds the maximum tolerated peer uptime. Production
+// backends routinely run > 1 hour but rarely exceed a week between restarts.
+// On reboot the OS reaps /tmp anyway, so any file we miss is short-lived.
+//
+// The other obvious option (PID-embedded filename + kill -0 liveness check) is
+// strictly more correct but adds parsing/signal-handling complexity for a
+// best-effort hygiene routine. If orphan accumulation ever becomes a real
+// problem, switch to PID-based reaping.
+const staleSettingsCutoff = 7 * 24 * time.Hour
+
+// cleanupStaleSettings removes orphaned claude-security-*.json files left in
+// os.TempDir() by previous backend processes that exited via kill -9 / panic
+// before CleanupSecuritySettings could run. Called once at startup. Failures
+// are logged and ignored — best-effort hygiene, not security-critical.
+func cleanupStaleSettings() {
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-staleSettingsCutoff)
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "claude-security-") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		p := filepath.Join(os.TempDir(), name)
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		// Race tolerance: another backend startup may have just removed this
+		// file. ENOENT is expected, not an error worth logging.
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			log.Printf("[security] Failed to remove stale settings file %s: %v", p, err)
+		} else if err == nil {
+			log.Printf("[security] Removed stale settings file: %s", p)
+		}
+	}
+}
+
 // generateSettingsFile creates the settings.json file with security hooks
 // Called once at startup, returns the path to the generated file
 func generateSettingsFile(scriptsDir string) (string, error) {
+	cleanupStaleSettings()
+
 	validatorPath := filepath.Join(scriptsDir, "path-validator.py")
 
 	// Check if validator exists
@@ -89,12 +138,22 @@ func generateSettingsFile(scriptsDir string) (string, error) {
 	// The always-denied half is derived from DangerousDisallowedTools so the
 	// CLI flag list and the hook list cannot drift apart. ALWAYS_DENIED_TOOLS
 	// in path-validator.py must mirror DangerousDisallowedTools as well.
+	//
+	// WebFetch is hooked separately so the validator can apply SSRF protection
+	// (block loopback / link-local / RFC1918 / cloud metadata) without removing
+	// the tool entirely — public-internet WebFetch is still useful.
 	pathValidatedTools := []string{"Read", "Write", "Edit", "Glob", "Grep", "LS"}
 	hookedTools := append(pathValidatedTools, DangerousDisallowedTools...)
-	preToolUseHooks := make([]HookMatcher, 0, len(hookedTools))
-	for _, tool := range hookedTools {
-		preToolUseHooks = append(preToolUseHooks, HookMatcher{
-			Matcher: tool,
+	hookedTools = append(hookedTools, "WebFetch")
+
+	// Claude CLI matchers accept regex alternation, so collapse the per-tool
+	// matchers into one entry. The hook itself is identical for every tool —
+	// the validator dispatches on tool_name internally — so duplicating the
+	// HookMatcher block N times was just noise.
+	matcher := strings.Join(hookedTools, "|")
+	preToolUseHooks := []HookMatcher{
+		{
+			Matcher: matcher,
 			Hooks: []Hook{
 				{
 					Type:    "command",
@@ -102,7 +161,7 @@ func generateSettingsFile(scriptsDir string) (string, error) {
 					Timeout: 5,
 				},
 			},
-		})
+		},
 	}
 
 	settings := map[string]interface{}{
@@ -153,9 +212,18 @@ type Hook struct {
 // BuildSecureEnv builds environment variables for Claude CLI with security settings
 // Returns a complete environment slice with ALLOWED_DIR set, filtering any
 // pre-existing ALLOWED_DIR from the parent environment to prevent shadowing.
+//
+// allowedDir is resolved through filepath.EvalSymlinks so it matches what
+// path-validator.py sees after its own realpath() call. Without this, a caller
+// passing /tmp/foo on macOS (a symlink to /private/tmp/foo) would mismatch the
+// hook's resolved /private/tmp/foo and every legitimate read would be denied.
 func BuildSecureEnv(allowedDir string) []string {
 	if allowedDir == "" {
 		return nil
+	}
+
+	if resolved, err := filepath.EvalSymlinks(allowedDir); err == nil {
+		allowedDir = resolved
 	}
 
 	// Filter out any existing ALLOWED_DIR from parent environment to prevent shadowing
