@@ -938,46 +938,43 @@ func TestExtractContentMediumMock(t *testing.T) {
 	// issue #47 thread: "POST /api/raw/web-clip bytes_in:38197" is a stripped DOM,
 	// not the full 200KB+ Medium page. og:site_name etc. are gone. The only Medium
 	// signal that survives is [data-selectable-paragraph] on body paragraphs.
+	// Production DOM (per issue #47 follow-up): byline elements (avatar link,
+	// author link, "4 min read", "May 2, 2026", clap counts, Follow/Listen/Share/
+	// More buttons) are DIRECT SIBLINGS of the <p data-selectable-paragraph>
+	// content paragraphs inside <article>. They are NOT enclosed in a separate
+	// sub-container, so taking parent-of-first-paragraph alone is not enough —
+	// extraction must walk up and prune preceding siblings at each ancestor level.
 	mockHTML := `<!DOCTYPE html>
 <html lang="en">
 <head></head>
 <body>
 	<div id="root">
 		<article>
-			<div class="ab cd ef">
-				<h1 class="pw-post-title">Golang 1.26 Update: Stop Writing Pointer Helpers with new(expr)</h1>
-				<h2 class="pw-subtitle-paragraph">A small but useful improvement.</h2>
-			</div>
-			<div class="byline-section gp gq gr gs">
-				<a href="/?source=post_page---byline--7d8296e15fb8---------------------------------------"><img alt="ElAmir Mansour" src="https://miro.medium.com/v2/avatar.jpeg"/></a>
-				<a href="/?source=post_page---byline--7d8296e15fb8---------------------------------------">ElAmir Mansour</a>
-				<button>Follow</button>
-				<span>4 min read</span>
-				<span>·</span>
-				<span>May 1, 2026</span>
-				<span>67</span>
-				<span>1</span>
-				<button aria-label="Listen">Listen</button>
-				<button aria-label="Share">Share</button>
-				<button aria-label="More">More</button>
-			</div>
-			<div class="content-section xx yy">
-				<p data-selectable-paragraph>Go 1.26 introduces a small but very practical addition: a new built-in called <code>new(expr)</code> that lets you create a pointer to a value in one step.</p>
-				<p data-selectable-paragraph>Before Go 1.26, you needed a helper function to create a pointer to a literal value:</p>
-				<pre><code>func ptr[T any](v T) *T { return &amp;v }</code></pre>
-				<h2 data-selectable-paragraph>The new way</h2>
-				<p data-selectable-paragraph>With Go 1.26, you can simply write <code>new(42)</code> to get an <code>*int</code> pointing to 42.</p>
-				<figure>
-					<picture><img alt="Code example" src="https://miro.medium.com/v2/code-example.png"/></picture>
-					<button>Press enter or click to view image in full size</button>
-					<figcaption>Example usage</figcaption>
-				</figure>
-				<p data-selectable-paragraph>This is a welcome ergonomic improvement for everyday Go programming.</p>
-			</div>
-			<div class="footer-section">
-				<a href="/?source=post_page---post_publication_info--7d8296e15fb8---------------------------------------">Published in Some Publication</a>
-				<button>Sign up</button>
-			</div>
+			<h1 class="pw-post-title">Golang 1.26 Update: Stop Writing Pointer Helpers with new(expr)</h1>
+			<a href="/?source=post_page---byline--7d8296e15fb8---------------------------------------"><img alt="ElAmir Mansour" src="https://miro.medium.com/v2/avatar.jpeg"/></a>
+			<a href="/?source=post_page---byline--7d8296e15fb8---------------------------------------">ElAmir Mansour</a>
+			<button>Follow</button>
+			<span>4 min read</span>
+			<span>·</span>
+			<span>May 2, 2026</span>
+			<span>67</span>
+			<span>1</span>
+			<button aria-label="Listen">Listen</button>
+			<button aria-label="Share">Share</button>
+			<button aria-label="More">More</button>
+			<p data-selectable-paragraph>Go 1.26 introduces a small but very practical addition: a new built-in called <code>new(expr)</code> that lets you create a pointer to a value in one step.</p>
+			<p data-selectable-paragraph>Before Go 1.26, you needed a helper function to create a pointer to a literal value:</p>
+			<pre><code>func ptr[T any](v T) *T { return &amp;v }</code></pre>
+			<h2 data-selectable-paragraph>The new way</h2>
+			<p data-selectable-paragraph>With Go 1.26, you can simply write <code>new(42)</code> to get an <code>*int</code> pointing to 42.</p>
+			<figure>
+				<picture><img alt="Code example" src="https://miro.medium.com/v2/code-example.png"/></picture>
+				<button>Press enter or click to view image in full size</button>
+				<figcaption>Example usage</figcaption>
+			</figure>
+			<p data-selectable-paragraph>This is a welcome ergonomic improvement for everyday Go programming.</p>
+			<a href="/?source=post_page---post_publication_info--7d8296e15fb8---------------------------------------">Published in Some Publication</a>
+			<button>Sign up</button>
 		</article>
 	</div>
 </body>
@@ -1010,10 +1007,12 @@ func TestExtractContentMediumMock(t *testing.T) {
 		"ElAmir Mansour",                                  // author name in byline
 		"Follow",                                          // follow button
 		"4 min read",                                      // read time
+		"May 2, 2026",                                     // publish date span (issue #47 screenshot)
 		"Listen",                                          // listen button
 		"Share",                                           // share button
 		"Press enter or click to view image in full size", // image overlay button text
 		"Sign up",                                         // footer button
+		"Published in Some Publication",                   // footer publication link
 		"miro.medium.com/v2/avatar.jpeg",                  // author avatar URL
 		"source=post_page---byline",                       // medium internal byline link
 	}

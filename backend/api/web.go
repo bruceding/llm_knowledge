@@ -836,25 +836,35 @@ func ExtractContent(doc *goquery.Document) string {
 }
 
 // extractMediumContent returns clean markdown for Medium articles, or "" if the
-// document has no [data-selectable-paragraph] elements. We detect Medium by that
+// document has no [data-selectable-paragraph] elements. Detection uses that
 // attribute alone (not og:site_name) because the browser extension strips <head>
-// meta tags before sending the DOM, so meta-based detection fails in production.
-// [data-selectable-paragraph] is Medium-specific, survives the extension's DOM
-// clipping, and lets us anchor on the actual content container — skipping byline,
-// follow button, claps, listen/share/more buttons, and image overlays (issue #47).
+// meta tags before sending the DOM (issue #47).
+//
+// Approach:
+//  1. Find the lowest common ancestor of all selectable paragraphs — this is the
+//     content container. In production Medium DOM the byline is a SIBLING of the
+//     paragraphs (not in a separate sub-tree), so just taking parent-of-first
+//     does not exclude it.
+//  2. Walk from the first paragraph up to that container and at each level remove
+//     preceding siblings. This strips byline elements (avatar, author link,
+//     "4 min read", "May 2, 2026", clap counts, follow button) regardless of how
+//     deeply Medium nests them.
+//  3. Drop Medium internal navigation links (href contains "source=post_page")
+//     and all <button> elements (Listen/Share/More/Sign up + image overlays).
 func extractMediumContent(doc *goquery.Document) string {
 	paras := doc.Find("[data-selectable-paragraph]")
 	if paras.Length() == 0 {
 		return ""
 	}
 
-	container := paras.First().Parent()
+	container := mediumLCA(paras)
 	if container.Length() == 0 {
 		return ""
 	}
 
-	// Image overlay buttons ("Press enter or click to view image in full size")
-	// and any leftover Listen/Share/More buttons inside the content area.
+	pruneBeforeFirstSelectable(container, paras.First())
+
+	container.Find(`a[href*="source=post_page"]`).Remove()
 	container.Find("button").Remove()
 
 	var markdown strings.Builder
@@ -864,6 +874,41 @@ func extractMediumContent(doc *goquery.Document) string {
 	content := cleanExcessiveWhitespace(markdown.String())
 	content = mergeTableRows(content)
 	return strings.TrimSpace(content)
+}
+
+// mediumLCA returns the lowest common ancestor that contains every paragraph in paras.
+func mediumLCA(paras *goquery.Selection) *goquery.Selection {
+	if paras.Length() == 0 {
+		return nil
+	}
+	target := paras.Length()
+	candidate := paras.First().Parent()
+	for candidate.Length() > 0 {
+		if candidate.Find("[data-selectable-paragraph]").Length() >= target {
+			return candidate
+		}
+		candidate = candidate.Parent()
+	}
+	return candidate
+}
+
+// pruneBeforeFirstSelectable removes every node that precedes `first` in document
+// order, walking up through ancestors until it reaches container. This eliminates
+// the entire byline area regardless of how it is nested relative to the paragraphs.
+func pruneBeforeFirstSelectable(container, first *goquery.Selection) {
+	if container.Length() == 0 || first.Length() == 0 {
+		return
+	}
+	containerNode := container.Get(0)
+	node := first
+	for node.Length() > 0 {
+		node.PrevAll().Remove()
+		parent := node.Parent()
+		if parent.Length() == 0 || parent.Get(0) == containerNode {
+			return
+		}
+		node = parent
+	}
 }
 
 // isNavOrFooter checks if a node is likely navigation/footer rather than main content.
