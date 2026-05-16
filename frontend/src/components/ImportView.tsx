@@ -341,7 +341,7 @@ export default function ImportView() {
         setBlogName('')
         setBlogAutoSync(false)
         await loadBlogFeeds()
-        if (result.newArticles && result.newArticles > 0) {
+        if (result.detected) {
           setUploadResult({
             id: 0,
             path: '',
