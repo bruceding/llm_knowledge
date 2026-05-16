@@ -133,14 +133,29 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
           method: 'POST',
           headers: getAuthHeaders(),
           body: JSON.stringify({ sessionId: newSid, message: msg })
-        }).then(res => res.json()).then(data => {
-          if (data?.isNewSession || data?.status === 'session_expired') {
+        }).then(res => {
+          if (!res.ok) {
+            // HTTP error (401/500/etc) — re-queue and surface so the user
+            // sees the failure instead of staring at a stuck spinner.
+            pendingResendRef.current = msg
+            setError(`Resend failed: HTTP ${res.status}`)
+            setMessages(prev => prev.filter(m => !m.isThinking))
+            return null
+          }
+          return res.json()
+        }).then(data => {
+          if (!data) return
+          if (data.isNewSession || data.status === 'session_expired') {
+            // Session expired again during resend (rare but possible if the
+            // backend session was cleaned up between connect and resend).
+            // Re-queue and trigger another /stream so the message is not lost.
             pendingResendRef.current = msg
             sessionIdRef.current = ''
             setSessionId('')
             startNewSessionRef.current()
           }
         }).catch(err => {
+          pendingResendRef.current = msg
           setError(err instanceof Error ? err.message : 'Failed to resend message')
           setMessages(prev => prev.filter(m => !m.isThinking))
         })
@@ -424,7 +439,11 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
         // In-memory session was cleaned up but the DB still has the Claude
         // session_id. Trigger a fresh /stream call which will --resume from DB,
         // and re-send the message once the new sessionId arrives via SSE.
+        // Drop the thinking placeholder so we don't leave a stale spinner if
+        // the reconnect hits its retry cap; the resend handler will add a
+        // fresh one when it actually reaches Claude.
         pendingResendRef.current = messageContent
+        setMessages(prev => prev.filter(m => !m.isThinking))
         sessionIdRef.current = ''
         setSessionId('')
         startNewSession()

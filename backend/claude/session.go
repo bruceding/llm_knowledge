@@ -37,10 +37,11 @@ type InteractiveSession struct {
 	closeOnce      sync.Once // protects Close() from double channel close
 	ctx            context.Context
 	cancel         context.CancelFunc
-	initDone       chan struct{}             // closed when system.init event is received
-	onSessionID    func(oldID, newID string) // optional callback when real session_id arrives (for pool map + DB update)
-	triedResume    bool                      // set if --resume was passed; pairs with onResumeFailed
-	onResumeFailed func()                    // invoked if process exits without ever emitting system.init while triedResume is true
+	initDone          chan struct{}             // closed when system.init event is received
+	onSessionID       func(oldID, newID string) // optional callback when real session_id arrives (for pool map + DB update)
+	triedResume       bool                      // set if --resume was passed; pairs with onResumeFailed
+	onResumeFailed    func()                    // invoked if process exits without ever emitting system.init while triedResume is true
+	closedExplicitly  bool                      // set by Close(); suppresses onResumeFailed (the id may still be valid)
 }
 
 // SessionPool manages all active sessions
@@ -489,15 +490,21 @@ func (s *InteractiveSession) StreamingContent() string {
 // scan loop and close eventCh / streamChs as it exits — that's the only safe
 // place to close those channels, since closing them here would race with
 // readEvents trying to write.
+// Also flips closedExplicitly so readEvents knows the process exit was
+// requested (e.g. 120s cleanup, handleClear, server shutdown) rather than a
+// genuine crash, and suppresses the onResumeFailed callback. Without this
+// flag, killing a resumed session before its first user message triggers
+// system.init would wipe a valid chat_session_id from the DB.
 func (s *InteractiveSession) Close() {
 	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closedExplicitly = true
+		sid := s.SessionID
+		s.mu.Unlock()
 		s.cancel()
 		if s.cmd.Process != nil {
 			s.cmd.Process.Kill()
 		}
-		s.mu.Lock()
-		sid := s.SessionID
-		s.mu.Unlock()
 		log.Printf("[session] Closed session %s", sid)
 	})
 }
@@ -651,7 +658,11 @@ func (s *InteractiveSession) readEvents() {
 	// resume forever.
 	s.mu.Lock()
 	resumeFailed := false
-	if s.triedResume {
+	// Only treat a missing init as a resume failure when the process was NOT
+	// killed by Close(). An explicit Close (idle timeout, navigate-away,
+	// handleClear-after-no-message) doesn't mean the prevSessionID is bad —
+	// the user just hasn't sent the first message yet, so init never fired.
+	if s.triedResume && !s.closedExplicitly {
 		select {
 		case <-s.initDone:
 			// init fired — resume succeeded

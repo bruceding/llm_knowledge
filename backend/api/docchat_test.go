@@ -246,6 +246,51 @@ func TestDocChat_ResumeFailureClearsCachedID(t *testing.T) {
 	}
 }
 
+// TestDocChat_ExplicitCloseBeforeInitDoesNotInvokeFailureCallback covers a
+// regression flagged in PR review: a resumed session that is Close()'d before
+// the user sends the first message (so system.init never fires) must NOT
+// trigger onResumeFailed — the prevSessionID is still valid, the user just
+// hasn't typed anything yet. Without this guard, every 120s idle cleanup or
+// "Clear Chat" click would silently wipe a working chat_session_id.
+func TestDocChat_ExplicitCloseBeforeInitDoesNotInvokeFailureCallback(t *testing.T) {
+	setupTestDB(t)
+	defer cleanupTestDB(t)
+
+	tmp := t.TempDir()
+	// Fake claude that idles indefinitely with no output, mimicking a real
+	// resumed Claude waiting for the first user message.
+	binPath := filepath.Join(tmp, "fake-claude.sh")
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatalf("write fake bin: %v", err)
+	}
+
+	pool := claude.NewSessionPool(tmp, binPath)
+	defer pool.Close()
+
+	failed := make(chan struct{}, 1)
+	session, err := pool.StartSession(
+		context.Background(),
+		"docInfo", uint(1), uint(1), tmp,
+		"prev-real-id",
+		nil,
+		func() { failed <- struct{}{} },
+	)
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// Simulate idle-cleanup or handleClear: explicit Close before any
+	// stdout (and therefore before system.init).
+	session.Close()
+
+	select {
+	case <-failed:
+		t.Fatal("onResumeFailed fired on explicit Close — this would wipe a valid chat_session_id")
+	case <-time.After(500 * time.Millisecond):
+		// expected: callback did not fire
+	}
+}
+
 // TestDocChat_ResumeSuccessDoesNotInvokeFailureCallback ensures the resume
 // failure path doesn't false-positive when --resume actually succeeds.
 func TestDocChat_ResumeSuccessDoesNotInvokeFailureCallback(t *testing.T) {
