@@ -1,9 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { uploadPDF, uploadPDFUrl, clipWeb, addRSSFeed, listRSSFeeds, deleteRSSFeed, syncRSSFeed, getIMAPConfig, syncNewsletter, getNewsletterSyncStatus } from '../api'
+import { uploadPDF, uploadPDFUrl, clipWeb, addRSSFeed, listRSSFeeds, deleteRSSFeed, syncRSSFeed, getIMAPConfig, syncNewsletter, getNewsletterSyncStatus, addBlogFeed, listBlogFeeds, configBlogFeed, syncBlogFeed, deleteBlogFeed, type BlogFeed, type AddBlogFeedResult } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
 
-type ImportTab = 'pdf' | 'web' | 'rss' | 'newsletter'
+type ImportTab = 'pdf' | 'web' | 'rss' | 'blog' | 'newsletter'
 
 const tabConfig: { key: ImportTab; icon: React.ReactNode; color: string; activeColor: string }[] = [
   {
@@ -36,6 +36,17 @@ const tabConfig: { key: ImportTab; icon: React.ReactNode; color: string; activeC
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 5c7.18 0 13 5.82 13 13M6 11a7 7 0 017 7m-6 0a1 1 0 11-2 0 1 1 0 012 0z" />
+      </svg>
+    ),
+  },
+  {
+    key: 'blog',
+    color: 'text-teal-500',
+    activeColor: 'text-teal-600 bg-teal-50 border-teal-500',
+
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9.5a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" />
       </svg>
     ),
   },
@@ -78,6 +89,20 @@ export default function ImportView() {
   const [addingRss, setAddingRss] = useState(false)
   const [syncingFeedId, setSyncingFeedId] = useState<number | null>(null)
 
+  // Blog state
+  const [blogUrl, setBlogUrl] = useState('')
+  const [blogName, setBlogName] = useState('')
+  const [blogAutoSync, setBlogAutoSync] = useState(false)
+  const [blogFeeds, setBlogFeeds] = useState<BlogFeed[]>([])
+  const [addingBlog, setAddingBlog] = useState(false)
+  const [syncingBlogFeedId, setSyncingBlogFeedId] = useState<number | null>(null)
+  const [showBlogConfig, setShowBlogConfig] = useState(false)
+  const [configBlogFeedId, setConfigBlogFeedId] = useState<number | null>(null)
+  const [configLinkSelector, setConfigLinkSelector] = useState('')
+  const [configContentSelector, setConfigContentSelector] = useState('')
+  const [configLinkExclude, setConfigLinkExclude] = useState('')
+  const [configuringBlog, setConfiguringBlog] = useState(false)
+
   // Newsletter state
   const [newsletterConfigured, setNewsletterConfigured] = useState(false)
   const [newsletterLastSync, setNewsletterLastSync] = useState<string | null>(null)
@@ -87,6 +112,7 @@ export default function ImportView() {
 
   useEffect(() => {
     loadRSSFeeds()
+    loadBlogFeeds()
     loadNewsletterConfig()
   }, [])
 
@@ -96,6 +122,15 @@ export default function ImportView() {
       setRssFeeds(feeds)
     } catch (err) {
       console.error('Failed to load RSS feeds:', err)
+    }
+  }
+
+  const loadBlogFeeds = async () => {
+    try {
+      const feeds = await listBlogFeeds()
+      setBlogFeeds(feeds)
+    } catch (err) {
+      console.error('Failed to load blog feeds:', err)
     }
   }
 
@@ -291,10 +326,97 @@ export default function ImportView() {
     }
   }
 
+  const handleAddBlog = async () => {
+    if (!blogUrl.trim()) return
+    setAddingBlog(true)
+    setError(null)
+    try {
+      const result: AddBlogFeedResult = await addBlogFeed(blogName.trim(), blogUrl.trim(), blogAutoSync)
+      if (result.needConfig) {
+        // Show config dialog
+        setConfigBlogFeedId(result.feed.id)
+        setShowBlogConfig(true)
+      } else {
+        setBlogUrl('')
+        setBlogName('')
+        setBlogAutoSync(false)
+        await loadBlogFeeds()
+        if (result.newArticles && result.newArticles > 0) {
+          setUploadResult({
+            id: 0,
+            path: '',
+            message: `Detected ${result.platformType} platform`,
+            pages: 0,
+          })
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add blog feed')
+    } finally {
+      setAddingBlog(false)
+    }
+  }
+
+  const handleConfigBlog = async () => {
+    if (!configLinkSelector.trim() || !configContentSelector.trim()) return
+    if (!configBlogFeedId) return
+    setConfiguringBlog(true)
+    setError(null)
+    try {
+      await configBlogFeed(configBlogFeedId, configLinkSelector, configContentSelector, configLinkExclude)
+      setShowBlogConfig(false)
+      setConfigBlogFeedId(null)
+      setConfigLinkSelector('')
+      setConfigContentSelector('')
+      setConfigLinkExclude('')
+      await loadBlogFeeds()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to configure blog feed')
+    } finally {
+      setConfiguringBlog(false)
+    }
+  }
+
+  const handleSyncBlogFeed = async (feedId: number) => {
+    setSyncingBlogFeedId(feedId)
+    setError(null)
+    try {
+      const result = await syncBlogFeed(feedId)
+      if (result.newArticles > 0) {
+        setUploadResult({
+          id: 0,
+          path: '',
+          message: result.message,
+          pages: result.newArticles,
+        })
+      }
+      await loadBlogFeeds()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to sync blog feed')
+    } finally {
+      setSyncingBlogFeedId(null)
+    }
+  }
+
+  const handleDeleteBlogFeed = async (feedId: number) => {
+    const confirmed = await confirm({
+      title: t('common.delete'),
+      message: t('import.deleteFeedConfirm'),
+    })
+    if (!confirmed) return
+    try {
+      await deleteBlogFeed(feedId)
+      await loadBlogFeeds()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete blog feed')
+    }
+  }
+
   const tabLabel: Record<ImportTab, string> = {
     pdf: t('import.uploadPdf'),
     web: t('import.webClipping'),
     rss: t('import.rssFeeds'),
+    blog: t('import.blogFeeds'),
     newsletter: t('import.newsletter'),
   }
 
@@ -533,6 +655,99 @@ export default function ImportView() {
           </div>
         )}
 
+        {activeTab === 'blog' && (
+          <div className="space-y-4">
+            <div className="border border-gray-200 rounded-xl p-6">
+              <p className="text-gray-600 mb-4 text-sm">{t('import.blogHint')}</p>
+              <div className="space-y-3">
+                <input
+                  type="text"
+                  value={blogName}
+                  onChange={(e) => setBlogName(e.target.value)}
+                  placeholder="Feed name (optional)"
+                  disabled={addingBlog}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:bg-gray-100"
+                />
+                <input
+                  type="url"
+                  value={blogUrl}
+                  onChange={(e) => setBlogUrl(e.target.value)}
+                  placeholder="https://claude.com/blog"
+                  disabled={addingBlog}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:bg-gray-100"
+                />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="blogAutoSync"
+                    checked={blogAutoSync}
+                    onChange={(e) => setBlogAutoSync(e.target.checked)}
+                    disabled={addingBlog}
+                    className="w-4 h-4"
+                  />
+                  <label htmlFor="blogAutoSync" className="text-sm text-gray-600">
+                    Auto sync (sync automatically in background)
+                  </label>
+                </div>
+                <button
+                  onClick={handleAddBlog}
+                  disabled={addingBlog || !blogUrl.trim()}
+                  className="w-full px-4 py-2 bg-teal-500 text-white rounded-lg hover:bg-teal-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500"
+                >
+                  {addingBlog ? t('import.adding') : t('import.addFeed')}
+                </button>
+              </div>
+            </div>
+
+            {blogFeeds.length > 0 && (
+              <div className="border border-gray-200 rounded-xl p-6">
+                <h4 className="text-sm font-medium text-gray-700 mb-3">{t('import.activeFeeds')}</h4>
+                <ul className="space-y-2">
+                  {blogFeeds.map((feed) => (
+                    <li
+                      key={feed.id}
+                      className="flex items-center justify-between px-3 py-2.5 bg-gray-50 rounded-lg"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium text-gray-800">{feed.name}</div>
+                        <div className="text-xs text-gray-500 truncate">{feed.indexUrl}</div>
+                        <div className="text-xs text-gray-400">
+                          {feed.platformType} · {feed.articleCount} articles · Last sync: {feed.lastSyncAt ? new Date(feed.lastSyncAt).toLocaleDateString() : 'Never'}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 ml-3 shrink-0">
+                        <button
+                          onClick={() => handleSyncBlogFeed(feed.id)}
+                          disabled={syncingBlogFeedId === feed.id}
+                          className="text-teal-500 hover:text-teal-700 disabled:text-gray-400"
+                          title="Sync now"
+                        >
+                          {syncingBlogFeedId === feed.id ? (
+                            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-teal-500"></div>
+                          ) : (
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteBlogFeed(feed.id)}
+                          className="text-gray-400 hover:text-red-500"
+                          title="Delete feed"
+                        >
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
         {activeTab === 'newsletter' && (
           <div className="border border-gray-200 rounded-xl p-6">
             <p className="text-gray-600 mb-4 text-sm">{t('import.newsletterHint')}</p>
@@ -572,6 +787,98 @@ export default function ImportView() {
       </div>
     </div>
     {confirmDialog}
+
+    {/* Blog config dialog */}
+    {showBlogConfig && (
+      <div
+        className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+        onClick={() => setShowBlogConfig(false)}
+        onKeyDown={(e) => e.key === 'Escape' && setShowBlogConfig(false)}
+      >
+        <div
+          className="bg-white rounded-xl shadow-xl max-w-md w-full mx-4"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-teal-100 flex items-center justify-center">
+                <svg className="w-5 h-5 text-teal-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">{t('import.blogConfigTitle')}</h3>
+                <p className="text-sm text-gray-500">{t('import.blogConfigHint')}</p>
+              </div>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  {t('import.linkSelector')} <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={configLinkSelector}
+                  onChange={(e) => setConfigLinkSelector(e.target.value)}
+                  placeholder="a[href^='/blog/']"
+                  disabled={configuringBlog}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:bg-gray-100 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  {t('import.contentSelector')} <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={configContentSelector}
+                  onChange={(e) => setConfigContentSelector(e.target.value)}
+                  placeholder=".post-content"
+                  disabled={configuringBlog}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:bg-gray-100 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  {t('import.linkExclude')}
+                </label>
+                <input
+                  type="text"
+                  value={configLinkExclude}
+                  onChange={(e) => setConfigLinkExclude(e.target.value)}
+                  placeholder=".sidebar a, .footer a"
+                  disabled={configuringBlog}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:bg-gray-100 text-sm"
+                />
+              </div>
+            </div>
+          </div>
+          <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-100">
+            <button
+              onClick={() => {
+                setShowBlogConfig(false)
+                setConfigBlogFeedId(null)
+                setConfigLinkSelector('')
+                setConfigContentSelector('')
+                setConfigLinkExclude('')
+              }}
+              disabled={configuringBlog}
+              className="px-4 py-2 text-sm text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 disabled:opacity-50"
+            >
+              {t('common.cancel')}
+            </button>
+            <button
+              onClick={handleConfigBlog}
+              disabled={configuringBlog || !configLinkSelector.trim() || !configContentSelector.trim()}
+              className="px-4 py-2 text-sm text-white bg-teal-500 rounded-lg hover:bg-teal-600 disabled:bg-gray-300 disabled:text-gray-500"
+            >
+              {configuringBlog ? t('import.adding') : t('import.saveConfig')}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     </>
   )
 }

@@ -17,10 +17,11 @@ type Document struct {
 	Language   string         `json:"language"`
 	Status     string         `gorm:"default:inbox" json:"status"` // inbox, later, published, archived
 	Metadata   string         `json:"metadata"`                    // JSON string
-	SourceURL  string         `json:"sourceUrl"`                   // Original URL for web/rss
+	SourceURL  string         `json:"sourceUrl"`                   // Original URL for web/rss/blog
 	SourceGUID string         `json:"sourceGuid"`                  // RSS item GUID for dedup
 	UserID     uint           `gorm:"index;not null;default:1" json:"userId"`
-	RSSFeedID  uint           `json:"rssFeedId"` // Associated RSS feed
+	RSSFeedID  uint           `json:"rssFeedId"`  // Associated RSS feed
+	BlogFeedID uint           `json:"blogFeedId"` // Associated Blog feed
 	CreatedAt  time.Time      `json:"createdAt"`
 	UpdatedAt  time.Time      `json:"updatedAt"`
 	DeletedAt  gorm.DeletedAt `gorm:"index" json:"deletedAt,omitempty"`

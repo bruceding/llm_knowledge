@@ -12,6 +12,7 @@ import (
 	"llm-knowledge/db"
 	"llm-knowledge/fs"
 	"llm-knowledge/ingest"
+	"llm-knowledge/ssrf"
 	"net"
 	"net/http"
 	"os"
@@ -203,21 +204,7 @@ func (h *NewsletterHandler) DeleteConfig(c echo.Context) error {
 	return c.JSON(http.StatusOK, echo.Map{"message": "config deleted"})
 }
 
-func isPrivateIP(ip net.IP) bool {
-	privateRanges := []struct{ start, end net.IP }{
-		{net.ParseIP("10.0.0.0"), net.ParseIP("10.255.255.255")},
-		{net.ParseIP("172.16.0.0"), net.ParseIP("172.31.255.255")},
-		{net.ParseIP("192.168.0.0"), net.ParseIP("192.168.255.255")},
-		{net.ParseIP("127.0.0.0"), net.ParseIP("127.255.255.255")},
-		{net.ParseIP("169.254.0.0"), net.ParseIP("169.254.255.255")},
-	}
-	for _, r := range privateRanges {
-		if bytes.Compare(ip, r.start) >= 0 && bytes.Compare(ip, r.end) <= 0 {
-			return true
-		}
-	}
-	return false
-}
+
 
 func validateIMAPHost(host string, port int) error {
 	if port != 993 && port != 143 {
@@ -228,7 +215,7 @@ func validateIMAPHost(host string, port int) error {
 		return fmt.Errorf("cannot resolve host")
 	}
 	for _, ip := range ips {
-		if isPrivateIP(ip.To4()) || isPrivateIP(ip.To16()) {
+		if ssrf.IsPrivateIP(ip.To4()) || ssrf.IsPrivateIP(ip.To16()) {
 			return fmt.Errorf("connection to private networks is not allowed")
 		}
 	}
