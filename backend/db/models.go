@@ -19,6 +19,7 @@ type Document struct {
 	Metadata   string         `json:"metadata"`                    // JSON string
 	SourceURL  string         `json:"sourceUrl"`                   // Original URL for web/rss/blog
 	SourceGUID string         `json:"sourceGuid"`                  // RSS item GUID for dedup
+	ChatSessionID string      `json:"chatSessionId"`               // Claude session ID for doc-chat --resume
 	UserID     uint           `gorm:"index;not null;default:1" json:"userId"`
 	RSSFeedID  uint           `json:"rssFeedId"`  // Associated RSS feed
 	BlogFeedID uint           `json:"blogFeedId"` // Associated Blog feed

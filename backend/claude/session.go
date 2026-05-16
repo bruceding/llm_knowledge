@@ -151,9 +151,13 @@ func waitForInit(session *InteractiveSession, timeout time.Duration) error {
 	}
 }
 
-// StartSession creates a new Claude session with user/document ownership
-// userDir is required for file isolation - returns an error if empty
-func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID uint, docID uint, userDir string) (*InteractiveSession, error) {
+// StartSession creates a new Claude session with user/document ownership.
+// If prevSessionID is a real (non-fallback) Claude session ID, --resume is added
+// so Claude restores the conversation history.
+// onRealSessionID, if non-nil, is invoked when the real session_id arrives via
+// system.init (in addition to the pool's own alias-registration callback).
+// userDir is required for file isolation - returns an error if empty.
+func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID uint, docID uint, userDir string, prevSessionID string, onRealSessionID func(oldID, newID string)) (*InteractiveSession, error) {
 	if userDir == "" {
 		return nil, fmt.Errorf("userDir is required for session isolation")
 	}
@@ -169,6 +173,11 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 		"--verbose",
 	}
 	args = append(args, secureArgs...)
+
+	resuming := prevSessionID != "" && !strings.HasPrefix(prevSessionID, "local-")
+	if resuming {
+		args = append(args, "--resume", prevSessionID)
+	}
 
 	// Add system prompt with document context
 	systemPrompt := fmt.Sprintf("用户正在询问文档相关问题。%s 请使用 Read 工具读取相关文件回答。如果文件内容不足以回答，可以使用你自己的知识补充。", docInfo)
@@ -228,19 +237,27 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 	// Register callback to add real session_id as alias when it arrives.
 	// Keep the old local-xxx key so reconnects with the stale ID still work
 	// (the frontend may not have received the session_update event yet).
+	// Chain caller-supplied onRealSessionID (e.g. DB persistence for --resume).
 	sessionID := session.GetSessionID()
 	session.onSessionID = func(oldID, newID string) {
 		p.mu.Lock()
 		p.sessions[newID] = session
 		p.mu.Unlock()
 		log.Printf("[session] SessionPool added alias: %s (keeping old key %s)", newID, oldID)
+		if onRealSessionID != nil {
+			onRealSessionID(oldID, newID)
+		}
 	}
 
 	p.mu.Lock()
 	p.sessions[sessionID] = session
 	p.mu.Unlock()
 
-	log.Printf("[session] Started new session %s", session.SessionID)
+	if resuming {
+		log.Printf("[session] Started resumed session from prev=%s (fallback id=%s)", prevSessionID, session.SessionID)
+	} else {
+		log.Printf("[session] Started new session %s", session.SessionID)
+	}
 	return session, nil
 }
 

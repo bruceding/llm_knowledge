@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/labstack/echo/v4"
 )
@@ -59,17 +60,38 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 		fmt.Fprintf(c.Response(), "data: %s\n\n", jsonData)
 		flusher.Flush()
 	}
+	writePing := func() {
+		fmt.Fprint(c.Response(), ": ping\n\n")
+		flusher.Flush()
+	}
 
 	writeSSE(echo.Map{
 		"type":  "session_initializing",
 		"docId": docId,
 	})
 
-	// Start new session with ownership
+	// Start session with ownership. Pass the document's stored ChatSessionID so
+	// Claude can --resume the prior conversation when the in-memory session has
+	// been cleaned up (120s idle timeout, server restart, SSE drop, etc.).
+	// The callback persists the new session_id back to the document row so the
+	// next resume uses the freshest id.
 	// Use context.Background() — request context gets cancelled when handler returns,
 	// which would kill the Claude subprocess via exec.CommandContext.
 	userDir := GetUserDir(c)
-	session, err := h.Pool.StartSession(context.Background(), docInfo, userId, uint(docId), userDir)
+	docIDForCallback := uint(docId)
+	session, err := h.Pool.StartSession(
+		context.Background(),
+		docInfo,
+		userId,
+		uint(docId),
+		userDir,
+		doc.ChatSessionID,
+		func(oldID, newID string) {
+			if err := db.DB.Model(&db.Document{}).Where("id = ?", docIDForCallback).Update("chat_session_id", newID).Error; err != nil {
+				log.Printf("[docchat] Failed to persist chat_session_id for doc %d: %v", docIDForCallback, err)
+			}
+		},
+	)
 	if err != nil {
 		log.Printf("[docchat] Failed to start session: %v", err)
 		writeSSE(echo.Map{"type": "error", "error": "failed to start session"})
@@ -94,7 +116,7 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 		"sessionId": session.SessionID,
 	})
 
-	return streamSSEEvents(c.Request().Context(), claude.NewStreamProcessor(), eventCh, writeSSE)
+	return streamSSEEvents(c.Request().Context(), claude.NewStreamProcessor(), eventCh, writeSSE, writePing)
 }
 
 // MessageRequest represents a user message request
@@ -186,6 +208,10 @@ func (h *DocChatHandler) Reconnect(c echo.Context) error {
 		fmt.Fprintf(c.Response(), "data: %s\n\n", jsonData)
 		flusher.Flush()
 	}
+	writePing := func() {
+		fmt.Fprint(c.Response(), ": ping\n\n")
+		flusher.Flush()
+	}
 
 	// Subscribe to session events (fan-out mechanism)
 	eventCh := session.Subscribe()
@@ -204,17 +230,29 @@ func (h *DocChatHandler) Reconnect(c echo.Context) error {
 
 	sp := claude.NewStreamProcessor()
 	sp.MarkAsStreamedWithContent(session.StreamingContent())
-	return streamSSEEvents(c.Request().Context(), sp, eventCh, writeSSE)
+	return streamSSEEvents(c.Request().Context(), sp, eventCh, writeSSE, writePing)
 }
 
 // streamSSEEvents is the shared SSE event loop used by both Stream and Reconnect.
 // It reads raw events from eventCh, converts them via StreamProcessor, and writes
 // clean SSE events to the client via writeSSE.
-func streamSSEEvents(ctx context.Context, sp *claude.StreamProcessor, eventCh chan claude.StreamEvent, writeSSE func(map[string]interface{})) error {
+// writePing, if non-nil, is invoked on a 20s ticker to emit an SSE comment frame
+// that keeps reverse-proxy idle timeouts (nginx default 60s) from closing the
+// connection during long pauses between assistant messages.
+func streamSSEEvents(ctx context.Context, sp *claude.StreamProcessor, eventCh chan claude.StreamEvent, writeSSE func(map[string]interface{}), writePing func()) error {
+	var pingC <-chan time.Time
+	if writePing != nil {
+		t := time.NewTicker(20 * time.Second)
+		defer t.Stop()
+		pingC = t.C
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-pingC:
+			writePing()
+			continue
 		case evt, ok := <-eventCh:
 			if !ok {
 				return nil
