@@ -926,6 +926,105 @@ func TestExtractContentXTwitterMock(t *testing.T) {
 	t.Log("4. GENERAL: X/Twitter Articles need special handling vs regular tweets")
 }
 
+// TestExtractContentMediumMock verifies issue #47:
+// Medium articles imported via browser extension should not include byline/UI noise
+// (avatar, follow button, read time, claps, Listen/Share/More, image overlay text).
+func TestExtractContentMediumMock(t *testing.T) {
+	// Simulated Medium article HTML based on the actual page structure described in issue #47.
+	// Key signals: og:site_name=Medium, [data-selectable-paragraph] paragraphs,
+	// byline links with ?source=post_page---byline pattern, image button overlays.
+	mockHTML := `<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8"/>
+	<meta property="og:site_name" content="Medium"/>
+	<meta property="og:title" content="Golang 1.26 Update: Stop Writing Pointer Helpers with new(expr) | by ElAmir Mansour | May, 2026 | Medium"/>
+	<meta property="og:type" content="article"/>
+	<title>Golang 1.26 Update: Stop Writing Pointer Helpers with new(expr) | by ElAmir Mansour | May, 2026 | Medium</title>
+</head>
+<body>
+	<div id="root">
+		<article>
+			<div class="ab cd ef">
+				<h1 class="pw-post-title">Golang 1.26 Update: Stop Writing Pointer Helpers with new(expr)</h1>
+				<h2 class="pw-subtitle-paragraph">A small but useful improvement.</h2>
+			</div>
+			<div class="byline-section gp gq gr gs">
+				<a href="/?source=post_page---byline--7d8296e15fb8---------------------------------------"><img alt="ElAmir Mansour" src="https://miro.medium.com/v2/avatar.jpeg"/></a>
+				<a href="/?source=post_page---byline--7d8296e15fb8---------------------------------------">ElAmir Mansour</a>
+				<button>Follow</button>
+				<span>4 min read</span>
+				<span>·</span>
+				<span>May 1, 2026</span>
+				<span>67</span>
+				<span>1</span>
+				<button aria-label="Listen">Listen</button>
+				<button aria-label="Share">Share</button>
+				<button aria-label="More">More</button>
+			</div>
+			<div class="content-section xx yy">
+				<p data-selectable-paragraph>Go 1.26 introduces a small but very practical addition: a new built-in called <code>new(expr)</code> that lets you create a pointer to a value in one step.</p>
+				<p data-selectable-paragraph>Before Go 1.26, you needed a helper function to create a pointer to a literal value:</p>
+				<pre><code>func ptr[T any](v T) *T { return &amp;v }</code></pre>
+				<h2 data-selectable-paragraph>The new way</h2>
+				<p data-selectable-paragraph>With Go 1.26, you can simply write <code>new(42)</code> to get an <code>*int</code> pointing to 42.</p>
+				<figure>
+					<picture><img alt="Code example" src="https://miro.medium.com/v2/code-example.png"/></picture>
+					<button>Press enter or click to view image in full size</button>
+					<figcaption>Example usage</figcaption>
+				</figure>
+				<p data-selectable-paragraph>This is a welcome ergonomic improvement for everyday Go programming.</p>
+			</div>
+			<div class="footer-section">
+				<a href="/?source=post_page---post_publication_info--7d8296e15fb8---------------------------------------">Published in Some Publication</a>
+				<button>Sign up</button>
+			</div>
+		</article>
+	</div>
+</body>
+</html>`
+
+	doc, err := ParseHTML(mockHTML)
+	if err != nil {
+		t.Fatalf("Failed to parse mock HTML: %v", err)
+	}
+
+	content := ExtractContent(doc)
+	t.Logf("Extracted Medium content (%d chars):\n%s", len(content), content)
+
+	// === The actual article content MUST be present ===
+	wantPresent := []string{
+		"Go 1.26 introduces a small but very practical addition",
+		"Before Go 1.26, you needed a helper function",
+		"The new way",
+		"With Go 1.26, you can simply write",
+		"This is a welcome ergonomic improvement",
+	}
+	for _, s := range wantPresent {
+		if !strings.Contains(content, s) {
+			t.Errorf("expected content to contain %q, but it did not", s)
+		}
+	}
+
+	// === Byline / UI noise MUST NOT be present ===
+	wantAbsent := []string{
+		"ElAmir Mansour",                                  // author name in byline
+		"Follow",                                          // follow button
+		"4 min read",                                      // read time
+		"Listen",                                          // listen button
+		"Share",                                           // share button
+		"Press enter or click to view image in full size", // image overlay button text
+		"Sign up",                                         // footer button
+		"miro.medium.com/v2/avatar.jpeg",                  // author avatar URL
+		"source=post_page---byline",                       // medium internal byline link
+	}
+	for _, s := range wantAbsent {
+		if strings.Contains(content, s) {
+			t.Errorf("expected content NOT to contain %q, but it did", s)
+		}
+	}
+}
+
 // TestCleanTitle tests the cleanTitle function for removing platform noise
 func TestCleanTitle(t *testing.T) {
 	tests := []struct {
@@ -972,6 +1071,27 @@ func TestCleanTitle(t *testing.T) {
 			name:     "Title with just whitespace after on X:",
 			input:    "User on X:  / X",
 			expected: "/ X", // degenerate case: after stripping noise
+		},
+		{
+			// Issue #47: Medium og:title contains author + date + Medium suffix
+			name:     "Medium: title with author and date suffix",
+			input:    "Golang 1.26 Update: Stop Writing Pointer Helpers with new(expr) | by ElAmir Mansour | May, 2026 | Medium",
+			expected: "Golang 1.26 Update: Stop Writing Pointer Helpers with new(expr)",
+		},
+		{
+			name:     "Medium: title with author and publication suffix",
+			input:    "Some Article Title | by Jane Doe | Towards Data Science | Medium",
+			expected: "Some Article Title",
+		},
+		{
+			name:     "Medium: title with only Medium suffix",
+			input:    "Some Article Title | Medium",
+			expected: "Some Article Title",
+		},
+		{
+			name:     "Non-Medium pipe-separated title unchanged",
+			input:    "Some Article | Towards Data Science",
+			expected: "Some Article | Towards Data Science",
 		},
 	}
 	for _, tt := range tests {

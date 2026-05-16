@@ -137,6 +137,16 @@ func extractTitle(doc *goquery.Document) string {
 func cleanTitle(title string) string {
 	title = strings.TrimSpace(title)
 
+	// Medium: "Article Title | by Author | Date | Medium" → "Article Title"
+	// Also handles "Article Title | Medium" (no author/date suffix).
+	if strings.HasSuffix(title, " | Medium") {
+		stripped := strings.TrimSuffix(title, " | Medium")
+		if idx := strings.Index(stripped, " | by "); idx >= 0 {
+			stripped = stripped[:idx]
+		}
+		title = strings.TrimSpace(stripped)
+	}
+
 	// X/Twitter: "Username on X: \"Title\" / X" → "Title"
 	if strings.Contains(title, " on X:") || strings.Contains(title, " on X: ") {
 		// Pattern: "Username on X: \"Title\" / X" or "Username on X: Title / X"
@@ -731,6 +741,14 @@ func ExtractContent(doc *goquery.Document) string {
 	// Remove cookie notices and other non-content
 	doc.Find(".Cookie-notice, .cookie-notice, .js-cookieNotice").Remove()
 
+	// Medium-specific extraction: site uses obfuscated CSS classes that defeat the
+	// generic selector list, causing fallback to <article> which contains byline,
+	// follow/listen/share/more buttons, and image overlay text. Detect Medium and
+	// extract from the container holding [data-selectable-paragraph] elements.
+	if mediumContent := extractMediumContent(doc); mediumContent != "" {
+		return mediumContent
+	}
+
 	// Content selectors ordered by specificity (platform-specific first, then generic)
 	// Key insight: some sites have <article> for footer, <main> for content (e.g. Aliyun docs)
 	// Solution: pick the selector with most text content, not first match
@@ -815,6 +833,41 @@ func ExtractContent(doc *goquery.Document) string {
 	bestContent = mergeTableRows(bestContent)
 
 	return strings.TrimSpace(bestContent)
+}
+
+// extractMediumContent returns clean markdown for Medium articles, or "" if the
+// document is not a Medium page or has no usable content. Medium uses obfuscated
+// CSS classes but reliably marks body paragraphs with [data-selectable-paragraph],
+// so we use the parent of those paragraphs as the content container — this skips
+// the byline, follow button, claps, listen/share/more buttons, and image overlays
+// described in issue #47.
+func extractMediumContent(doc *goquery.Document) string {
+	siteName, _ := doc.Find(`meta[property="og:site_name"]`).Attr("content")
+	if siteName != "Medium" {
+		return ""
+	}
+
+	paras := doc.Find("[data-selectable-paragraph]")
+	if paras.Length() == 0 {
+		return ""
+	}
+
+	container := paras.First().Parent()
+	if container.Length() == 0 {
+		return ""
+	}
+
+	// Image overlay buttons ("Press enter or click to view image in full size")
+	// and any leftover Listen/Share/More buttons inside the content area.
+	container.Find("button").Remove()
+
+	var markdown strings.Builder
+	container.Contents().Each(func(i int, s *goquery.Selection) {
+		markdown.WriteString(convertNodeToMarkdown(s))
+	})
+	content := cleanExcessiveWhitespace(markdown.String())
+	content = mergeTableRows(content)
+	return strings.TrimSpace(content)
 }
 
 // isNavOrFooter checks if a node is likely navigation/footer rather than main content.
