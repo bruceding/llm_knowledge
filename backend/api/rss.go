@@ -836,6 +836,34 @@ func isInsideLink(s *goquery.Selection) bool {
 	return false
 }
 
+// textWithBRAsNewline extracts text from s, emitting "\n" for each <br> element.
+// Used for <pre> blocks that lack a <code> child (e.g. Medium's
+// <pre><span>line<br/>line</span></pre>) — plain .Text() drops <br/> and
+// collapses all lines into one.
+func textWithBRAsNewline(s *goquery.Selection) string {
+	var b strings.Builder
+	var walk func(n *html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.TextNode {
+			b.WriteString(n.Data)
+			return
+		}
+		if n.Type == html.ElementNode && n.Data == "br" {
+			b.WriteString("\n")
+			return
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	for _, node := range s.Nodes {
+		for c := node.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	return b.String()
+}
+
 func convertNodeToMarkdown(s *goquery.Selection) string {
 	node := s.Nodes[0]
 	if node.Type == html.TextNode {
@@ -1115,7 +1143,9 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 				codeContent = strings.Join(codeLines, "\n")
 			}
 		} else {
-			codeContent = s.Text()
+			// No <code> child (e.g. Medium uses <pre><span data-selectable-paragraph>line<br/>line</span></pre>).
+			// .Text() drops <br/> so all lines collapse into one — walk descendants and convert <br/> to \n.
+			codeContent = textWithBRAsNewline(s)
 		}
 		codeContent = strings.ReplaceAll(codeContent, " ", " ")
 		// Strip common leading indentation while preserving relative indentation

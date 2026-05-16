@@ -235,6 +235,18 @@ func TestConvertNodeToMarkdown(t *testing.T) {
 			html:     `<pre><code><span>SKILLS = (</span><span>    "line1",</span><span>    "line2"</span><span>)</span></code></pre>`,
 			expected: "```\nSKILLS = (\n    \"line1\",\n    \"line2\"\n)\n```",
 		},
+		{
+			// Issue #47: Medium uses <pre><span data-selectable-paragraph><br/> structure,
+			// no <code> child — newlines come from <br/> elements between text runs.
+			name:     "Medium-style pre with span and br (no code child)",
+			html:     `<pre><span data-selectable-paragraph>status := "active"<br/>age := 30<br/>payload := UserUpdate{<br/>    Status: &amp;status,<br/>    Age:    &amp;age,<br/>}</span></pre>`,
+			expected: "```\nstatus := \"active\"\nage := 30\npayload := UserUpdate{\n    Status: &status,\n    Age:    &age,\n}\n```",
+		},
+		{
+			name:     "Medium-style pre comment + func with br lines",
+			html:     `<pre><span data-selectable-paragraph>// The generic helper found in almost every Go codebase<br/>func Ptr[T any](v T) *T {<br/>    return &amp;v<br/>}</span></pre>`,
+			expected: "```\n// The generic helper found in almost every Go codebase\nfunc Ptr[T any](v T) *T {\n    return &v\n}\n```",
+		},
 	}
 
 	for _, tt := range tests {
