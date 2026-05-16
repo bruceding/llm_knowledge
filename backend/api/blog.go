@@ -287,7 +287,7 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 		}
 
 		// For subsequent syncs: skip articles older than lastArticleDate
-		if !isFirstSync && !articleDate.IsZero() && articleDate <= feed.LastArticleDate {
+		if !isFirstSync && !articleDate.IsZero() && !articleDate.After(feed.LastArticleDate) {
 			continue
 		}
 
@@ -334,7 +334,7 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 		newArticles++
 
 		// Update max date
-		if !articleDate.IsZero() && articleDate > maxDate {
+		if !articleDate.IsZero() && articleDate.After(maxDate) {
 			maxDate = articleDate
 		}
 	}
