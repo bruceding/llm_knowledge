@@ -268,6 +268,19 @@ func (h *RSSHandler) syncFeedInternal(feed *db.RSSFeed) SyncResult {
 		}
 		title = sanitizeFilename(title)
 
+		// Resolve raw_path collision: different RSS items may share the same title
+		// across (or within) feeds. Include soft-deleted records so a deleted doc's
+		// file is not overwritten by a later same-title import.
+		rawRelPath := filepath.Join("users", userIdStr, "raw", "rss", sanitizeFilename(feed.Name), title+".md")
+		var collisionCount int64
+		db.DB.Unscoped().Model(&db.Document{}).
+			Where("raw_path = ? AND source_url != ?", rawRelPath, normalizedURL).
+			Count(&collisionCount)
+		if collisionCount > 0 {
+			title = fmt.Sprintf("%s-%d", title, collisionCount+1)
+			rawRelPath = filepath.Join("users", userIdStr, "raw", "rss", sanitizeFilename(feed.Name), title+".md")
+		}
+
 		// Download images and build content
 		content, imgCount, imgErrors := buildArticleContentWithImages(item, feed.Name, assetsDir, item.Link)
 		downloadErrors += imgErrors
@@ -302,7 +315,7 @@ func (h *RSSHandler) syncFeedInternal(feed *db.RSSFeed) SyncResult {
 			Title:      item.Title,
 			Slug:       title,
 			SourceType: "rss",
-			RawPath:    filepath.Join("users", userIdStr, "raw", "rss", sanitizeFilename(feed.Name), title+".md"),
+			RawPath:    rawRelPath,
 			SourceURL:  normalizedURL,
 			SourceGUID: guid,
 			RSSFeedID:  feed.ID,
