@@ -1035,6 +1035,163 @@ func TestExtractContentMediumMock(t *testing.T) {
 	}
 }
 
+// TestExtractContentMediumIssue48 reproduces the four problems reported for
+// Medium custom-domain articles (issue #48 — Netflix TechBlog):
+//  1. byline (avatar + author link + read-time + date + actions) sits BETWEEN
+//     the <h1> and the first <p data-selectable-paragraph>, so the existing
+//     "prune-before-first-selectable" logic (which targets the h1) doesn't
+//     catch it.
+//  2. "Press enter or click to view image in full size" overlay is in a <div>
+//     rather than a <button> in some builds.
+//  3. The hero image lives inside an <a> wrapper which used to produce
+//     "[![alt](src)\n\n](url)" — broken markdown.
+//  4. Article images are lazy-loaded: <img> has no usable src, real URL is in
+//     a sibling <source srcset> inside a <picture>.
+func TestExtractContentMediumIssue48(t *testing.T) {
+	mockHTML := `<!DOCTYPE html>
+<html lang="en">
+<head></head>
+<body>
+	<article>
+		<h1 data-selectable-paragraph>Democratizing Machine Learning at Netflix: Building the Model Lifecycle Graph</h1>
+		<div class="byline-wrapper">
+			<div class="author-block">
+				<a href="https://netflixtechblog.medium.com/?source=post_page---byline--5cc6d5828bb1---------------------------------------"><img alt="Netflix Technology Blog" src="https://miro.medium.com/v2/avatar.jpeg"/></a>
+				<a href="https://netflixtechblog.medium.com/?source=post_page---byline--5cc6d5828bb1---------------------------------------">Netflix Technology Blog</a>
+			</div>
+			<div class="meta-block">
+				<span>14 min read</span>
+				<span>·</span>
+				<span>May 4, 2026</span>
+			</div>
+			<div class="actions">
+				<span>2</span>
+				<button>Listen</button>
+				<button>Share</button>
+				<button>More</button>
+			</div>
+			<p>Saish Sali, Nipun Kumar, Sura Elamurugu</p>
+		</div>
+		<p data-selectable-paragraph>At Netflix we build hundreds of ML models in production, and managing their lifecycle is hard.</p>
+		<figure>
+			<picture>
+				<source srcset="https://miro.medium.com/v2/resize:fit:640/1*hero.png 640w, https://miro.medium.com/v2/resize:fit:1280/1*hero.png 1280w"/>
+				<img alt="Architecture overview" src=""/>
+			</picture>
+			<div>Press enter or click to view image in full size</div>
+			<figcaption>Figure 1: Architecture overview</figcaption>
+		</figure>
+		<p data-selectable-paragraph>The Model Lifecycle Graph captures dependencies between training, evaluation, and deployment.</p>
+	</article>
+</body>
+</html>`
+
+	doc, err := ParseHTML(mockHTML)
+	if err != nil {
+		t.Fatalf("Failed to parse mock HTML: %v", err)
+	}
+
+	// Simulate the lazy-image preprocessing that runs in saveWebDocument
+	// before extraction. Without it, the hero <img src=""> is unusable.
+	preprocessLazyImages(doc)
+
+	content := ExtractContent(doc)
+	t.Logf("Extracted Medium content (%d chars):\n%s", len(content), content)
+
+	wantPresent := []string{
+		"At Netflix we build hundreds of ML models",
+		"The Model Lifecycle Graph captures dependencies",
+		// Problem 4: hero image URL was lifted from <source srcset>
+		"https://miro.medium.com/v2/resize:fit:1280/1*hero.png",
+	}
+	for _, s := range wantPresent {
+		if !strings.Contains(content, s) {
+			t.Errorf("expected content to contain %q, but it did not", s)
+		}
+	}
+
+	wantAbsent := []string{
+		// Problem 2: byline noise (avatar, author, date, actions, contributor line)
+		"Netflix Technology Blog",
+		"14 min read",
+		"May 4, 2026",
+		"Listen",
+		"Share",
+		"Saish Sali, Nipun Kumar, Sura Elamurugu",
+		"miro.medium.com/v2/avatar.jpeg",
+		"source=post_page---byline",
+		// Problem 2: figure overlay
+		"Press enter or click to view image in full size",
+	}
+	for _, s := range wantAbsent {
+		if strings.Contains(content, s) {
+			t.Errorf("expected content NOT to contain %q, but it did", s)
+		}
+	}
+
+	// Problem 3: image wrapped in <a> must not split markdown across
+	// blank lines. The broken pattern is "](" preceded by "\n\n".
+	if strings.Contains(content, "\n\n](") {
+		t.Errorf("image markdown is broken across blank lines: %q", content)
+	}
+}
+
+// TestPreprocessLazyImages verifies that empty/placeholder <img src> values
+// are filled in from data-src, srcset, or <picture><source srcset>.
+func TestPreprocessLazyImages(t *testing.T) {
+	html := `<html><body>
+		<img id="a" src="" data-src="https://cdn.example.com/a.jpg"/>
+		<img id="b" src="data:image/gif;base64,R0lGODlh" srcset="https://cdn.example.com/b-small.jpg 640w, https://cdn.example.com/b-large.jpg 1280w"/>
+		<picture>
+			<source srcset="https://cdn.example.com/c-small.jpg 640w, https://cdn.example.com/c-large.jpg 1280w"/>
+			<img id="c" src=""/>
+		</picture>
+		<img id="d" src="https://cdn.example.com/d.jpg" data-src="https://cdn.example.com/should-not-override.jpg"/>
+	</body></html>`
+
+	doc, err := ParseHTML(html)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	preprocessLazyImages(doc)
+
+	cases := map[string]string{
+		"#a": "https://cdn.example.com/a.jpg",
+		"#b": "https://cdn.example.com/b-large.jpg",
+		"#c": "https://cdn.example.com/c-large.jpg",
+		"#d": "https://cdn.example.com/d.jpg",
+	}
+	for sel, want := range cases {
+		got, _ := doc.Find(sel).Attr("src")
+		if got != want {
+			t.Errorf("%s: got src=%q, want %q", sel, got, want)
+		}
+	}
+}
+
+// TestConvertImageInsideLink verifies that an <img> wrapped in <a> renders
+// as "[![alt](src)](url)" — not "[![alt](src)\n\n](url)" which breaks
+// markdown parsers (issue #48 problem 3).
+func TestConvertImageInsideLink(t *testing.T) {
+	html := `<html><body><div><a href="https://example.com/post"><img alt="hero" src="https://cdn.example.com/hero.jpg"/></a></div></body></html>`
+	doc, err := ParseHTML(html)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var out strings.Builder
+	doc.Find("div").Contents().Each(func(i int, s *goquery.Selection) {
+		out.WriteString(convertNodeToMarkdown(s))
+	})
+	got := out.String()
+	if strings.Contains(got, "\n\n](") {
+		t.Errorf("image-in-link markdown broken across blank lines: %q", got)
+	}
+	want := "[![hero](https://cdn.example.com/hero.jpg)](https://example.com/post)"
+	if !strings.Contains(got, want) {
+		t.Errorf("got %q, want it to contain %q", got, want)
+	}
+}
+
 // TestCleanTitle tests the cleanTitle function for removing platform noise
 func TestCleanTitle(t *testing.T) {
 	tests := []struct {
@@ -1102,6 +1259,13 @@ func TestCleanTitle(t *testing.T) {
 			name:     "Non-Medium pipe-separated title unchanged",
 			input:    "Some Article | Towards Data Science",
 			expected: "Some Article | Towards Data Science",
+		},
+		{
+			// Issue #48: Medium custom-domain publication (e.g. netflixtechblog.com)
+			// ends with the publication name, not " | Medium".
+			name:     "Medium: custom-domain publication suffix (no | Medium)",
+			input:    "Democratizing Machine Learning at Netflix: Building the Model Lifecycle Graph | by Netflix Technology Blog | May, 2026 | Netflix TechBlog",
+			expected: "Democratizing Machine Learning at Netflix: Building the Model Lifecycle Graph",
 		},
 	}
 	for _, tt := range tests {

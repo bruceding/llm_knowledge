@@ -137,14 +137,15 @@ func extractTitle(doc *goquery.Document) string {
 func cleanTitle(title string) string {
 	title = strings.TrimSpace(title)
 
-	// Medium: "Article Title | by Author | Date | Medium" → "Article Title"
-	// Also handles "Article Title | Medium" (no author/date suffix).
-	if strings.HasSuffix(title, " | Medium") {
-		stripped := strings.TrimSuffix(title, " | Medium")
-		if idx := strings.Index(stripped, " | by "); idx >= 0 {
-			stripped = stripped[:idx]
-		}
-		title = strings.TrimSpace(stripped)
+	// Medium: "Article Title | by Author | Date | Publication" → "Article Title".
+	// Custom-domain Medium publications (e.g. netflixtechblog.com) end with the
+	// publication name instead of " | Medium" (issue #48), so detect via " | by "
+	// rather than requiring a " | Medium" suffix.
+	if idx := strings.Index(title, " | by "); idx >= 0 {
+		title = strings.TrimSpace(title[:idx])
+	} else if strings.HasSuffix(title, " | Medium") {
+		// Plain "Article Title | Medium" with no author/date suffix.
+		title = strings.TrimSpace(strings.TrimSuffix(title, " | Medium"))
 	}
 
 	// X/Twitter: "Username on X: \"Title\" / X" → "Title"
@@ -684,6 +685,74 @@ func downloadImage(imgURL, savePath string, headers map[string]string) error {
 	return os.WriteFile(savePath, data, 0644)
 }
 
+// preprocessLazyImages fills in missing or placeholder <img src> attributes
+// using data-src or sibling <source srcset> (Medium <picture>) so that
+// lazy-loaded images survive the extension DOM snapshot (issue #48).
+// Unlike preprocessWeChatImages, this only fills in when src is empty or
+// a data-URI placeholder — real src values are preserved.
+func preprocessLazyImages(doc *goquery.Document) {
+	doc.Find("img").Each(func(i int, s *goquery.Selection) {
+		src, _ := s.Attr("src")
+		if src != "" && !strings.HasPrefix(src, "data:") {
+			return
+		}
+
+		if dataSrc, ok := s.Attr("data-src"); ok && dataSrc != "" {
+			s.SetAttr("src", dataSrc)
+			return
+		}
+
+		if srcset, ok := s.Attr("srcset"); ok && srcset != "" {
+			if best := pickFromSrcset(srcset); best != "" {
+				s.SetAttr("src", best)
+				return
+			}
+		}
+
+		parent := s.Parent()
+		if parent.Length() > 0 && parent.Get(0).Data == "picture" {
+			var best string
+			parent.Find("source").Each(func(j int, src *goquery.Selection) {
+				if ss, ok := src.Attr("srcset"); ok {
+					if url := pickFromSrcset(ss); url != "" {
+						best = url
+					}
+				}
+			})
+			if best != "" {
+				s.SetAttr("src", best)
+			}
+		}
+	})
+}
+
+// pickFromSrcset returns the URL with the highest width descriptor from a
+// srcset attribute (e.g. "url1 640w, url2 1280w"). Falls back to the last
+// URL when no width descriptors are present.
+func pickFromSrcset(srcset string) string {
+	var bestURL string
+	var bestW int
+	for _, part := range strings.Split(srcset, ",") {
+		fields := strings.Fields(strings.TrimSpace(part))
+		if len(fields) == 0 {
+			continue
+		}
+		candidateURL := fields[0]
+		w := 0
+		if len(fields) > 1 {
+			d := fields[1]
+			if strings.HasSuffix(d, "w") {
+				fmt.Sscanf(d, "%dw", &w)
+			}
+		}
+		if w >= bestW {
+			bestW = w
+			bestURL = candidateURL
+		}
+	}
+	return bestURL
+}
+
 // preprocessWeChatImages copies data-src to src for all <img> elements.
 // WeChat uses data-src for lazy-loaded images; src is typically empty, a base64 placeholder,
 // or a 1x1 pixel with wx_lazy=1. Always prefer data-src when present.
@@ -864,8 +933,40 @@ func extractMediumContent(doc *goquery.Document) string {
 
 	pruneBeforeFirstSelectable(container, paras.First())
 
-	container.Find(`a[href*="source=post_page"]`).Remove()
+	// Remove byline / publication-info subtrees. Walk each post_page link up
+	// to its highest ancestor that does NOT contain a content <p data-
+	// selectable-paragraph>, then remove that ancestor. This strips the
+	// avatar + author + "X min read" + date block that lives between the h1
+	// and the first body paragraph in custom-domain Medium publications
+	// (issue #48) — the bare `a.Remove()` only removed the link itself and
+	// left the surrounding wrapper full of byline text.
+	containerNode := container.Get(0)
+	container.Find(`a[href*="source=post_page"]`).Each(func(i int, a *goquery.Selection) {
+		node := a
+		for {
+			parent := node.Parent()
+			if parent.Length() == 0 || parent.Get(0) == containerNode {
+				break
+			}
+			if parent.Find("p[data-selectable-paragraph]").Length() > 0 {
+				break
+			}
+			node = parent
+		}
+		node.Remove()
+	})
+
 	container.Find("button").Remove()
+
+	// Remove the "Press enter or click to view image in full size" overlay
+	// regardless of which element wraps it (button/div/span vary by Medium
+	// build). Match on exact text content of the leaf element.
+	const figureOverlay = "Press enter or click to view image in full size"
+	container.Find("*").Each(func(i int, s *goquery.Selection) {
+		if strings.TrimSpace(s.Text()) == figureOverlay {
+			s.Remove()
+		}
+	})
 
 	var markdown strings.Builder
 	container.Contents().Each(func(i int, s *goquery.Selection) {
@@ -1452,6 +1553,13 @@ func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, origi
 	if err := os.MkdirAll(assetsDir, 0755); err != nil {
 		return c.JSON(500, echo.Map{"error": "failed to create directory"})
 	}
+
+	// Fill in lazy-loaded image src values (Medium, etc.) before extraction
+	// so that real CDN URLs end up in extractImageURLs / inline markdown.
+	preprocessLazyImages(doc)
+
+	// Re-extract content now that img src values may have been populated.
+	content = ExtractContent(doc)
 
 	// Download images and localize URLs
 	imgURLs := extractImageURLs(doc)

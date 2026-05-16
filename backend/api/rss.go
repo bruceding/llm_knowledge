@@ -897,6 +897,12 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		if alt == "" {
 			alt = "image"
 		}
+		// When the img is wrapped in an <a>, appending "\n\n" splits the link
+		// across blank lines and breaks markdown parsing (issue #48): the
+		// parent <a> would render as `[![alt](src)\n\n](url)`.
+		if isInsideLink(s) {
+			return fmt.Sprintf("![%s](%s)", alt, src)
+		}
 		return fmt.Sprintf("![%s](%s)\n\n", alt, src)
 	}
 
