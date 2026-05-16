@@ -810,6 +810,12 @@ func ExtractContent(doc *goquery.Document) string {
 	// Remove cookie notices and other non-content
 	doc.Find(".Cookie-notice, .cookie-notice, .js-cookieNotice").Remove()
 
+	// Medium noise cleanup (byline / overlays / action buttons) at the doc
+	// level so it works for both the data-selectable-paragraph fast path AND
+	// for custom-domain publications whose extension snapshot lacks the
+	// attribute (issue #48).
+	cleanMediumNoise(doc)
+
 	// Medium-specific extraction: site uses obfuscated CSS classes that defeat the
 	// generic selector list, causing fallback to <article> which contains byline,
 	// follow/listen/share/more buttons, and image overlay text. Detect Medium and
@@ -902,6 +908,117 @@ func ExtractContent(doc *goquery.Document) string {
 	bestContent = mergeTableRows(bestContent)
 
 	return strings.TrimSpace(bestContent)
+}
+
+// stripDuplicateBodyTitle removes a leading "**Title**" or "# Title" line
+// from body content when it matches the article title. The title is already
+// stored in YAML frontmatter; some sources (notably Medium custom-domain
+// publications, issue #48) also render it as the first body line.
+func stripDuplicateBodyTitle(content, title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return content
+	}
+	trimmed := strings.TrimLeft(content, " \t\n\r")
+	for _, prefix := range []string{
+		"**" + title + "**",
+		"# " + title,
+		"## " + title,
+	} {
+		if strings.HasPrefix(trimmed, prefix) {
+			rest := trimmed[len(prefix):]
+			// Only strip if the next char is whitespace/newline or EOF, to
+			// avoid clipping a longer line that merely starts with the title.
+			if rest == "" || rest[0] == '\n' || rest[0] == ' ' || rest[0] == '\r' {
+				return strings.TrimLeft(rest, " \t\n\r")
+			}
+		}
+	}
+	return content
+}
+
+// cleanMediumNoise strips Medium-specific UI elements (byline wrapper,
+// "Press enter or click" overlay, action buttons) from the DOM before any
+// extraction strategy runs. Detection uses three independent signals so
+// custom-domain publications (e.g. netflixtechblog.com) — whose extension
+// snapshot may strip both <head> meta and data-selectable-paragraph — still
+// get cleaned (issue #48).
+func cleanMediumNoise(doc *goquery.Document) {
+	hasSelectable := doc.Find("[data-selectable-paragraph]").Length() > 0
+	hasPostPage := doc.Find(`a[href*="source=post_page"]`).Length() > 0
+	hasMediumCDN := doc.Find(`img[src*="miro.medium.com"]`).Length() > 0
+	if !hasSelectable && !hasPostPage && !hasMediumCDN {
+		return
+	}
+
+	body := doc.Find("body")
+	if body.Length() == 0 {
+		return
+	}
+	bodyNode := body.Get(0)
+
+	// For each post_page link (byline OR publication-info footer), walk up
+	// until we hit the article body container, then remove the wrapper.
+	// Container detection (any of):
+	//   - parent tag is article/main/section (semantic container)
+	//   - parent has a section heading or selectable-paragraph descendant
+	//   - parent has a sufficiently long <p> (article body paragraph)
+	// The last two guard against extension snapshots that strip <article>.
+	doc.Find(`a[href*="source=post_page"]`).Each(func(_ int, a *goquery.Selection) {
+		node := a
+		for {
+			parent := node.Parent()
+			if parent.Length() == 0 || parent.Get(0) == bodyNode {
+				break
+			}
+			parentTag := parent.Get(0).Data
+			if parentTag == "article" || parentTag == "main" || parentTag == "section" {
+				break
+			}
+			if parent.Find("h2, h3, h4, [data-selectable-paragraph]").Length() > 0 {
+				break
+			}
+			hasLongPara := false
+			parent.Find("p").EachWithBreak(func(_ int, p *goquery.Selection) bool {
+				if len(strings.TrimSpace(p.Text())) >= 100 {
+					hasLongPara = true
+					return false
+				}
+				return true
+			})
+			if hasLongPara {
+				break
+			}
+			node = parent
+		}
+		node.Remove()
+	})
+
+	// Remove Medium action buttons by label text (Listen / Share / More /
+	// Follow / Subscribe / Sign up). Generic `button` removal is too broad
+	// for non-Medium sites, but here we know we're on Medium.
+	doc.Find("button").Each(func(_ int, b *goquery.Selection) {
+		switch strings.TrimSpace(b.Text()) {
+		case "Listen", "Share", "More", "Follow", "Subscribe", "Sign up":
+			b.Remove()
+		}
+	})
+
+	// Remove "Press enter or click to view image in full size" overlay,
+	// regardless of which tag wraps it (button / div / span vary). Skip
+	// ancestors that also contain the actual image — otherwise matching on
+	// aggregated descendant text would delete <figure> together with its
+	// <picture>/<img>, since <img> contributes no .Text().
+	const figureOverlay = "Press enter or click to view image in full size"
+	doc.Find("*").Each(func(_ int, s *goquery.Selection) {
+		if strings.TrimSpace(s.Text()) != figureOverlay {
+			return
+		}
+		if s.Find("img, picture").Length() > 0 {
+			return
+		}
+		s.Remove()
+	})
 }
 
 // extractMediumContent returns clean markdown for Medium articles, or "" if the
@@ -1591,6 +1708,12 @@ func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, origi
 		})
 		content = ExtractContent(doc)
 	}
+
+	// Strip a duplicate title that some publications (e.g. Medium custom
+	// domains) render at the top of the body as **Title** or "# Title".
+	// The title already lives in YAML frontmatter — repeating it in the
+	// body is redundant noise (issue #48).
+	content = stripDuplicateBodyTitle(content, originalTitle)
 
 	// Save modified HTML to index.html
 	modifiedHTML, err := doc.Html()

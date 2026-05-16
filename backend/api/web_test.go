@@ -1192,6 +1192,175 @@ func TestConvertImageInsideLink(t *testing.T) {
 	}
 }
 
+// TestExtractContentMediumNetflixSnapshot mirrors the real extension snapshot
+// reported in issue #48 update: Netflix TechBlog (custom-domain Medium
+// publication) where the snapshot has NO `data-selectable-paragraph`
+// attributes — so the original Medium-only path never ran.
+//
+// Verifies that:
+//   - byline wrapper (avatar link + author link + read time + date + actions
+//     + contributors line) is stripped via doc-level cleanMediumNoise
+//   - "Press enter or click to view image in full size" overlay is removed
+//     for all wrapping tags (button / div / span)
+//   - hero image wrapped as <a><div><img/></div></a> renders as
+//     "[![alt](src)](url)" without splitting across blank lines
+//   - real article body content (h2 headings, paragraphs after byline) is
+//     preserved
+func TestExtractContentMediumNetflixSnapshot(t *testing.T) {
+	mockHTML := `<!DOCTYPE html>
+<html><head></head>
+<body>
+	<article>
+		<p><strong>Democratizing Machine Learning at Netflix: Building the Model Lifecycle Graph</strong></p>
+		<div class="byline">
+			<div>
+				<a href="https://netflixtechblog.medium.com/?source=post_page---byline--5cc6d5828bb1---------------------------------------"><div><img alt="Netflix Technology Blog" src="https://miro.medium.com/avatar.jpeg"/></div></a>
+				<a href="https://netflixtechblog.medium.com/?source=post_page---byline--5cc6d5828bb1---------------------------------------">Netflix Technology Blog</a>
+			</div>
+			<div>
+				<span>14 min read</span>
+				<span>·</span>
+				<span>May 4, 2026</span>
+			</div>
+			<div>
+				<span>--</span>
+				<span>2</span>
+				<button aria-label="Listen">Listen</button>
+				<button aria-label="Share">Share</button>
+				<button aria-label="More">More</button>
+			</div>
+			<div>
+				<a href="https://linkedin.com/in/saishsali/">Saish Sali</a>,
+				<a href="https://linkedin.com/in/nipunk/">Nipun Kumar</a>,
+				<a href="https://linkedin.com/in/suraelamurugu/">Sura Elamurugu</a>
+			</div>
+		</div>
+		<h2>Introduction</h2>
+		<p>As Netflix has grown, machine learning continues to support our ability to deliver value to members and drive excellence across multiple areas of our business. When Netflix began investing in machine learning over a decade ago, it was primarily focused on a single domain: personalization. This paragraph is intentionally long to exceed the 200-char threshold used by the byline-pruning heuristic to identify article-body containers.</p>
+		<h2>The Challenge</h2>
+		<figure>
+			<picture>
+				<source srcset="https://miro.medium.com/v2/img2-1280.png 1280w"/>
+				<img alt="" src=""/>
+			</picture>
+			<div>Press enter or click to view image in full size</div>
+		</figure>
+		<p>The next paragraph after the figure. Should appear in extracted content. Filler text to keep this paragraph above the 200-char content-paragraph threshold used by the heuristic. Filler filler filler filler filler.</p>
+	</article>
+</body>
+</html>`
+
+	doc, err := ParseHTML(mockHTML)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	preprocessLazyImages(doc)
+	content := ExtractContent(doc)
+	t.Logf("content:\n%s", content)
+
+	wantPresent := []string{
+		"## Introduction",
+		"As Netflix has grown",
+		"## The Challenge",
+		"next paragraph after the figure",
+		"https://miro.medium.com/v2/img2-1280.png", // lazy-loaded srcset picked up
+	}
+	for _, s := range wantPresent {
+		if !strings.Contains(content, s) {
+			t.Errorf("expected content to contain %q, not found", s)
+		}
+	}
+
+	wantAbsent := []string{
+		"Netflix Technology Blog",
+		"14 min read",
+		"May 4, 2026",
+		"Listen",
+		"Share",
+		"Saish Sali",
+		"miro.medium.com/avatar.jpeg",
+		"Press enter or click to view image in full size",
+		"source=post_page---byline",
+	}
+	for _, s := range wantAbsent {
+		if strings.Contains(content, s) {
+			t.Errorf("expected content NOT to contain %q, but it was present", s)
+		}
+	}
+
+	if strings.Contains(content, "\n\n](") {
+		t.Errorf("broken image-in-link markdown (\\n\\n before ](url)):\n%s", content)
+	}
+}
+
+// TestConvertImageInsideLinkWithDivWrapper covers the Medium pattern
+// <a><div><img/></div></a> — the div used to emit a trailing "\n\n" which
+// then made the parent <a> render as "[![alt](src)\n\n](url)".
+func TestConvertImageInsideLinkWithDivWrapper(t *testing.T) {
+	html := `<html><body><section><a href="https://example.com/post"><div><img alt="hero" src="https://cdn.example.com/hero.jpg"/></div></a></section></body></html>`
+	doc, err := ParseHTML(html)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var out strings.Builder
+	doc.Find("section").Contents().Each(func(i int, s *goquery.Selection) {
+		out.WriteString(convertNodeToMarkdown(s))
+	})
+	got := out.String()
+	if strings.Contains(got, "\n\n](") {
+		t.Errorf("image-in-link with div wrapper still broken: %q", got)
+	}
+	if !strings.Contains(got, "[![hero](https://cdn.example.com/hero.jpg)](https://example.com/post)") {
+		t.Errorf("got %q, want the link/image combo intact", got)
+	}
+}
+
+// TestStripDuplicateBodyTitle covers the post-processing step that drops a
+// "**Title**" or "# Title" line at the start of body content when it matches
+// the article title (already stored in YAML frontmatter).
+func TestStripDuplicateBodyTitle(t *testing.T) {
+	title := "Democratizing ML at Netflix"
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "bold title duplicated at start",
+			in:   "**Democratizing ML at Netflix**\n\n## Intro\n\nBody.",
+			want: "## Intro\n\nBody.",
+		},
+		{
+			name: "h1 title duplicated at start",
+			in:   "# Democratizing ML at Netflix\n\nBody.",
+			want: "Body.",
+		},
+		{
+			name: "no duplicate — left alone",
+			in:   "## Intro\n\nBody.",
+			want: "## Intro\n\nBody.",
+		},
+		{
+			name: "title is prefix of a longer line — not stripped",
+			in:   "**Democratizing ML at Netflix Scale**\n\nBody.",
+			want: "**Democratizing ML at Netflix Scale**\n\nBody.",
+		},
+		{
+			name: "leading whitespace before title",
+			in:   "\n\n**Democratizing ML at Netflix**\n\nBody.",
+			want: "Body.",
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripDuplicateBodyTitle(tt.in, title)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestCleanTitle tests the cleanTitle function for removing platform noise
 func TestCleanTitle(t *testing.T) {
 	tests := []struct {

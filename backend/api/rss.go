@@ -1023,6 +1023,11 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 
 	switch tag {
 	case "p":
+		// Inside <a>, suppress block separator — see "img" handler above:
+		// trailing "\n\n" would split the parent link "[…\n\n](url)".
+		if isInsideLink(s) {
+			return innerContent
+		}
 		return innerContent + "\n\n"
 	case "br":
 		return "\n"
@@ -1233,6 +1238,12 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		// Already handled by ul/ol
 		return ""
 	case "div", "section", "article":
+		// Inside <a>, treat as inline wrapper — Medium wraps the byline avatar
+		// as <a><div><img/></div></a>; a trailing "\n\n" would split the
+		// parent link "[![alt](src)\n\n](url)" (issue #48).
+		if isInsideLink(s) {
+			return innerContent
+		}
 		// Double newline for paragraph separation between blocks
 		if innerContent != "" {
 			return innerContent + "\n\n"
