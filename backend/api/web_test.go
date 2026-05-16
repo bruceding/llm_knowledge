@@ -929,19 +929,18 @@ func TestExtractContentXTwitterMock(t *testing.T) {
 // TestExtractContentMediumMock verifies issue #47:
 // Medium articles imported via browser extension should not include byline/UI noise
 // (avatar, follow button, read time, claps, Listen/Share/More, image overlay text).
+//
+// CRITICAL: simulates the browser-extension scenario where <head> is EMPTY (the
+// extension strips all meta tags before POSTing the DOM). Detection must rely on
+// [data-selectable-paragraph], not og:site_name, since meta tags are not present.
 func TestExtractContentMediumMock(t *testing.T) {
-	// Simulated Medium article HTML based on the actual page structure described in issue #47.
-	// Key signals: og:site_name=Medium, [data-selectable-paragraph] paragraphs,
-	// byline links with ?source=post_page---byline pattern, image button overlays.
+	// Empty <head> mirrors what the wiki browser extension actually sends — see
+	// issue #47 thread: "POST /api/raw/web-clip bytes_in:38197" is a stripped DOM,
+	// not the full 200KB+ Medium page. og:site_name etc. are gone. The only Medium
+	// signal that survives is [data-selectable-paragraph] on body paragraphs.
 	mockHTML := `<!DOCTYPE html>
 <html lang="en">
-<head>
-	<meta charset="utf-8"/>
-	<meta property="og:site_name" content="Medium"/>
-	<meta property="og:title" content="Golang 1.26 Update: Stop Writing Pointer Helpers with new(expr) | by ElAmir Mansour | May, 2026 | Medium"/>
-	<meta property="og:type" content="article"/>
-	<title>Golang 1.26 Update: Stop Writing Pointer Helpers with new(expr) | by ElAmir Mansour | May, 2026 | Medium</title>
-</head>
+<head></head>
 <body>
 	<div id="root">
 		<article>

@@ -836,17 +836,13 @@ func ExtractContent(doc *goquery.Document) string {
 }
 
 // extractMediumContent returns clean markdown for Medium articles, or "" if the
-// document is not a Medium page or has no usable content. Medium uses obfuscated
-// CSS classes but reliably marks body paragraphs with [data-selectable-paragraph],
-// so we use the parent of those paragraphs as the content container — this skips
-// the byline, follow button, claps, listen/share/more buttons, and image overlays
-// described in issue #47.
+// document has no [data-selectable-paragraph] elements. We detect Medium by that
+// attribute alone (not og:site_name) because the browser extension strips <head>
+// meta tags before sending the DOM, so meta-based detection fails in production.
+// [data-selectable-paragraph] is Medium-specific, survives the extension's DOM
+// clipping, and lets us anchor on the actual content container — skipping byline,
+// follow button, claps, listen/share/more buttons, and image overlays (issue #47).
 func extractMediumContent(doc *goquery.Document) string {
-	siteName, _ := doc.Find(`meta[property="og:site_name"]`).Attr("content")
-	if siteName != "Medium" {
-		return ""
-	}
-
 	paras := doc.Find("[data-selectable-paragraph]")
 	if paras.Length() == 0 {
 		return ""
@@ -1312,7 +1308,10 @@ func (h *WebHandler) ClipWeb(c echo.Context) error {
 		cfg.Postprocess(doc)
 	}
 
-	originalTitle := req.Title
+	// Browser extensions typically send document.title verbatim, which on Medium
+	// includes the " | by Author | Date | Medium" suffix. Run it through cleanTitle
+	// to strip platform noise (issue #47).
+	originalTitle := cleanTitle(req.Title)
 	if originalTitle == "" {
 		originalTitle = extractTitle(doc)
 	}
