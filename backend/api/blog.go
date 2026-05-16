@@ -272,9 +272,10 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 	maxDate := feed.LastArticleDate
 
 	for _, link := range links {
-		// Check if article already exists (by source_url)
+		// Check if article already exists (by source_url), including soft-deleted
+		// records so a user-deleted article is not re-imported on the next sync.
 		var exists int64
-		db.DB.Model(&db.Document{}).Where("source_url = ? AND blog_feed_id = ?", link.URL, feed.ID).Count(&exists)
+		db.DB.Unscoped().Model(&db.Document{}).Where("source_url = ? AND blog_feed_id = ?", link.URL, feed.ID).Count(&exists)
 		if exists > 0 {
 			continue
 		}
@@ -299,6 +300,18 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 
 		userIdStr := strconv.FormatUint(uint64(feed.UserID), 10)
 		rawPath := filepath.Join("users", userIdStr, "raw", "blog", sanitizeFilename(feed.Name), safeTitle+".txt")
+
+		// Resolve raw_path collision: different blog articles may share the same title.
+		// Include soft-deleted records to avoid overwriting a deleted doc's file.
+		var collisionCount int64
+		db.DB.Unscoped().Model(&db.Document{}).
+			Where("raw_path = ? AND source_url != ?", rawPath, link.URL).
+			Count(&collisionCount)
+		if collisionCount > 0 {
+			safeTitle = fmt.Sprintf("%s-%d", safeTitle, collisionCount+1)
+			rawPath = filepath.Join("users", userIdStr, "raw", "blog", sanitizeFilename(feed.Name), safeTitle+".txt")
+		}
+
 		fullPath := filepath.Join(h.DataDir, rawPath)
 
 		// Write content to file
