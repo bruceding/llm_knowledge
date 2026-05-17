@@ -311,7 +311,8 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 		}
 
 		// Convert HTML → Markdown, downloading images into assetsDir
-		markdownBody, _, _ := processHTMLToMarkdown(contentHTML, assetsDir, link.URL)
+		markdownBody, _, imgErrs := processHTMLToMarkdown(contentHTML, assetsDir, link.URL)
+		downloadErrors += imgErrs
 
 		// Final markdown: heading + metadata + body
 		var sb strings.Builder
