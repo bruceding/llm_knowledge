@@ -140,9 +140,20 @@ func (f *Fetcher) FetchArticle(articleURL, contentSelector string) (string, time
 	return contentHTML, publishedTime, title, nil
 }
 
+// browserUserAgent is sent on the http path so origins fronted by CDNs (e.g.
+// Cloudflare) don't reject the default Go User-Agent and force every fetch
+// onto the slow browser fallback.
+const browserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
 func fetchHTTP(targetURL string) (string, error) {
+	req, err := http.NewRequest(http.MethodGet, targetURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", browserUserAgent)
+
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(targetURL)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
