@@ -300,8 +300,15 @@ export default function ImportView() {
         setUploadResult({
           id: 0,
           path: '',
-          message: `Synced ${result.newArticles} new articles`,
+          message: t('import.syncCompleted', { count: result.newArticles }),
           pages: result.newArticles,
+        })
+      } else {
+        setUploadResult({
+          id: 0,
+          path: '',
+          message: t('import.syncNoNew'),
+          pages: 0,
         })
       }
       await loadRSSFeeds()
@@ -341,11 +348,21 @@ export default function ImportView() {
         setBlogName('')
         setBlogAutoSync(false)
         await loadBlogFeeds()
-        if (result.detected) {
+        if (result.syncResult) {
+          const message = result.syncResult.newArticles > 0
+            ? t('import.syncCompleted', { count: result.syncResult.newArticles })
+            : t('import.syncNoNew')
           setUploadResult({
             id: 0,
             path: '',
-            message: `Detected ${result.platformType} platform`,
+            message,
+            pages: result.syncResult.newArticles,
+          })
+        } else if (result.detected) {
+          setUploadResult({
+            id: 0,
+            path: '',
+            message: t('import.platformDetected', { platform: result.platformType }),
             pages: 0,
           })
         }
@@ -386,8 +403,15 @@ export default function ImportView() {
         setUploadResult({
           id: 0,
           path: '',
-          message: result.message,
+          message: t('import.syncCompleted', { count: result.newArticles }),
           pages: result.newArticles,
+        })
+      } else {
+        setUploadResult({
+          id: 0,
+          path: '',
+          message: t('import.syncNoNew'),
+          pages: 0,
         })
       }
       await loadBlogFeeds()
@@ -440,9 +464,11 @@ export default function ImportView() {
       {uploadResult && (
         <div className="mb-4 bg-green-50 border border-green-200 rounded-lg p-4 text-green-700">
           <div className="font-medium">{uploadResult.message}</div>
-          <div className="text-sm mt-1">
-            Document ID: {uploadResult.id}, Pages: {uploadResult.pages}
-          </div>
+          {uploadResult.id > 0 && (
+            <div className="text-sm mt-1">
+              Document ID: {uploadResult.id}, Pages: {uploadResult.pages}
+            </div>
+          )}
           {uploadResult.id > 0 && (
             <a
               href={`/documents/${uploadResult.id}`}
@@ -619,7 +645,7 @@ export default function ImportView() {
                         <div className="text-sm font-medium text-gray-800">{feed.name}</div>
                         <div className="text-xs text-gray-500 truncate">{feed.url}</div>
                         <div className="text-xs text-gray-400">
-                          {feed.articleCount} articles · Last sync: {feed.lastSyncAt ? new Date(feed.lastSyncAt).toLocaleDateString() : 'Never'}
+                          {feed.articleCount} articles · Last sync: {feed.lastSyncAt && feed.lastSyncAt !== '0001-01-01T00:00:00Z' ? new Date(feed.lastSyncAt).toLocaleDateString() : 'Never'}
                         </div>
                       </div>
                       <div className="flex items-center gap-2 ml-3 shrink-0">
@@ -712,7 +738,7 @@ export default function ImportView() {
                         <div className="text-sm font-medium text-gray-800">{feed.name}</div>
                         <div className="text-xs text-gray-500 truncate">{feed.indexUrl}</div>
                         <div className="text-xs text-gray-400">
-                          {feed.platformType} · {feed.articleCount} articles · Last sync: {feed.lastSyncAt ? new Date(feed.lastSyncAt).toLocaleDateString() : 'Never'}
+                          {feed.platformType} · {feed.articleCount} articles · Last sync: {feed.lastSyncAt && feed.lastSyncAt !== '0001-01-01T00:00:00Z' ? new Date(feed.lastSyncAt).toLocaleDateString() : 'Never'}
                         </div>
                       </div>
                       <div className="flex items-center gap-2 ml-3 shrink-0">

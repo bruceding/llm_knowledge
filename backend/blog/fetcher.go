@@ -139,6 +139,8 @@ func (f *Fetcher) FetchArticle(articleURL, contentSelector string) (string, time
 
 	contentHTML := ""
 	if contentNode.Length() > 0 {
+		// Remove style and script tags before extracting content
+		contentNode.First().Find("style, script").Remove()
 		inner, herr := contentNode.First().Html()
 		if herr == nil {
 			contentHTML = inner

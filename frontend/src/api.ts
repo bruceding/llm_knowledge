@@ -641,6 +641,7 @@ export interface AddBlogFeedResult {
   message?: string
   platformType?: string
   detected?: boolean
+  syncResult?: BlogSyncResult
 }
 
 export interface BlogSyncResult {

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -114,10 +115,17 @@ func (h *BlogHandler) AddFeed(c echo.Context) error {
 		})
 	}
 
+	// If autoSync enabled and platform detected, trigger first sync
+	var syncResult BlogSyncResult
+	if req.AutoSync {
+		syncResult = h.syncFeedInternal(&feed)
+	}
+
 	return c.JSON(200, echo.Map{
 		"feed":         feed,
 		"platformType": rule.Name,
 		"detected":     true,
+		"syncResult":   syncResult,
 	})
 }
 
@@ -253,10 +261,59 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 		}
 	}
 
-	// First sync: take only first 5
 	isFirstSync := feed.LastSyncAt.IsZero()
-	if isFirstSync && len(links) > 5 {
-		links = links[:5]
+
+	// For first sync: fetch dates for all links, sort by date, take most recent 5
+	// For subsequent syncs: only fetch links that might be newer than lastArticleDate
+	var linksToSync []blog.ArticleLink
+
+	if isFirstSync {
+		// Fetch publication dates for all links to sort by recency
+		type linkWithDate struct {
+			link blog.ArticleLink
+			date time.Time
+		}
+		var linksWithDates []linkWithDate
+
+		for _, link := range links {
+			// Check if article already exists (skip if already imported)
+			var exists int64
+			db.DB.Unscoped().Model(&db.Document{}).Where("source_url = ? AND blog_feed_id = ?", link.URL, feed.ID).Count(&exists)
+			if exists > 0 {
+				continue
+			}
+
+			// Fetch just the date (lighter than full content)
+			_, articleDate, _, err := fetcher.FetchArticle(link.URL, feed.ContentSelector)
+			if err != nil {
+				linksWithDates = append(linksWithDates, linkWithDate{link: link, date: time.Time{}})
+			} else {
+				linksWithDates = append(linksWithDates, linkWithDate{link: link, date: articleDate})
+			}
+		}
+
+		// Sort by date (most recent first), articles with no date go to end
+		sort.Slice(linksWithDates, func(i, j int) bool {
+			if linksWithDates[i].date.IsZero() && !linksWithDates[j].date.IsZero() {
+				return false
+			}
+			if !linksWithDates[i].date.IsZero() && linksWithDates[j].date.IsZero() {
+				return true
+			}
+			return linksWithDates[i].date.After(linksWithDates[j].date)
+		})
+
+		// Take most recent 5 for first sync
+		maxArticles := 5
+		if len(linksWithDates) > maxArticles {
+			linksWithDates = linksWithDates[:maxArticles]
+		}
+		for _, lwd := range linksWithDates {
+			linksToSync = append(linksToSync, lwd.link)
+		}
+	} else {
+		// Subsequent syncs: use all links (already imported ones will be skipped in loop)
+		linksToSync = links
 	}
 
 	// Setup directories
@@ -277,7 +334,7 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 	downloadErrors := 0
 	maxDate := feed.LastArticleDate
 
-	for _, link := range links {
+	for _, link := range linksToSync {
 		// Check if article already exists (by source_url), including soft-deleted
 		// records so a user-deleted article is not re-imported on the next sync.
 		var exists int64
@@ -293,15 +350,10 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 			continue
 		}
 
-		// For subsequent syncs: skip articles older than lastArticleDate
-		if !isFirstSync && !articleDate.IsZero() && !articleDate.After(feed.LastArticleDate) {
-			continue
-		}
-
-		// Determine title: prefer link title, fall back to <h1>
-		articleTitle := link.Title
+		// Determine title: prefer h1 from article page, fall back to link text
+		articleTitle := h1Title
 		if articleTitle == "" {
-			articleTitle = h1Title
+			articleTitle = link.Title
 		}
 
 		if contentHTML == "" {
@@ -327,14 +379,18 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 		sb.WriteString("\n")
 		content := sb.String()
 
-		// Save article
-		safeTitle := sanitizeFilename(articleTitle)
-		if safeTitle == "" {
-			safeTitle = fmt.Sprintf("article-%d", time.Now().Unix())
+		// Save article - use URL slug for filename to avoid collision
+		urlSlug := extractURLSlug(link.URL)
+		fileBase := urlSlug
+		if fileBase == "" {
+			fileBase = sanitizeFilename(articleTitle)
+		}
+		if fileBase == "" {
+			fileBase = fmt.Sprintf("article-%d", time.Now().Unix())
 		}
 
 		userIdStr := strconv.FormatUint(uint64(feed.UserID), 10)
-		rawPath := filepath.Join("users", userIdStr, "raw", "blog", sanitizeFilename(feed.Name), safeTitle+".md")
+		rawPath := filepath.Join("users", userIdStr, "raw", "blog", sanitizeFilename(feed.Name), fileBase+".md")
 
 		// Resolve raw_path collision (same logic as before, .md suffix)
 		var collisionCount int64
@@ -342,8 +398,8 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 			Where("raw_path = ? AND source_url != ?", rawPath, link.URL).
 			Count(&collisionCount)
 		if collisionCount > 0 {
-			safeTitle = fmt.Sprintf("%s-%d", safeTitle, collisionCount+1)
-			rawPath = filepath.Join("users", userIdStr, "raw", "blog", sanitizeFilename(feed.Name), safeTitle+".md")
+			fileBase = fmt.Sprintf("%s-%d", fileBase, collisionCount+1)
+			rawPath = filepath.Join("users", userIdStr, "raw", "blog", sanitizeFilename(feed.Name), fileBase+".md")
 		}
 
 		fullPath := filepath.Join(h.DataDir, rawPath)
@@ -355,7 +411,7 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 
 		doc := db.Document{
 			Title:      articleTitle,
-			Slug:       safeTitle,
+			Slug:       fileBase,
 			SourceType: "blog",
 			RawPath:    rawPath,
 			SourceURL:  link.URL,
@@ -394,7 +450,7 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 		NewArticles:    newArticles,
 		Total:          len(links),
 		DownloadErrors: downloadErrors,
-		Message:        fmt.Sprintf("同步完成，新增 %d 篇文章", newArticles),
+		Message:        fmt.Sprintf("Sync completed, %d new articles added", newArticles),
 	}
 }
 
@@ -430,4 +486,71 @@ func (h *BlogHandler) GetFeed(c echo.Context) error {
 		"feed":         feed,
 		"articleCount": count,
 	})
+}
+
+// extractURLSlug extracts the last path segment from a URL for use as filename
+func extractURLSlug(urlStr string) string {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return ""
+	}
+	// Get last path segment, removing any trailing slash
+	path := strings.TrimSuffix(u.Path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) > 0 {
+		slug := parts[len(parts)-1]
+		// Remove common suffixes like .html, .php
+		for _, suffix := range []string{".html", ".php", ".aspx"} {
+			slug = strings.TrimSuffix(slug, suffix)
+		}
+		return slug
+	}
+	return ""
+}
+
+// StartAutoSyncScheduler starts a background scheduler that syncs feeds with autoSync enabled
+// It checks every hour and syncs feeds that haven't been synced in the last hour
+func (h *BlogHandler) StartAutoSyncScheduler() {
+	go func() {
+		// Check every hour
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+
+		log.Println("[blog] Auto-sync scheduler started, checking every hour")
+
+		for range ticker.C {
+			h.syncAutoSyncFeeds()
+		}
+	}()
+}
+
+// syncAutoSyncFeeds syncs all feeds that have autoSync enabled and need syncing
+func (h *BlogHandler) syncAutoSyncFeeds() {
+	var feeds []db.BlogFeed
+	if err := db.DB.Where("auto_sync = ?", true).Find(&feeds).Error; err != nil {
+		log.Printf("[blog] Failed to query auto-sync feeds: %v\n", err)
+		return
+	}
+
+	if len(feeds) == 0 {
+		return
+	}
+
+	log.Printf("[blog] Checking %d auto-sync feeds...\n", len(feeds))
+
+	minSyncInterval := 1 * time.Hour
+	for _, feed := range feeds {
+		// Skip if synced recently (within the last hour)
+		if !feed.LastSyncAt.IsZero() && time.Since(feed.LastSyncAt) < minSyncInterval {
+			continue
+		}
+
+		log.Printf("[blog] Auto-syncing feed: %s (%s)\n", feed.Name, feed.IndexURL)
+		result := h.syncFeedInternal(&feed)
+		if result.Error != "" {
+			log.Printf("[blog] Auto-sync failed for %s: %s\n", feed.Name, result.Error)
+		} else {
+			log.Printf("[blog] Auto-sync completed for %s: %s\n", feed.Name, result.Message)
+		}
+	}
 }

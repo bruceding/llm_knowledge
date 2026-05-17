@@ -69,7 +69,10 @@
     "syncing": "Syncing...",
     "lastSync": "Last sync",
     "never": "Never",
-    "deleteImapConfirm": "Are you sure you want to delete the IMAP configuration? Inbox newsletters will be removed."
+    "deleteImapConfirm": "Are you sure you want to delete the IMAP configuration? Inbox newsletters will be removed.",
+    "syncCompleted": "Sync completed, {{count}} new articles added",
+    "syncNoNew": "Sync completed, no new articles",
+    "platformDetected": "Detected {{platform}} platform"
   },
   "settings": {
     "title": "Settings",

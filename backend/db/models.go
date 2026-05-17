@@ -81,9 +81,9 @@ type GlobalSettings struct {
 
 type RSSFeed struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
-	UserID     uint      `gorm:"index;not null;default:1" json:"userId"`
+	UserID     uint      `gorm:"uniqueIndex:idx_rss_feeds_user_url;index;not null;default:1" json:"userId"`
 	Name       string    `json:"name"`
-	URL        string    `gorm:"unique" json:"url"`
+	URL        string    `gorm:"uniqueIndex:idx_rss_feeds_user_url" json:"url"`
 	AutoSync   bool      `gorm:"default:false" json:"autoSync"`
 	LastSyncAt time.Time `json:"lastSyncAt"`
 	CreatedAt  time.Time `json:"createdAt"`
