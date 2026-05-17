@@ -14,17 +14,28 @@ import (
 )
 
 // IsSPAShell returns true when the HTML looks like an unhydrated SPA shell:
-// it contains a known SPA root (#__next, #root, #app) and the user-provided
-// selector matches zero elements. When the selector already matches, the page
-// is treated as already-rendered (CSR or SSR) regardless of root markers.
+// the user-provided selector matches zero elements AND the page contains a
+// known SPA root marker (#__next, #root, #app). The root-marker check alone
+// is not sufficient — every SSR Next.js / Vue / React page ships those roots
+// even when fully rendered — so a non-empty selector is required to make the
+// "no content visible" judgement reliable.
+//
+// When selector is empty (e.g. AddFeed before platform detection runs), the
+// function returns false so the http path is preferred. True empty SPAs will
+// fail platform auto-detection and surface needConfig to the user; once a
+// selector is configured the browser fallback kicks in on the next sync.
 func IsSPAShell(html, selector string) bool {
+	if selector == "" {
+		return false
+	}
+
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {
 		return false
 	}
 
 	// If selector matches anything, content is already in DOM — not a shell.
-	if selector != "" && doc.Find(selector).Length() > 0 {
+	if doc.Find(selector).Length() > 0 {
 		return false
 	}
 

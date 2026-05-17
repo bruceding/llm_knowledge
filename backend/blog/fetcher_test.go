@@ -44,6 +44,24 @@ func TestIsSPAShell(t *testing.T) {
 			selector: "a[href^='/blog/']",
 			wantSPA:  false,
 		},
+		{
+			name:     "empty selector with shell marker is best-effort: returns false",
+			html:     `<html><body><div id="__next"></div></body></html>`,
+			selector: "",
+			wantSPA:  false,
+		},
+		{
+			name:     "empty selector on plain page returns false",
+			html:     `<html><body><p>hi</p></body></html>`,
+			selector: "",
+			wantSPA:  false,
+		},
+		{
+			name:     "SSR Next.js page with root marker but no selector match (probably misconfigured selector, not a shell)",
+			html:     `<html><body><div id="__next"><main><article>real content</article></main></div></body></html>`,
+			selector: "a.does-not-exist",
+			wantSPA:  true,
+		},
 	}
 
 	for _, tt := range tests {
