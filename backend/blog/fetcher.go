@@ -91,6 +91,55 @@ func (f *Fetcher) fetchWithFallback(targetURL, selector string) (string, bool, e
 	return rendered, true, nil
 }
 
+// FetchIndex fetches the index page HTML (with browser fallback for SPA).
+// linkSelector is the user-configured link selector; passing it allows the
+// SPA detector to recognise pages that already contain the links in static HTML.
+func (f *Fetcher) FetchIndex(indexURL, linkSelector string) (string, error) {
+	html, _, err := f.fetchWithFallback(indexURL, linkSelector)
+	return html, err
+}
+
+// FetchArticle fetches an article and returns the inner HTML of the matched
+// content node, the published time (from meta tags or <time>), and the page
+// title (from <h1>). Browser fallback is triggered when the static HTML is
+// an SPA shell. Falls back to common selectors (article, main, .content,
+// .post-content) if contentSelector matches nothing.
+func (f *Fetcher) FetchArticle(articleURL, contentSelector string) (string, time.Time, string, error) {
+	html, _, err := f.fetchWithFallback(articleURL, contentSelector)
+	if err != nil {
+		return "", time.Time{}, "", err
+	}
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return "", time.Time{}, "", err
+	}
+
+	contentNode := doc.Find(contentSelector)
+	if contentNode.Length() == 0 {
+		fallbacks := []string{"article", "main", ".content", ".post-content"}
+		for _, sel := range fallbacks {
+			if doc.Find(sel).Length() > 0 {
+				contentNode = doc.Find(sel).First()
+				break
+			}
+		}
+	}
+
+	contentHTML := ""
+	if contentNode.Length() > 0 {
+		inner, herr := contentNode.First().Html()
+		if herr == nil {
+			contentHTML = inner
+		}
+	}
+
+	title := strings.TrimSpace(doc.Find("h1").First().Text())
+	publishedTime := extractPublishedTime(doc)
+
+	return contentHTML, publishedTime, title, nil
+}
+
 func fetchHTTP(targetURL string) (string, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(targetURL)

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestIsSPAShell(t *testing.T) {
@@ -91,5 +92,34 @@ func TestFetcher_NoPool_SPAShellPassthrough(t *testing.T) {
 	}
 	if !contains(html, "__next") {
 		t.Errorf("expected shell HTML, got %q", html)
+	}
+}
+
+func TestFetcher_FetchArticle_ReturnsInnerHTML(t *testing.T) {
+	body := `<html><head>
+<meta property="article:published_time" content="2025-01-15T10:00:00Z">
+</head><body>
+<h1>Hello World</h1>
+<article><p>Para <strong>one</strong>.</p><p>Para two.</p></article>
+</body></html>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	f := &Fetcher{Pool: nil, validateURL: func(string) error { return nil }}
+	html, pub, title, err := f.FetchArticle(srv.URL, "article")
+	if err != nil {
+		t.Fatalf("FetchArticle: %v", err)
+	}
+	if title != "Hello World" {
+		t.Errorf("title = %q, want %q", title, "Hello World")
+	}
+	if !contains(html, "<strong>one</strong>") {
+		t.Errorf("expected inner HTML preserved, got %q", html)
+	}
+	want := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
+	if !pub.Equal(want) {
+		t.Errorf("pub = %v, want %v", pub, want)
 	}
 }
