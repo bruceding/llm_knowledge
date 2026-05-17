@@ -92,6 +92,10 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   // (or other persistent failure) from spawning Claude processes in a tight loop.
   const reconnectAttemptRef = useRef(0)
   const MAX_RECONNECT_ATTEMPTS = 8
+  // Track the reconnect timer so it can be cancelled on explicit user action
+  // (Clear Chat, manual send) or component unmount — prevents stale timers
+  // from aborting a healthy connection.
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Forward ref to startNewSession; lets handleSSEEvent re-trigger a fresh
   // /stream call (e.g. when a resend hits session_expired again) without
   // participating in the callback dependency chain.
@@ -103,11 +107,6 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   // within CONNECT_TIMEOUT_MS, freeing us to schedule a fresh reconnect.
   const watchdogTimerRef = useRef<number | null>(null)
   const CONNECT_TIMEOUT_MS = 15_000
-  // Pending exponential-backoff reconnect timer. Tracked in a ref so the
-  // visibility / explicit-reconnect / clear paths can cancel it before
-  // starting a new connection — without this, a stale timer can fire
-  // mid-stream and abort a freshly-established healthy connection.
-  const reconnectTimerRef = useRef<number | null>(null)
   // Mirror of `connecting` state for the visibilitychange handler, which
   // runs synchronously and needs the latest value without re-subscribing.
   const connectingRef = useRef(false)
@@ -171,6 +170,12 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
             // backend session was cleaned up between connect and resend).
             // Re-queue and trigger another /stream so the message is not lost.
             pendingResendRef.current = msg
+            reconnectAttemptRef.current++
+            if (reconnectAttemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
+              setError('Resend failed after multiple attempts')
+              pendingResendRef.current = null
+              return
+            }
             sessionIdRef.current = ''
             setSessionId('')
             startNewSessionRef.current()
@@ -383,6 +388,11 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     if (abortRef.current) {
       abortRef.current.abort()
     }
+    // Cancel any pending reconnect timer so it doesn't abort the new session.
+    if (reconnectTimerRef.current !== null) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
 
     const controller = new AbortController()
     abortRef.current = controller
@@ -568,6 +578,10 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     sessionIdRef.current = ''
     pendingResendRef.current = null
     reconnectAttemptRef.current = 0
+    if (reconnectTimerRef.current !== null) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
     setError(null)
     startNewSession(true)
   }

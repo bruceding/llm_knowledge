@@ -21,27 +21,27 @@ type ImageData struct {
 
 // InteractiveSession manages a bidirectional stream-json session with Claude CLI
 type InteractiveSession struct {
-	SessionID      string
-	OwnerUserID    uint // user who created this session (for authorization)
-	OwnerDocID     uint // document ID this session is for (for authorization)
-	cmd            *exec.Cmd
-	stdin          io.Writer
-	stdoutScanner  *bufio.Scanner
-	eventCh        chan StreamEvent   // main event channel (closed by readEvents)
-	streamChs      []chan StreamEvent // subscriber channels for fan-out
-	streamingContent  strings.Builder  // accumulated text for SSE reconnect recovery
-	hasStreamDeltas   bool             // true if stream_event text deltas received this turn
-	lastDisconnect time.Time
-	sseCount       int // active SSE connections
-	mu             sync.Mutex
-	closeOnce      sync.Once // protects Close() from double channel close
-	ctx            context.Context
-	cancel         context.CancelFunc
-	initDone          chan struct{}             // closed when system.init event is received
-	onSessionID       func(oldID, newID string) // optional callback when real session_id arrives (for pool map + DB update)
-	triedResume       bool                      // set if --resume was passed; pairs with onResumeFailed
-	onResumeFailed    func()                    // invoked if process exits without ever emitting system.init while triedResume is true
-	closedExplicitly  bool                      // set by Close(); suppresses onResumeFailed (the id may still be valid)
+	SessionID        string
+	OwnerUserID      uint // user who created this session (for authorization)
+	OwnerDocID       uint // document ID this session is for (for authorization)
+	cmd              *exec.Cmd
+	stdin            io.Writer
+	stdoutScanner    *bufio.Scanner
+	eventCh          chan StreamEvent   // main event channel (closed by readEvents)
+	streamChs        []chan StreamEvent // subscriber channels for fan-out
+	streamingContent strings.Builder    // accumulated text for SSE reconnect recovery
+	hasStreamDeltas  bool               // true if stream_event text deltas received this turn
+	lastDisconnect   time.Time
+	sseCount         int // active SSE connections
+	mu               sync.Mutex
+	closeOnce        sync.Once // protects Close() from double channel close
+	ctx              context.Context
+	cancel           context.CancelFunc
+	initDone         chan struct{}             // closed when system.init event is received
+	onSessionID      func(oldID, newID string) // optional callback when real session_id arrives (for pool map + DB update)
+	triedResume      bool                      // set if --resume was passed; pairs with onResumeFailed
+	onResumeFailed   func()                    // invoked if process exits without ever emitting system.init while triedResume is true
+	closedExplicitly bool                      // set by Close(); suppresses onResumeFailed (the id may still be valid)
 }
 
 // SessionPool manages all active sessions
@@ -281,6 +281,22 @@ func (p *SessionPool) GetSession(sessionId string) *InteractiveSession {
 	return session
 }
 
+// CloseByDocID closes and removes all sessions owned by the given docID.
+// Used by fresh=1 (Clear Chat) to ensure old callbacks don't race with a
+// new session's onRealSessionID / onResumeFailed DB writes.
+func (p *SessionPool) CloseByDocID(docID uint) {
+	p.mu.Lock()
+	closed := map[*InteractiveSession]bool{}
+	for sid, session := range p.sessions {
+		if session.OwnerDocID == docID && !closed[session] {
+			session.Close()
+			closed[session] = true
+		}
+		delete(p.sessions, sid)
+	}
+	p.mu.Unlock()
+}
+
 // HasSession checks if a session exists
 func (p *SessionPool) HasSession(sessionId string) bool {
 	p.mu.RLock()
@@ -295,7 +311,7 @@ func (s *InteractiveSession) SendUserMessage(content string) error {
 	defer s.mu.Unlock()
 
 	msg := map[string]interface{}{
-		"type":    "user",
+		"type": "user",
 		"message": map[string]interface{}{
 			"role":    "user",
 			"content": content,
@@ -381,7 +397,7 @@ func (s *InteractiveSession) SendInterrupt() error {
 	msg := map[string]interface{}{
 		"type":       "control_request",
 		"request_id": fmt.Sprintf("%d", time.Now().UnixNano()),
-		"request":    map[string]interface{}{
+		"request": map[string]interface{}{
 			"subtype": "interrupt",
 		},
 	}
@@ -499,6 +515,8 @@ func (s *InteractiveSession) Close() {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.closedExplicitly = true
+		s.onSessionID = nil    // prevent stale DB writes after Close
+		s.onResumeFailed = nil // prevent stale DB clears after Close
 		sid := s.SessionID
 		s.mu.Unlock()
 		s.cancel()
@@ -522,7 +540,7 @@ func (s *InteractiveSession) readEvents() {
 			Subtype   string          `json:"subtype"`
 			SessionID string          `json:"session_id"`
 			Message   json.RawMessage `json:"message"`
-			Event     json.RawMessage `json:"event"`   // stream_event sub-event payload
+			Event     json.RawMessage `json:"event"` // stream_event sub-event payload
 			Content   string          `json:"content"`
 			Result    string          `json:"result"`
 			IsError   bool            `json:"is_error"`
@@ -649,7 +667,6 @@ func (s *InteractiveSession) readEvents() {
 	}
 
 	s.cmd.Wait()
-	log.Printf("[session] Claude process ended for session %s", s.SessionID)
 
 	// If --resume was attempted but Claude exited without ever emitting
 	// system.init, the prevSessionID was almost certainly stale (file gone,
@@ -672,6 +689,7 @@ func (s *InteractiveSession) readEvents() {
 	}
 	cb := s.onResumeFailed
 	sid := s.SessionID
+	log.Printf("[session] Claude process ended for session %s", sid)
 	for _, ch := range s.streamChs {
 		close(ch)
 	}

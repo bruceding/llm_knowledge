@@ -81,9 +81,16 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 	userDir := GetUserDir(c)
 	docIDForCallback := uint(docId)
 	prevSessionID := doc.ChatSessionID
-	if c.QueryParam("fresh") == "1" && prevSessionID != "" {
-		if err := db.DB.Model(&db.Document{}).Where("id = ?", docIDForCallback).Update("chat_session_id", "").Error; err != nil {
-			log.Printf("[docchat] Failed to clear chat_session_id for doc %d: %v", docIDForCallback, err)
+	if c.QueryParam("fresh") == "1" {
+		// Close any existing session for this doc before clearing the DB.
+		// Without this, the old session's onRealSessionID / onResumeFailed
+		// callbacks can fire after the new session has written its own ID,
+		// overwriting or clearing it.
+		h.Pool.CloseByDocID(uint(docId))
+		if prevSessionID != "" {
+			if err := db.DB.Model(&db.Document{}).Where("id = ?", docIDForCallback).Update("chat_session_id", "").Error; err != nil {
+				log.Printf("[docchat] Failed to clear chat_session_id for doc %d: %v", docIDForCallback, err)
+			}
 		}
 		prevSessionID = ""
 	}
@@ -95,13 +102,30 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 		userDir,
 		prevSessionID,
 		func(oldID, newID string) {
-			if err := db.DB.Model(&db.Document{}).Where("id = ?", docIDForCallback).Update("chat_session_id", newID).Error; err != nil {
-				log.Printf("[docchat] Failed to persist chat_session_id for doc %d: %v", docIDForCallback, err)
+			// Only write the new ID if the DB still holds the old value (or is
+			// empty), so a concurrent session's ID is not silently overwritten.
+			result := db.DB.Model(&db.Document{}).
+				Where("id = ? AND (chat_session_id = '' OR chat_session_id = ?)", docIDForCallback, oldID).
+				Update("chat_session_id", newID)
+			if result.Error != nil {
+				log.Printf("[docchat] Failed to persist chat_session_id for doc %d: %v", docIDForCallback, result.Error)
+			} else if result.RowsAffected == 0 {
+				log.Printf("[docchat] chat_session_id for doc %d already updated by another session, skip overwrite", docIDForCallback)
 			}
 		},
 		func() {
-			if err := db.DB.Model(&db.Document{}).Where("id = ?", docIDForCallback).Update("chat_session_id", "").Error; err != nil {
-				log.Printf("[docchat] Failed to clear stale chat_session_id for doc %d: %v", docIDForCallback, err)
+			// Only clear if the DB still holds the stale prevSessionID, so a
+			// newer ID written by a concurrent session is not wiped.
+			if prevSessionID == "" {
+				return
+			}
+			result := db.DB.Model(&db.Document{}).
+				Where("id = ? AND chat_session_id = ?", docIDForCallback, prevSessionID).
+				Update("chat_session_id", "")
+			if result.Error != nil {
+				log.Printf("[docchat] Failed to clear stale chat_session_id for doc %d: %v", docIDForCallback, result.Error)
+			} else if result.RowsAffected == 0 {
+				log.Printf("[docchat] chat_session_id for doc %d already updated, skip clear", docIDForCallback)
 			}
 		},
 	)
