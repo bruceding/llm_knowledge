@@ -356,8 +356,9 @@ func main() {
 
 	// Blog Feed API (protected)
 	blogH := &api.BlogHandler{
-		DataDir:   cfg.DataDir,
-		ClaudeBin: cfg.ClaudeBin,
+		DataDir:     cfg.DataDir,
+		ClaudeBin:   cfg.ClaudeBin,
+		BrowserPool: browserPool,
 	}
 	apiGroup.POST("/blog/feeds", blogH.AddFeed)
 	apiGroup.GET("/blog/feeds", blogH.ListFeeds)

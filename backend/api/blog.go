@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"llm-knowledge/blog"
+	"llm-knowledge/browser"
 	"llm-knowledge/config"
 	"llm-knowledge/db"
 	"llm-knowledge/fs"
@@ -17,8 +18,9 @@ import (
 )
 
 type BlogHandler struct {
-	DataDir   string
-	ClaudeBin string
+	DataDir     string
+	ClaudeBin   string
+	BrowserPool *browser.Pool
 }
 
 type AddBlogFeedRequest struct {
