@@ -103,7 +103,7 @@ export default function DocDetail() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'o' || !document?.sourceUrl) return
-      if (document.sourceType !== 'web' && document.sourceType !== 'rss' && document.sourceType !== 'newsletter') return
+      if (document.sourceType !== 'web' && document.sourceType !== 'rss' && document.sourceType !== 'newsletter' && document.sourceType !== 'blog') return
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
       e.preventDefault()
       window.open(document.sourceUrl, '_blank')
@@ -222,10 +222,10 @@ export default function DocDetail() {
         }
       }
 
-      // Load raw content for RSS/web/newsletter documents (markdown files)
-      if (doc.sourceType === 'rss' || doc.sourceType === 'web' || doc.sourceType === 'newsletter') {
+      // Load raw content for RSS/web/newsletter/blog documents (markdown files)
+      if (doc.sourceType === 'rss' || doc.sourceType === 'web' || doc.sourceType === 'newsletter' || doc.sourceType === 'blog') {
         if (doc.rawPath) {
-          // RSS: rawPath is the .md file directly
+          // RSS / Blog: rawPath is the .md file directly
           // Web: rawPath is directory, need to load paper.md
           let rawFilePath = doc.rawPath
           if (doc.sourceType === 'web') {
