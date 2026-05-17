@@ -2,11 +2,7 @@ package api
 
 import (
 	"fmt"
-	"llm-knowledge/blog"
-	"llm-knowledge/browser"
-	"llm-knowledge/config"
-	"llm-knowledge/db"
-	"llm-knowledge/fs"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,6 +11,12 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"llm-knowledge/blog"
+	"llm-knowledge/browser"
+	"llm-knowledge/config"
+	"llm-knowledge/db"
+	"llm-knowledge/fs"
 )
 
 type BlogHandler struct {
@@ -60,8 +62,9 @@ func (h *BlogHandler) AddFeed(c echo.Context) error {
 		return c.JSON(400, echo.Map{"error": "indexUrl is required"})
 	}
 
-	// Fetch index page
-	htmlContent, err := blog.FetchIndexPage(req.IndexURL)
+	// Fetch index page (with browser fallback for SPA sites)
+	fetcher := &blog.Fetcher{Pool: h.BrowserPool}
+	htmlContent, err := fetcher.FetchIndex(req.IndexURL, "")
 	if err != nil {
 		return c.JSON(400, echo.Map{"error": "failed to fetch index page: " + err.Error()})
 	}
@@ -229,8 +232,9 @@ func (h *BlogHandler) SyncFeed(c echo.Context) error {
 
 // syncFeedInternal performs the actual sync
 func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
-	// Fetch index page
-	htmlContent, err := blog.FetchIndexPage(feed.IndexURL)
+	// Fetch index page (with browser fallback for SPA sites)
+	fetcher := &blog.Fetcher{Pool: h.BrowserPool}
+	htmlContent, err := fetcher.FetchIndex(feed.IndexURL, feed.LinkSelector)
 	if err != nil {
 		return BlogSyncResult{
 			FeedID:   feed.ID,
@@ -282,8 +286,8 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 			continue
 		}
 
-		// Fetch article content
-		content, articleDate, err := blog.FetchArticleContent(link.URL, feed.ContentSelector)
+		// Fetch article (HTML inner of content node + metadata, with browser fallback for SPA)
+		contentHTML, articleDate, h1Title, err := fetcher.FetchArticle(link.URL, feed.ContentSelector)
 		if err != nil {
 			downloadErrors++
 			continue
@@ -294,37 +298,62 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 			continue
 		}
 
+		// Determine title: prefer link title, fall back to <h1>
+		articleTitle := link.Title
+		if articleTitle == "" {
+			articleTitle = h1Title
+		}
+
+		if contentHTML == "" {
+			log.Printf("[blog] no content matched selector %q for %s — skipping", feed.ContentSelector, link.URL)
+			downloadErrors++
+			continue
+		}
+
+		// Convert HTML → Markdown, downloading images into assetsDir
+		markdownBody, _, _ := processHTMLToMarkdown(contentHTML, assetsDir, link.URL)
+
+		// Final markdown: heading + metadata + body
+		var sb strings.Builder
+		sb.WriteString("# " + articleTitle + "\n\n")
+		sb.WriteString("**Source:** " + feed.Name + "\n")
+		sb.WriteString("**Link:** " + link.URL + "\n")
+		if !articleDate.IsZero() {
+			sb.WriteString("**Published:** " + articleDate.Format(time.RFC3339) + "\n")
+		}
+		sb.WriteString("\n## Content\n\n")
+		sb.WriteString(markdownBody)
+		sb.WriteString("\n")
+		content := sb.String()
+
 		// Save article
-		safeTitle := sanitizeFilename(link.Title)
+		safeTitle := sanitizeFilename(articleTitle)
 		if safeTitle == "" {
 			safeTitle = fmt.Sprintf("article-%d", time.Now().Unix())
 		}
 
 		userIdStr := strconv.FormatUint(uint64(feed.UserID), 10)
-		rawPath := filepath.Join("users", userIdStr, "raw", "blog", sanitizeFilename(feed.Name), safeTitle+".txt")
+		rawPath := filepath.Join("users", userIdStr, "raw", "blog", sanitizeFilename(feed.Name), safeTitle+".md")
 
-		// Resolve raw_path collision: different blog articles may share the same title.
-		// Include soft-deleted records to avoid overwriting a deleted doc's file.
+		// Resolve raw_path collision (same logic as before, .md suffix)
 		var collisionCount int64
 		db.DB.Unscoped().Model(&db.Document{}).
 			Where("raw_path = ? AND source_url != ?", rawPath, link.URL).
 			Count(&collisionCount)
 		if collisionCount > 0 {
 			safeTitle = fmt.Sprintf("%s-%d", safeTitle, collisionCount+1)
-			rawPath = filepath.Join("users", userIdStr, "raw", "blog", sanitizeFilename(feed.Name), safeTitle+".txt")
+			rawPath = filepath.Join("users", userIdStr, "raw", "blog", sanitizeFilename(feed.Name), safeTitle+".md")
 		}
 
 		fullPath := filepath.Join(h.DataDir, rawPath)
 
-		// Write content to file
 		if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
 			downloadErrors++
 			continue
 		}
 
-		// Create document
 		doc := db.Document{
-			Title:      link.Title,
+			Title:      articleTitle,
 			Slug:       safeTitle,
 			SourceType: "blog",
 			RawPath:    rawPath,
@@ -348,7 +377,6 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 
 		newArticles++
 
-		// Update max date
 		if !articleDate.IsZero() && articleDate.After(maxDate) {
 			maxDate = articleDate
 		}
