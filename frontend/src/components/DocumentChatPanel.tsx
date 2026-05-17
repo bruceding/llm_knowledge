@@ -96,6 +96,22 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   // /stream call (e.g. when a resend hits session_expired again) without
   // participating in the callback dependency chain.
   const startNewSessionRef = useRef<(fresh?: boolean) => void>(() => {})
+  // Connection watchdog. SSE/fetch readers can hang indefinitely when the
+  // underlying TCP is half-dead (laptop sleep + WiFi switch is the typical
+  // trigger): no RST, no data, the read promise simply never resolves. The
+  // watchdog aborts the fetch if a `session` event hasn't been received
+  // within CONNECT_TIMEOUT_MS, freeing us to schedule a fresh reconnect.
+  const watchdogTimerRef = useRef<number | null>(null)
+  const CONNECT_TIMEOUT_MS = 15_000
+  // Pending exponential-backoff reconnect timer. Tracked in a ref so the
+  // visibility / explicit-reconnect / clear paths can cancel it before
+  // starting a new connection — without this, a stale timer can fire
+  // mid-stream and abort a freshly-established healthy connection.
+  const reconnectTimerRef = useRef<number | null>(null)
+  // Mirror of `connecting` state for the visibilitychange handler, which
+  // runs synchronously and needs the latest value without re-subscribing.
+  const connectingRef = useRef(false)
+  useEffect(() => { connectingRef.current = connecting }, [connecting])
 
   // Keep ref and store in sync
   useEffect(() => {
@@ -119,8 +135,13 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       setSessionId(newSid)
       setConnecting(false)
       // SSE is alive — reset the reconnect backoff so transient drops later
-      // don't immediately hit the retry cap.
+      // don't immediately hit the retry cap, and disarm the connection
+      // watchdog (we got the session event in time).
       reconnectAttemptRef.current = 0
+      if (watchdogTimerRef.current !== null) {
+        clearTimeout(watchdogTimerRef.current)
+        watchdogTimerRef.current = null
+      }
       // If a message was pending due to session_expired, resend it now that the
       // backend has a live (resumed) session bound to this sessionId. If the
       // resend itself returns session_expired (HTTP 200, not a fetch error),
@@ -243,6 +264,10 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       setTimeout(() => inputRef.current?.focus(), 0)
     } else if (event.type === 'error') {
       setError((event.error as string) || 'An error occurred')
+      // Clear connecting so the user isn't left staring at a "Connecting..."
+      // spinner forever when the backend reports a setup failure (e.g.
+      // failed to start session, too many concurrent connections).
+      setConnecting(false)
       setMessages(prev => prev.map(m =>
         m.isStreaming ? { ...m, content: m.content || '[已停止]', isStreaming: false, isThinking: false, isToolUse: false, toolDesc: undefined } : m
       ))
@@ -253,9 +278,28 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   // processSSEStream trigger auto-reconnect without creating a callback cycle.
   const connectSSERef = useRef<() => void>(() => {})
 
+  // Clear any pending connection watchdog. Called when a `session` event
+  // confirms the SSE stream is alive, or when the fetch ends/aborts cleanly.
+  const clearWatchdog = useCallback(() => {
+    if (watchdogTimerRef.current !== null) {
+      clearTimeout(watchdogTimerRef.current)
+      watchdogTimerRef.current = null
+    }
+  }, [])
+
   // Schedule an auto-reconnect with exponential backoff + retry cap.
   // Caller is responsible for guarding `activeRef.current` itself; this just
   // limits the loop. Delay grows 500ms → 1s → 2s ... capped at 30s.
+  // Cancel any pending reconnect timer. Called before starting a new
+  // connection so a stale backoff timer can't fire mid-stream and abort
+  // the freshly-established healthy connection (race flagged in review).
+  const cancelPendingReconnect = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+  }, [])
+
   const scheduleReconnect = useCallback(() => {
     if (!activeRef.current) return
     if (reconnectAttemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
@@ -265,8 +309,31 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     const attempt = reconnectAttemptRef.current
     reconnectAttemptRef.current++
     const delay = Math.min(500 * (2 ** attempt), 30_000)
-    setTimeout(() => { if (activeRef.current) connectSSERef.current() }, delay)
+    if (reconnectTimerRef.current !== null) {
+      clearTimeout(reconnectTimerRef.current)
+    }
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null
+      if (activeRef.current) connectSSERef.current()
+    }, delay)
   }, [])
+
+  // Arm the connection watchdog for an in-flight fetch. If a `session`
+  // event hasn't arrived by CONNECT_TIMEOUT_MS, abort the fetch and trigger
+  // a reconnect — handles the half-dead-TCP case (laptop sleep + network
+  // change) where reader.read() would otherwise hang forever.
+  const armWatchdog = useCallback((controller: AbortController) => {
+    clearWatchdog()
+    watchdogTimerRef.current = window.setTimeout(() => {
+      watchdogTimerRef.current = null
+      if (abortRef.current === controller && !controller.signal.aborted) {
+        controller.abort()
+        setConnecting(false)
+        abortRef.current = null
+        scheduleReconnect()
+      }
+    }, CONNECT_TIMEOUT_MS)
+  }, [clearWatchdog, scheduleReconnect])
 
   // Shared SSE stream processor
   const processSSEStream = useCallback((res: Response, controller: AbortController) => {
@@ -279,6 +346,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     const pump = (): Promise<void> => reader.read().then(({ done, value }) => {
       if (controller.signal.aborted) return
       if (done) {
+        clearWatchdog()
         setConnecting(false)
         abortRef.current = null
         // Server closed the stream (session cleaned up, process exit, restart).
@@ -304,13 +372,14 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     })
 
     return pump()
-  }, [handleSSEEvent, scheduleReconnect])
+  }, [handleSSEEvent, scheduleReconnect, clearWatchdog])
 
   // Start a brand new session.
   // fresh=true tells the backend to drop any stored ChatSessionID before
   // calling Claude, so "Clear Chat" actually starts a new conversation
   // instead of resuming the old one via --resume.
   const startNewSession = useCallback((fresh: boolean = false) => {
+    cancelPendingReconnect()
     if (abortRef.current) {
       abortRef.current.abort()
     }
@@ -319,6 +388,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     abortRef.current = controller
     setConnecting(true)
     setError(null)
+    armWatchdog(controller)
 
     const headers = { ...getAuthHeaders(), 'Accept': 'text/event-stream' } as Record<string, string>
     const url = fresh
@@ -332,14 +402,16 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       })
       .catch(err => {
         if (err.name !== 'AbortError') {
+          clearWatchdog()
           setConnecting(false)
           scheduleReconnect()
         }
       })
-  }, [docId, processSSEStream, scheduleReconnect])
+  }, [docId, processSSEStream, scheduleReconnect, armWatchdog, clearWatchdog, cancelPendingReconnect])
 
   // Connect: try reconnecting to existing session, fall back to new
   const connectSSE = useCallback(() => {
+    cancelPendingReconnect()
     if (abortRef.current) {
       abortRef.current.abort()
     }
@@ -354,6 +426,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     abortRef.current = controller
     setConnecting(true)
     setError(null)
+    armWatchdog(controller)
 
     const headers = { ...getAuthHeaders(), 'Accept': 'text/event-stream' } as Record<string, string>
 
@@ -361,7 +434,9 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       .then(res => {
         if (!res.ok) {
           // Session not found — start new session but preserve messages
-          // so the user doesn't lose visible chat history.
+          // so the user doesn't lose visible chat history. startNewSession
+          // arms its own watchdog, so disarm ours first to avoid double timers.
+          clearWatchdog()
           startNewSession()
           return
         }
@@ -369,11 +444,12 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       })
       .catch(err => {
         if (err.name !== 'AbortError') {
+          clearWatchdog()
           setConnecting(false)
           startNewSession()
         }
       })
-  }, [startNewSession, processSSEStream])
+  }, [startNewSession, processSSEStream, armWatchdog, clearWatchdog, cancelPendingReconnect])
 
   // Keep refs pointed at the latest callbacks so handlers above can trigger
   // them without participating in the useCallback dependency chain.
@@ -384,6 +460,8 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   // Use a small delay to survive React StrictMode's unmount/remount cycle.
   useEffect(() => {
     if (!active) {
+      clearWatchdog()
+      cancelPendingReconnect()
       if (abortRef.current) {
         abortRef.current.abort()
         abortRef.current = null
@@ -394,11 +472,37 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     const timer = setTimeout(() => connectSSE(), 50)
     return () => {
       clearTimeout(timer)
+      clearWatchdog()
+      cancelPendingReconnect()
       if (abortRef.current) {
         abortRef.current.abort()
       }
     }
-  }, [active, connectSSE])
+  }, [active, connectSSE, clearWatchdog, cancelPendingReconnect])
+
+  // Force reconnect when the tab becomes visible again — but only if the
+  // existing connection looks broken. Without this, a laptop sleep/wake
+  // cycle (or long tab-backgrounding) leaves the SSE socket in a half-dead
+  // state where the kernel reports it open but reads hang forever, and
+  // useEffect([active]) above doesn't re-fire because `active` (the
+  // chat-tab toggle) hasn't changed.
+  //
+  // Skip the reconnect when sessionId is set AND we're not currently
+  // connecting — that means we have a working session and a brief Cmd+Tab
+  // shouldn't disrupt streaming. Decay (rather than reset) the backoff
+  // counter so a persistently failing backend isn't bypassed by tab
+  // switching.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      if (!activeRef.current) return
+      if (!connectingRef.current && sessionIdRef.current) return
+      reconnectAttemptRef.current = Math.max(0, reconnectAttemptRef.current - 2)
+      connectSSERef.current()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [])
 
   // Send message
   const handleSend = async () => {
