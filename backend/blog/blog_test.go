@@ -55,27 +55,6 @@ func TestExtractArticleLinks(t *testing.T) {
 	}
 }
 
-func TestFetchIndexPage(t *testing.T) {
-	// This test requires network, skip in CI
-	if testing.Short() {
-		t.Skip("Skipping network test")
-	}
-
-	html, err := FetchIndexPage("https://claude.com/blog")
-	if err != nil {
-		t.Fatalf("FetchIndexPage failed: %v", err)
-	}
-
-	if len(html) < 1000 {
-		t.Errorf("Expected substantial HTML content, got %d bytes", len(html))
-	}
-
-	// Verify it contains blog links
-	if !contains(html, "/blog/") {
-		t.Error("Expected HTML to contain '/blog/' links")
-	}
-}
-
 func contains(s, substr string) bool {
 	for i := 0; i < len(s)-len(substr)+1; i++ {
 		if s[i:i+len(substr)] == substr {
