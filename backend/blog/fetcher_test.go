@@ -1,6 +1,10 @@
 package blog
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 func TestIsSPAShell(t *testing.T) {
 	tests := []struct {
@@ -48,5 +52,44 @@ func TestIsSPAShell(t *testing.T) {
 				t.Errorf("IsSPAShell() = %v, want %v", got, tt.wantSPA)
 			}
 		})
+	}
+}
+
+func TestFetcher_FetchHTTPOnly_NonSPA(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<html><body><a href="/blog/foo">foo</a></body></html>`))
+	}))
+	defer srv.Close()
+
+	f := &Fetcher{Pool: nil, validateURL: func(string) error { return nil }} // nil pool: must not be used for non-SPA
+	html, usedBrowser, err := f.fetchWithFallback(srv.URL, "a[href^='/blog/']")
+	if err != nil {
+		t.Fatalf("fetchWithFallback: %v", err)
+	}
+	if usedBrowser {
+		t.Error("expected http path, got browser")
+	}
+	if !contains(html, "/blog/foo") {
+		t.Errorf("expected http body, got %q", html)
+	}
+}
+
+func TestFetcher_NoPool_SPAShellPassthrough(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<html><body><div id="__next"></div></body></html>`))
+	}))
+	defer srv.Close()
+
+	f := &Fetcher{Pool: nil, validateURL: func(string) error { return nil }}
+	html, usedBrowser, err := f.fetchWithFallback(srv.URL, "a[href^='/blog/']")
+	if err != nil {
+		t.Fatalf("fetchWithFallback: %v", err)
+	}
+	if usedBrowser {
+		t.Error("expected http path (pool nil), got browser")
+	}
+	if !contains(html, "__next") {
+		t.Errorf("expected shell HTML, got %q", html)
 	}
 }
