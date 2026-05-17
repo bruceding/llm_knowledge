@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -19,6 +20,19 @@ import (
 	"llm-knowledge/db"
 	"llm-knowledge/fs"
 )
+
+// firstSyncCandidateLimit caps the number of articles fetched when seeding a
+// new feed. We need to fetch each candidate to read its publication date for
+// sorting, so this cap bounds worst-case browser-pool occupation: at 2s
+// WaitStable per SPA render, 20 candidates ≈ 40s of pool time. Without a cap,
+// a 100-article SPA blog would block the pool for several minutes on first
+// sync.
+const firstSyncCandidateLimit = 20
+
+// firstSyncTakeRecent is how many of the (sorted) candidates actually become
+// inbox documents. Matches the pre-PR-55 behaviour of taking the 5 most
+// recent articles.
+const firstSyncTakeRecent = 5
 
 type BlogHandler struct {
 	DataDir     string
@@ -115,18 +129,20 @@ func (h *BlogHandler) AddFeed(c echo.Context) error {
 		})
 	}
 
-	// If autoSync enabled and platform detected, trigger first sync
-	var syncResult BlogSyncResult
-	if req.AutoSync {
-		syncResult = h.syncFeedInternal(&feed)
-	}
-
-	return c.JSON(200, echo.Map{
+	resp := echo.Map{
 		"feed":         feed,
 		"platformType": rule.Name,
 		"detected":     true,
-		"syncResult":   syncResult,
-	})
+	}
+	// Only attach syncResult when an actual sync ran. The frontend distinguishes
+	// detected-only ("Detected platform X") from synced ("N new articles") by
+	// the presence of this field — emitting an empty object collapses both
+	// branches into the synced one.
+	if req.AutoSync {
+		result := h.syncFeedInternal(&feed)
+		resp["syncResult"] = result
+	}
+	return c.JSON(200, resp)
 }
 
 // ConfigFeed configures selectors for a feed (when auto-detection failed)
@@ -263,57 +279,67 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 
 	isFirstSync := feed.LastSyncAt.IsZero()
 
-	// For first sync: fetch dates for all links, sort by date, take most recent 5
-	// For subsequent syncs: only fetch links that might be newer than lastArticleDate
-	var linksToSync []blog.ArticleLink
+	// Filter out already-imported links up front (matters for both branches).
+	links = filterUnimported(links, feed.ID)
 
+	// On first sync we cap how many articles we'll fetch (each fetch is
+	// expensive when the SPA fallback kicks in), then keep the most recent.
+	// Each candidate is fetched exactly once — the result is reused below
+	// so we don't pay the SPA-render tax twice per link.
+	type fetchedArticle struct {
+		link        blog.ArticleLink
+		contentHTML string
+		date        time.Time
+		h1Title     string
+		fetchErr    error
+	}
+
+	var candidates []fetchedArticle
 	if isFirstSync {
-		// Fetch publication dates for all links to sort by recency
-		type linkWithDate struct {
-			link blog.ArticleLink
-			date time.Time
+		probeLinks := links
+		if len(probeLinks) > firstSyncCandidateLimit {
+			probeLinks = probeLinks[:firstSyncCandidateLimit]
 		}
-		var linksWithDates []linkWithDate
-
-		for _, link := range links {
-			// Check if article already exists (skip if already imported)
-			var exists int64
-			db.DB.Unscoped().Model(&db.Document{}).Where("source_url = ? AND blog_feed_id = ?", link.URL, feed.ID).Count(&exists)
-			if exists > 0 {
-				continue
-			}
-
-			// Fetch just the date (lighter than full content)
-			_, articleDate, _, err := fetcher.FetchArticle(link.URL, feed.ContentSelector)
-			if err != nil {
-				linksWithDates = append(linksWithDates, linkWithDate{link: link, date: time.Time{}})
-			} else {
-				linksWithDates = append(linksWithDates, linkWithDate{link: link, date: articleDate})
-			}
+		for _, link := range probeLinks {
+			contentHTML, articleDate, h1Title, err := fetcher.FetchArticle(link.URL, feed.ContentSelector)
+			candidates = append(candidates, fetchedArticle{
+				link:        link,
+				contentHTML: contentHTML,
+				date:        articleDate,
+				h1Title:     h1Title,
+				fetchErr:    err,
+			})
 		}
 
-		// Sort by date (most recent first), articles with no date go to end
-		sort.Slice(linksWithDates, func(i, j int) bool {
-			if linksWithDates[i].date.IsZero() && !linksWithDates[j].date.IsZero() {
+		// Most recent first; missing dates sink to the end.
+		sort.SliceStable(candidates, func(i, j int) bool {
+			a, b := candidates[i].date, candidates[j].date
+			if a.IsZero() && !b.IsZero() {
 				return false
 			}
-			if !linksWithDates[i].date.IsZero() && linksWithDates[j].date.IsZero() {
+			if !a.IsZero() && b.IsZero() {
 				return true
 			}
-			return linksWithDates[i].date.After(linksWithDates[j].date)
+			return a.After(b)
 		})
-
-		// Take most recent 5 for first sync
-		maxArticles := 5
-		if len(linksWithDates) > maxArticles {
-			linksWithDates = linksWithDates[:maxArticles]
-		}
-		for _, lwd := range linksWithDates {
-			linksToSync = append(linksToSync, lwd.link)
+		if len(candidates) > firstSyncTakeRecent {
+			candidates = candidates[:firstSyncTakeRecent]
 		}
 	} else {
-		// Subsequent syncs: use all links (already imported ones will be skipped in loop)
-		linksToSync = links
+		// Subsequent syncs: fetch each link once and skip below the watermark.
+		for _, link := range links {
+			contentHTML, articleDate, h1Title, err := fetcher.FetchArticle(link.URL, feed.ContentSelector)
+			if err == nil && !articleDate.IsZero() && !articleDate.After(feed.LastArticleDate) {
+				continue
+			}
+			candidates = append(candidates, fetchedArticle{
+				link:        link,
+				contentHTML: contentHTML,
+				date:        articleDate,
+				h1Title:     h1Title,
+				fetchErr:    err,
+			})
+		}
 	}
 
 	// Setup directories
@@ -334,36 +360,28 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 	downloadErrors := 0
 	maxDate := feed.LastArticleDate
 
-	for _, link := range linksToSync {
-		// Check if article already exists (by source_url), including soft-deleted
-		// records so a user-deleted article is not re-imported on the next sync.
-		var exists int64
-		db.DB.Unscoped().Model(&db.Document{}).Where("source_url = ? AND blog_feed_id = ?", link.URL, feed.ID).Count(&exists)
-		if exists > 0 {
-			continue
-		}
-
-		// Fetch article (HTML inner of content node + metadata, with browser fallback for SPA)
-		contentHTML, articleDate, h1Title, err := fetcher.FetchArticle(link.URL, feed.ContentSelector)
-		if err != nil {
+	for _, cand := range candidates {
+		link := cand.link
+		if cand.fetchErr != nil {
 			downloadErrors++
 			continue
 		}
+		articleDate := cand.date
 
-		// Determine title: prefer h1 from article page, fall back to link text
-		articleTitle := h1Title
+		// Determine title: prefer h1 from article body, fall back to link text
+		articleTitle := cand.h1Title
 		if articleTitle == "" {
 			articleTitle = link.Title
 		}
 
-		if contentHTML == "" {
+		if cand.contentHTML == "" {
 			log.Printf("[blog] no content matched selector %q for %s — skipping", feed.ContentSelector, link.URL)
 			downloadErrors++
 			continue
 		}
 
 		// Convert HTML → Markdown, downloading images into assetsDir
-		markdownBody, _, imgErrs := processHTMLToMarkdown(contentHTML, assetsDir, link.URL)
+		markdownBody, _, imgErrs := processHTMLToMarkdown(cand.contentHTML, assetsDir, link.URL)
 		downloadErrors += imgErrs
 
 		// Final markdown: heading + metadata + body
@@ -379,9 +397,10 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 		sb.WriteString("\n")
 		content := sb.String()
 
-		// Save article - use URL slug for filename to avoid collision
-		urlSlug := extractURLSlug(link.URL)
-		fileBase := urlSlug
+		// Save article - prefer URL slug for filename, but always sanitize: the
+		// URL path arrives percent-decoded and may contain spaces, CJK chars,
+		// or shell-unsafe punctuation that breaks the filesystem path.
+		fileBase := sanitizeFilename(extractURLSlug(link.URL))
 		if fileBase == "" {
 			fileBase = sanitizeFilename(articleTitle)
 		}
@@ -488,6 +507,22 @@ func (h *BlogHandler) GetFeed(c echo.Context) error {
 	})
 }
 
+// filterUnimported drops links whose source_url already exists for this feed
+// (including soft-deleted rows, so a user-deleted article isn't re-imported).
+func filterUnimported(links []blog.ArticleLink, feedID uint) []blog.ArticleLink {
+	out := make([]blog.ArticleLink, 0, len(links))
+	for _, link := range links {
+		var exists int64
+		db.DB.Unscoped().Model(&db.Document{}).
+			Where("source_url = ? AND blog_feed_id = ?", link.URL, feedID).
+			Count(&exists)
+		if exists == 0 {
+			out = append(out, link)
+		}
+	}
+	return out
+}
+
 // extractURLSlug extracts the last path segment from a URL for use as filename
 func extractURLSlug(urlStr string) string {
 	u, err := url.Parse(urlStr)
@@ -508,18 +543,36 @@ func extractURLSlug(urlStr string) string {
 	return ""
 }
 
+// blogSchedulerStarted is a process-wide latch — calling StartAutoSyncScheduler
+// twice (test wiring, refactor mistake, future hot-reload) must not start two
+// tickers competing for the browser pool.
+var blogSchedulerStarted atomic.Bool
+
 // StartAutoSyncScheduler starts a background scheduler that syncs feeds with autoSync enabled
 // It checks every hour and syncs feeds that haven't been synced in the last hour
 func (h *BlogHandler) StartAutoSyncScheduler() {
+	if !blogSchedulerStarted.CompareAndSwap(false, true) {
+		log.Println("[blog] Auto-sync scheduler already running, ignoring duplicate start")
+		return
+	}
 	go func() {
-		// Check every hour
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 
 		log.Println("[blog] Auto-sync scheduler started, checking every hour")
 
 		for range ticker.C {
-			h.syncAutoSyncFeeds()
+			// Per-tick recover: a panic in a single feed sync (nil deref in
+			// fetcher fallback, GORM driver oddity, etc.) must not kill the
+			// whole server. Log it and continue with the next tick.
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("[blog] auto-sync tick panicked: %v", r)
+					}
+				}()
+				h.syncAutoSyncFeeds()
+			}()
 		}
 	}()
 }

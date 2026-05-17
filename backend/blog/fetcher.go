@@ -147,7 +147,15 @@ func (f *Fetcher) FetchArticle(articleURL, contentSelector string) (string, time
 		}
 	}
 
-	title := strings.TrimSpace(doc.Find("h1").First().Text())
+	// Prefer the article-body <h1> over the page-global one (the global doc
+	// often picks up a brand/wordmark <h1> in the site header).
+	title := ""
+	if contentNode.Length() > 0 {
+		title = strings.TrimSpace(contentNode.First().Find("h1").First().Text())
+	}
+	if title == "" {
+		title = strings.TrimSpace(doc.Find("h1").First().Text())
+	}
 	publishedTime := extractPublishedTime(doc)
 
 	return contentHTML, publishedTime, title, nil
