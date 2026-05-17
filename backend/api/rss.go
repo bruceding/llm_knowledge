@@ -694,6 +694,10 @@ func downloadImageToAssets(imgURL, assetsDir, articleURL string) (string, error)
 
 	// Generate filename from URL
 	filename := filepath.Base(imgURL)
+	// URL decode the filename to handle encoded characters like %40 (@)
+	if decoded, err := url.PathUnescape(filename); err == nil {
+		filename = decoded
+	}
 	filename = sanitizeFilename(filename)
 	if filename == "" || filename == "." {
 		filename = fmt.Sprintf("image_%d", time.Now().UnixNano())
