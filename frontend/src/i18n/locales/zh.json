@@ -69,7 +69,10 @@
     "syncing": "同步中...",
     "lastSync": "上次同步",
     "never": "从未",
-    "deleteImapConfirm": "确定要删除 IMAP 配置吗？收件箱中的 Newsletter 将被移除。"
+    "deleteImapConfirm": "确定要删除 IMAP 配置吗？收件箱中的 Newsletter 将被移除。",
+    "syncCompleted": "同步完成，新增 {{count}} 篇文章",
+    "syncNoNew": "同步完成，无新增文章",
+    "platformDetected": "检测到 {{platform}} 平台"
   },
   "settings": {
     "title": "设置",

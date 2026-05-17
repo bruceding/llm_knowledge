@@ -356,8 +356,9 @@ func main() {
 
 	// Blog Feed API (protected)
 	blogH := &api.BlogHandler{
-		DataDir:   cfg.DataDir,
-		ClaudeBin: cfg.ClaudeBin,
+		DataDir:     cfg.DataDir,
+		ClaudeBin:   cfg.ClaudeBin,
+		BrowserPool: browserPool,
 	}
 	apiGroup.POST("/blog/feeds", blogH.AddFeed)
 	apiGroup.GET("/blog/feeds", blogH.ListFeeds)
@@ -366,6 +367,7 @@ func main() {
 	apiGroup.DELETE("/blog/feeds/:id", blogH.DeleteFeed)
 	apiGroup.POST("/blog/feeds/:id/sync", blogH.SyncFeed)
 	apiGroup.POST("/blog/feeds/sync-all", blogH.SyncAllFeeds)
+	blogH.StartAutoSyncScheduler()
 
 	// Serve frontend static files from embedded filesystem
 	// Create a sub filesystem from the embedded dist directory

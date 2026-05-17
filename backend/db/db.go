@@ -104,6 +104,24 @@ func Init(path string) error {
 		DB.Migrator().DropIndex(&Tag{}, "idx_tags_name")
 	}
 
+	// Drop legacy single-column UNIQUE constraints on blog_feeds.index_url and
+	// rss_feeds.url. These were declared as `gorm:"unique"` in earlier versions,
+	// which SQLite materialised as inline UNIQUE constraints in CREATE TABLE
+	// (visible as `sqlite_autoindex_*`). They block multiple users from
+	// subscribing to the same source even though the schema now uses a
+	// composite (user_id, url) UNIQUE. DropConstraint rebuilds the table on
+	// SQLite, which is why DropIndex is not sufficient here.
+	if DB.Migrator().HasConstraint(&BlogFeed{}, "uni_blog_feeds_index_url") {
+		if err := DB.Migrator().DropConstraint(&BlogFeed{}, "uni_blog_feeds_index_url"); err != nil {
+			log.Printf("[migration] failed to drop blog_feeds.uni_blog_feeds_index_url: %v", err)
+		}
+	}
+	if DB.Migrator().HasConstraint(&RSSFeed{}, "uni_rss_feeds_url") {
+		if err := DB.Migrator().DropConstraint(&RSSFeed{}, "uni_rss_feeds_url"); err != nil {
+			log.Printf("[migration] failed to drop rss_feeds.uni_rss_feeds_url: %v", err)
+		}
+	}
+
 	// Start session cleanup scheduler
 	startSessionCleanup()
 

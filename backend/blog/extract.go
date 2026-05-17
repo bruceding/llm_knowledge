@@ -1,10 +1,6 @@
 package blog
 
 import (
-	"fmt"
-	"io"
-	"llm-knowledge/ssrf"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -15,30 +11,6 @@ import (
 type ArticleLink struct {
 	URL   string
 	Title string
-}
-
-// FetchIndexPage fetches the HTML content of the index page
-func FetchIndexPage(indexURL string) (string, error) {
-	if err := ssrf.ValidateURLHost(indexURL); err != nil {
-		return "", err
-	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(indexURL)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	return string(body), nil
 }
 
 // ExtractArticleLinks extracts article links from the index page HTML
@@ -100,59 +72,6 @@ func ExtractArticleLinks(htmlContent, indexURL, linkSelector, linkExclude string
 	})
 
 	return links, nil
-}
-
-// FetchArticleContent fetches article content and extracts it using the content selector
-func FetchArticleContent(articleURL, contentSelector string) (string, time.Time, error) {
-	if err := ssrf.ValidateURLHost(articleURL); err != nil {
-		return "", time.Time{}, err
-	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(articleURL)
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return "", time.Time{}, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", time.Time{}, err
-	}
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(body)))
-	if err != nil {
-		return "", time.Time{}, err
-	}
-
-	// Extract content using selector
-	var content strings.Builder
-	contentNode := doc.Find(contentSelector)
-	if contentNode.Length() == 0 {
-		// Fallback to common selectors
-		fallbacks := []string{"article", "main", ".content", ".post-content"}
-		for _, sel := range fallbacks {
-			if doc.Find(sel).Length() > 0 {
-				contentNode = doc.Find(sel).First()
-				break
-			}
-		}
-	}
-
-	if contentNode.Length() > 0 {
-		content.WriteString(contentNode.Text())
-	}
-
-	// Extract title from h1
-	title := strings.TrimSpace(doc.Find("h1").First().Text())
-
-	// Extract published time (reuse pattern from web.go)
-	publishedTime := extractPublishedTime(doc)
-
-	return title + "\n\n" + content.String(), publishedTime, nil
 }
 
 // extractPublishedTime extracts publication time from HTML meta tags

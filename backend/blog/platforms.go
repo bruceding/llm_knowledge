@@ -13,8 +13,8 @@ var PlatformRules = []PlatformRule{
 	{
 		Name:            "claude",
 		URLPatterns:     []string{"claude.com"},
-		LinkSelector:    "a[href^='/blog/']",
-		LinkExclude:     "a[href*='/category/']",
+		LinkSelector:    ".card_blog_wrap a[href^='/blog/']",
+		LinkExclude:     "a[aria-hidden='true']",
 		ContentSelector: ".u-rich-text-blog",
 	},
 	{
