@@ -103,6 +103,15 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   // within CONNECT_TIMEOUT_MS, freeing us to schedule a fresh reconnect.
   const watchdogTimerRef = useRef<number | null>(null)
   const CONNECT_TIMEOUT_MS = 15_000
+  // Pending exponential-backoff reconnect timer. Tracked in a ref so the
+  // visibility / explicit-reconnect / clear paths can cancel it before
+  // starting a new connection — without this, a stale timer can fire
+  // mid-stream and abort a freshly-established healthy connection.
+  const reconnectTimerRef = useRef<number | null>(null)
+  // Mirror of `connecting` state for the visibilitychange handler, which
+  // runs synchronously and needs the latest value without re-subscribing.
+  const connectingRef = useRef(false)
+  useEffect(() => { connectingRef.current = connecting }, [connecting])
 
   // Keep ref and store in sync
   useEffect(() => {
@@ -281,6 +290,16 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   // Schedule an auto-reconnect with exponential backoff + retry cap.
   // Caller is responsible for guarding `activeRef.current` itself; this just
   // limits the loop. Delay grows 500ms → 1s → 2s ... capped at 30s.
+  // Cancel any pending reconnect timer. Called before starting a new
+  // connection so a stale backoff timer can't fire mid-stream and abort
+  // the freshly-established healthy connection (race flagged in review).
+  const cancelPendingReconnect = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+  }, [])
+
   const scheduleReconnect = useCallback(() => {
     if (!activeRef.current) return
     if (reconnectAttemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
@@ -290,7 +309,13 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     const attempt = reconnectAttemptRef.current
     reconnectAttemptRef.current++
     const delay = Math.min(500 * (2 ** attempt), 30_000)
-    setTimeout(() => { if (activeRef.current) connectSSERef.current() }, delay)
+    if (reconnectTimerRef.current !== null) {
+      clearTimeout(reconnectTimerRef.current)
+    }
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null
+      if (activeRef.current) connectSSERef.current()
+    }, delay)
   }, [])
 
   // Arm the connection watchdog for an in-flight fetch. If a `session`
@@ -354,6 +379,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   // calling Claude, so "Clear Chat" actually starts a new conversation
   // instead of resuming the old one via --resume.
   const startNewSession = useCallback((fresh: boolean = false) => {
+    cancelPendingReconnect()
     if (abortRef.current) {
       abortRef.current.abort()
     }
@@ -381,10 +407,11 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
           scheduleReconnect()
         }
       })
-  }, [docId, processSSEStream, scheduleReconnect, armWatchdog, clearWatchdog])
+  }, [docId, processSSEStream, scheduleReconnect, armWatchdog, clearWatchdog, cancelPendingReconnect])
 
   // Connect: try reconnecting to existing session, fall back to new
   const connectSSE = useCallback(() => {
+    cancelPendingReconnect()
     if (abortRef.current) {
       abortRef.current.abort()
     }
@@ -422,7 +449,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
           startNewSession()
         }
       })
-  }, [startNewSession, processSSEStream, armWatchdog, clearWatchdog])
+  }, [startNewSession, processSSEStream, armWatchdog, clearWatchdog, cancelPendingReconnect])
 
   // Keep refs pointed at the latest callbacks so handlers above can trigger
   // them without participating in the useCallback dependency chain.
@@ -434,6 +461,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   useEffect(() => {
     if (!active) {
       clearWatchdog()
+      cancelPendingReconnect()
       if (abortRef.current) {
         abortRef.current.abort()
         abortRef.current = null
@@ -445,24 +473,31 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     return () => {
       clearTimeout(timer)
       clearWatchdog()
+      cancelPendingReconnect()
       if (abortRef.current) {
         abortRef.current.abort()
       }
     }
-  }, [active, connectSSE, clearWatchdog])
+  }, [active, connectSSE, clearWatchdog, cancelPendingReconnect])
 
-  // Force reconnect when the tab becomes visible again. Without this, a
-  // laptop sleep / wake cycle (or long tab-backgrounding) often leaves the
-  // SSE socket in a half-dead state where the kernel reports it open but
-  // reads hang forever — the activeness check in useEffect above doesn't
-  // re-fire because `active` (the chat-tab toggle) hasn't changed.
+  // Force reconnect when the tab becomes visible again — but only if the
+  // existing connection looks broken. Without this, a laptop sleep/wake
+  // cycle (or long tab-backgrounding) leaves the SSE socket in a half-dead
+  // state where the kernel reports it open but reads hang forever, and
+  // useEffect([active]) above doesn't re-fire because `active` (the
+  // chat-tab toggle) hasn't changed.
+  //
+  // Skip the reconnect when sessionId is set AND we're not currently
+  // connecting — that means we have a working session and a brief Cmd+Tab
+  // shouldn't disrupt streaming. Decay (rather than reset) the backoff
+  // counter so a persistently failing backend isn't bypassed by tab
+  // switching.
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return
       if (!activeRef.current) return
-      // Reset backoff so the wake-up reconnect doesn't immediately get capped
-      // by retries that accumulated while the tab was asleep.
-      reconnectAttemptRef.current = 0
+      if (!connectingRef.current && sessionIdRef.current) return
+      reconnectAttemptRef.current = Math.max(0, reconnectAttemptRef.current - 2)
       connectSSERef.current()
     }
     document.addEventListener('visibilitychange', onVisible)
