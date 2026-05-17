@@ -3,6 +3,7 @@ package blog
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -82,6 +83,7 @@ func (f *Fetcher) fetchWithFallback(targetURL, selector string) (string, bool, e
 	if rerr != nil {
 		if httpOK {
 			// Browser failed but we have http content — return it as a degraded fallback.
+			log.Printf("[blog] browser render failed for %s, falling back to HTTP shell HTML: %v", targetURL, rerr)
 			return httpHTML, false, nil
 		}
 		return "", false, fmt.Errorf("browser render: %w", rerr)
@@ -99,7 +101,7 @@ func fetchHTTP(targetURL string) (string, error) {
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		return "", err
 	}
