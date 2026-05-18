@@ -15,6 +15,7 @@ llm-knowledge
 logs/
 memory/
 .qwen/
+QWEN.md
 
 # Python cache
 __pycache__/
