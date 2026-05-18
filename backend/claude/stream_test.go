@@ -201,11 +201,8 @@ func TestStreamProcessor_SSEReconnect_Extension(t *testing.T) {
 }
 
 func TestStreamProcessor_SSEReconnect_NoPrefixMatch(t *testing.T) {
-	// This scenario doesn't happen in practice: MarkAsStreamedWithContent is only
-	// called when there IS streaming content (ongoing turn). If the previous turn
-	// completed (result received), sp.Reset() clears state and the next turn starts
-	// fresh. So "old content from a completed turn" + "new assistant from fresh turn"
-	// can't occur. Test the realistic case: Reset then fresh turn.
+	// Realistic case after a completed prior turn + Reset: the next assistant
+	// event (no deltas, GLM-style) should emit a full event.
 	sp := NewStreamProcessor()
 
 	// Previous turn completed — Reset was called
@@ -218,6 +215,25 @@ func TestStreamProcessor_SSEReconnect_NoPrefixMatch(t *testing.T) {
 	}
 	if result.Content != "New response" {
 		t.Errorf("expected 'New response', got %q", result.Content)
+	}
+}
+
+// Regression: docchat Reconnect handler unconditionally calls
+// MarkAsStreamedWithContent(session.StreamingContent()). When the prior turn
+// already completed cleanly, StreamingContent() is "". With the old logic,
+// streamedDeltas was set to true anyway, causing the NEXT turn's assistant
+// event (the common short-reply path that skips stream_event deltas) to be
+// silently dropped — frontend renders an empty bubble. See issue #58.
+func TestStreamProcessor_MarkAsStreamedWithEmptyContent_DoesNotSuppressNextTurn(t *testing.T) {
+	sp := NewStreamProcessor()
+	sp.MarkAsStreamedWithContent("") // reconnect with no in-flight content
+
+	result := sp.Process(makeAssistantEvent("Hi there!"))
+	if result.Type != "full" {
+		t.Fatalf("expected full for fresh assistant after empty-content reconnect, got %q", result.Type)
+	}
+	if result.Content != "Hi there!" {
+		t.Errorf("expected 'Hi there!', got %q", result.Content)
 	}
 }
 
