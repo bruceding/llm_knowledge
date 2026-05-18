@@ -87,7 +87,15 @@ func (sp *StreamProcessor) Reset() {
 // sent to subscriber (e.g. via SSE reconnect). For non-streaming models (GLM),
 // the full assistant message may extend this content; the processor emits a full
 // event to replace partial reconnect content.
+//
+// No-op when content is empty: a reconnect after the prior turn already finished
+// has nothing to dedupe against, and falsely setting streamedDeltas would cause
+// the next turn's assistant event (short replies that skip stream_event deltas)
+// to be silently dropped. See issue #58.
 func (sp *StreamProcessor) MarkAsStreamedWithContent(content string) {
+	if content == "" {
+		return
+	}
 	sp.streamedDeltas = true
 	sp.sseReconnectContent = content
 }
