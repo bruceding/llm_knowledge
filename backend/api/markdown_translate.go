@@ -47,6 +47,18 @@ var validMarkdownTargetLangs = map[string]string{
 	"en": "English",
 }
 
+// isMarkdownTranslatable reports whether the given document source type
+// stores its raw content as Markdown that can be fed to the markdown
+// translator. Web stores at <rawPath>/paper.md; rss/blog/newsletter store
+// at <rawPath>.md. PDFs and other types use a different translation path.
+func isMarkdownTranslatable(sourceType string) bool {
+	switch sourceType {
+	case "web", "rss", "blog", "newsletter":
+		return true
+	}
+	return false
+}
+
 // CheckMarkdownTranslationStatus checks if translated Markdown file exists
 // GET /api/documents/:id/markdown-translation-status
 func (h *MarkdownTranslateHandler) CheckMarkdownTranslationStatus(c echo.Context) error {
@@ -64,9 +76,9 @@ func (h *MarkdownTranslateHandler) CheckMarkdownTranslationStatus(c echo.Context
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to get document"})
 	}
 
-	// Only for Web/RSS documents
-	if doc.SourceType != "web" && doc.SourceType != "rss" {
-		return c.JSON(http.StatusBadRequest, echo.Map{"error": "only web/rss documents supported"})
+	// Only for Web/RSS/Blog/Newsletter documents
+	if !isMarkdownTranslatable(doc.SourceType) {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "only web/rss/blog/newsletter documents supported"})
 	}
 
 	// Determine target language based on source
@@ -153,8 +165,8 @@ func (h *MarkdownTranslateHandler) TranslateMarkdown(c echo.Context) error {
 	}
 
 	// Validate source type
-	if doc.SourceType != "web" && doc.SourceType != "rss" {
-		sendMarkdownSSEError(c, flusher, "only web/rss documents supported")
+	if !isMarkdownTranslatable(doc.SourceType) {
+		sendMarkdownSSEError(c, flusher, "only web/rss/blog/newsletter documents supported")
 		return nil
 	}
 

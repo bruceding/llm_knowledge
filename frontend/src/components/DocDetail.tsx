@@ -269,8 +269,8 @@ export default function DocDetail() {
           }
         }
 
-        // Check markdown translation status for Web/RSS documents
-        if (doc.sourceType === 'rss' || doc.sourceType === 'web' || doc.sourceType === 'newsletter') {
+        // Check markdown translation status for Web/RSS/Blog/Newsletter documents
+        if (doc.sourceType === 'rss' || doc.sourceType === 'web' || doc.sourceType === 'newsletter' || doc.sourceType === 'blog') {
           try {
             const mdStatus = await checkMarkdownTranslationStatus(doc.id)
             setMarkdownTranslationStatus(mdStatus)
@@ -695,8 +695,8 @@ export default function DocDetail() {
                 <span className="text-sm text-purple-700">{pdfTranslationProgress}</span>
               </div>
             )}
-            {/* Markdown translate buttons - only for Web/RSS */}
-            {!isPDF && (document.sourceType === 'rss' || document.sourceType === 'web') && settings?.translationEnabled && (
+            {/* Markdown translate buttons - for Web/RSS/Blog/Newsletter */}
+            {!isPDF && (document.sourceType === 'rss' || document.sourceType === 'web' || document.sourceType === 'blog' || document.sourceType === 'newsletter') && settings?.translationEnabled && (
               <>
                 {!markdownTranslationStatus?.exists && !markdownTranslating && (
                   <button
