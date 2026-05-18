@@ -19,6 +19,7 @@ import (
 	"llm-knowledge/config"
 	"llm-knowledge/db"
 	"llm-knowledge/fs"
+	"llm-knowledge/ingest"
 )
 
 // firstSyncCandidateLimit caps the number of articles fetched when seeding a
@@ -449,6 +450,21 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 			downloadErrors++
 			os.Remove(fullPath)
 			continue
+		}
+
+		if h.ClaudeBin != "" {
+			docID := doc.ID
+			rawRelPath := StripUserPrefix(doc.RawPath)
+			userDir := config.GetUserDir(h.DataDir, doc.UserID)
+			go func() {
+				summary, err := ingest.GenerateSummary(userDir, rawRelPath, h.ClaudeBin)
+				if err != nil {
+					log.Printf("[blog] summary generation failed for %d: %v", docID, err)
+				} else {
+					db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
+					log.Printf("[blog] summary generated for %d", docID)
+				}
+			}()
 		}
 
 		newArticles++
