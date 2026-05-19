@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { createDocNote, getAuthHeaders } from '../api'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 // Format tool name + JSON input string into a human-readable description
 function formatToolName(name: string, inputJson: string): string {
@@ -60,6 +61,7 @@ function cleanupChatStore(currentDocId: number) {
 
 export default function DocumentChatPanel({ docId, active, onNoteSaved }: DocumentChatPanelProps) {
   const { t } = useTranslation()
+  const isMobile = useIsMobile()
 
   // Restore from store on mount
   const stored = chatStore.get(docId)
@@ -614,165 +616,212 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
 
   return (
     <div className="flex flex-col h-full w-full">
-      {/* Messages area */}
-      <div className="flex-1 overflow-auto p-2 space-y-2">
-        {messages.length === 0 && !connecting && (
-          <div className="text-center text-gray-400 text-xs py-8">
-            {t('docDetail.chatPlaceholder')}
+      {isMobile && noteModalOpen && noteModalMsg ? (
+        <section
+          role="region"
+          aria-label="save note edit"
+          className="flex flex-col h-full"
+        >
+          <div className="flex items-center justify-between p-3 border-b border-gray-200">
+            <h3 className="text-sm font-semibold text-gray-800">{t('mobile.chatBottomSheet.saveNoteTitle')}</h3>
+            <button
+              onClick={() => setNoteModalOpen(false)}
+              aria-label="close save note"
+              className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
-        )}
-
-        {messages.map((msg) => (
-          <div key={msg.id} className={`flex gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            {msg.role === 'assistant' && (
-              <div className="w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center text-white text-xs shrink-0">
-                AI
+          <div className="flex-1 overflow-auto p-3">
+            <p className="text-xs text-gray-500 mb-2">{t('mobile.chatBottomSheet.saveNoteHint')}</p>
+            <textarea
+              value={noteContent}
+              onChange={(e) => setNoteContent(e.target.value)}
+              className="w-full h-[60dvh] px-3 py-2 text-sm border border-gray-300 rounded
+                         focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+            />
+          </div>
+          <div className="flex justify-end gap-2 p-3 border-t border-gray-200">
+            <button
+              onClick={() => setNoteModalOpen(false)}
+              className="px-4 py-1.5 text-sm bg-gray-100 text-gray-600 rounded hover:bg-gray-200"
+            >
+              {t('mobile.chatBottomSheet.cancel')}
+            </button>
+            <button
+              onClick={handleSaveNote}
+              disabled={savingNote || !noteContent.trim()}
+              className="px-4 py-1.5 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+            >
+              {savingNote ? '...' : t('mobile.chatBottomSheet.save')}
+            </button>
+          </div>
+        </section>
+      ) : (
+        <>
+          {/* Messages area */}
+          <div className="flex-1 overflow-auto p-2 space-y-2">
+            {messages.length === 0 && !connecting && (
+              <div className="text-center text-gray-400 text-xs py-8">
+                {t('docDetail.chatPlaceholder')}
               </div>
             )}
-            <div className={`max-w-[85%] rounded px-2 py-1.5 ${
-              msg.role === 'user'
-                ? 'bg-blue-500 text-white text-xs'
-                : 'bg-gray-100 text-gray-800'
-            }`}>
-              {msg.role === 'user' ? (
-                <div className="whitespace-pre-wrap break-words text-xs">{msg.content}</div>
-              ) : msg.isThinking || (msg.isStreaming && !msg.content && !msg.isToolUse) ? (
-                <div className="flex items-center gap-1 text-xs text-gray-500">
-                  <div className="animate-spin w-3 h-3 border border-gray-300 border-t-blue-500 rounded-full"></div>
-                  <span>{t('chatView.thinking')}</span>
-                </div>
-              ) : msg.isToolUse && !msg.content ? (
-                <div className="flex items-center gap-1 text-xs text-gray-500">
-                  <div className="animate-spin w-3 h-3 border border-gray-300 border-t-blue-500 rounded-full"></div>
-                  <span>{msg.toolDesc || t('chatView.thinking')}</span>
-                </div>
-              ) : (
-                <div>
-                  <div className="prose prose-sm prose-slate max-w-none text-xs [&_p]:my-1 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0 [&_code]:text-xs [&_pre]:my-1 [&_table]:my-1 [&_table]:border [&_table]:border-collapse [&_table]:w-full [&_table]:overflow-x-auto [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-50 [&_th]:px-2 [&_th]:py-1 [&_th]:font-medium [&_th]:text-left [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1 [&_tr:nth-child(even)_td]:bg-gray-50">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {msg.content}
-                    </ReactMarkdown>
+
+            {messages.map((msg) => (
+              <div key={msg.id} className={`flex gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                {msg.role === 'assistant' && (
+                  <div className="w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center text-white text-xs shrink-0">
+                    AI
                   </div>
-                  {!msg.isStreaming && (
-                    <div className="mt-1 flex items-center gap-1">
-                      {savedMsgIds.has(msg.id) ? (
-                        <span className="text-[10px] text-green-600 flex items-center gap-0.5">
-                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                          Saved
-                        </span>
-                      ) : (
-                        <button
-                          onClick={() => handleOpenSaveNote(msg)}
-                          className="text-[10px] text-gray-400 hover:text-blue-500 flex items-center gap-0.5"
-                          title="Save as note"
-                        >
-                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-                          </svg>
-                          Save
-                        </button>
+                )}
+                <div className={`max-w-[85%] rounded px-2 py-1.5 ${
+                  msg.role === 'user'
+                    ? 'bg-blue-500 text-white text-xs'
+                    : 'bg-gray-100 text-gray-800'
+                }`}>
+                  {msg.role === 'user' ? (
+                    <div className="whitespace-pre-wrap break-words text-xs">{msg.content}</div>
+                  ) : msg.isThinking || (msg.isStreaming && !msg.content && !msg.isToolUse) ? (
+                    <div className="flex items-center gap-1 text-xs text-gray-500">
+                      <div className="animate-spin w-3 h-3 border border-gray-300 border-t-blue-500 rounded-full"></div>
+                      <span>{t('chatView.thinking')}</span>
+                    </div>
+                  ) : msg.isToolUse && !msg.content ? (
+                    <div className="flex items-center gap-1 text-xs text-gray-500">
+                      <div className="animate-spin w-3 h-3 border border-gray-300 border-t-blue-500 rounded-full"></div>
+                      <span>{msg.toolDesc || t('chatView.thinking')}</span>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="prose prose-sm prose-slate max-w-none text-xs [&_p]:my-1 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0 [&_code]:text-xs [&_pre]:my-1 [&_table]:my-1 [&_table]:border [&_table]:border-collapse [&_table]:w-full [&_table]:overflow-x-auto [&_th]:border [&_th]:border-gray-300 [&_th]:bg-gray-50 [&_th]:px-2 [&_th]:py-1 [&_th]:font-medium [&_th]:text-left [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1 [&_tr:nth-child(even)_td]:bg-gray-50">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {msg.content}
+                        </ReactMarkdown>
+                      </div>
+                      {!msg.isStreaming && (
+                        <div className="mt-1 flex items-center gap-1">
+                          {savedMsgIds.has(msg.id) ? (
+                            <span className="text-[10px] text-green-600 flex items-center gap-0.5">
+                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                              </svg>
+                              Saved
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => handleOpenSaveNote(msg)}
+                              className="text-[10px] text-gray-400 hover:text-blue-500 flex items-center gap-0.5"
+                              title="Save as note"
+                            >
+                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                              </svg>
+                              Save
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
                   )}
                 </div>
-              )}
-            </div>
+              </div>
+            ))}
+
+            {/* Show connecting indicator regardless of message count */}
+            {connecting && (
+              <div className="text-center text-gray-400 text-xs py-4">
+                <div className="animate-spin inline-block w-4 h-4 border border-gray-300 border-t-blue-500 rounded-full"></div>
+                <div className="mt-1">{messages.length > 0 ? (t('docDetail.reconnecting') || 'Reconnecting...') : (t('docDetail.connecting') || 'Connecting...')}</div>
+              </div>
+            )}
+
+            {error && (
+              <div className="text-xs text-red-500 p-2 bg-red-50 rounded">
+                {error}
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
           </div>
-        ))}
 
-        {/* Show connecting indicator regardless of message count */}
-        {connecting && (
-          <div className="text-center text-gray-400 text-xs py-4">
-            <div className="animate-spin inline-block w-4 h-4 border border-gray-300 border-t-blue-500 rounded-full"></div>
-            <div className="mt-1">{messages.length > 0 ? (t('docDetail.reconnecting') || 'Reconnecting...') : (t('docDetail.connecting') || 'Connecting...')}</div>
-          </div>
-        )}
-
-        {error && (
-          <div className="text-xs text-red-500 p-2 bg-red-50 rounded">
-            {error}
-          </div>
-        )}
-
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Input area */}
-      <div className="border-t border-gray-200 p-2">
-        <div className="flex gap-2">
-          <input
-            ref={inputRef}
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                handleSend()
-              }
-            }}
-            placeholder={t('docDetail.chatPlaceholder')}
-            className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
-            disabled={connecting || isAnyStreaming}
-          />
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || connecting || isAnyStreaming}
-            className="px-3 py-1.5 bg-blue-500 text-white rounded text-xs disabled:opacity-50 hover:bg-blue-600"
-          >
-            {t('docDetail.send')}
-          </button>
-          <button
-            onClick={handleClear}
-            className="px-2 py-1.5 bg-gray-100 text-gray-600 rounded text-xs hover:bg-gray-200"
-          >
-            {t('docDetail.clearChat')}
-          </button>
-        </div>
-      </div>
-
-      {/* Note save modal */}
-      {noteModalOpen && noteModalMsg && (
-        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl w-[500px] max-w-[90vw] max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b border-gray-200">
-              <h3 className="text-sm font-semibold text-gray-800">Save as Note</h3>
-              <button
-                onClick={() => setNoteModalOpen(false)}
-                className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-            <div className="flex-1 overflow-auto p-4">
-              <p className="text-xs text-gray-500 mb-2">Edit the content before saving:</p>
-              <textarea
-                value={noteContent}
-                onChange={(e) => setNoteContent(e.target.value)}
-                className="w-full h-48 px-3 py-2 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+          {/* Input area */}
+          <div className="border-t border-gray-200 p-2">
+            <div className="flex gap-2">
+              <input
+                ref={inputRef}
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    handleSend()
+                  }
+                }}
+                placeholder={t('docDetail.chatPlaceholder')}
+                className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                disabled={connecting || isAnyStreaming}
               />
-            </div>
-            <div className="flex justify-end gap-2 p-4 border-t border-gray-200">
               <button
-                onClick={() => setNoteModalOpen(false)}
-                className="px-4 py-1.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200"
+                onClick={handleSend}
+                disabled={!input.trim() || connecting || isAnyStreaming}
+                className="px-3 py-1.5 bg-blue-500 text-white rounded text-xs disabled:opacity-50 hover:bg-blue-600"
               >
-                Cancel
+                {t('docDetail.send')}
               </button>
               <button
-                onClick={handleSaveNote}
-                disabled={savingNote || !noteContent.trim()}
-                className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+                onClick={handleClear}
+                className="px-2 py-1.5 bg-gray-100 text-gray-600 rounded text-xs hover:bg-gray-200"
               >
-                {savingNote ? 'Saving...' : 'Save'}
+                {t('docDetail.clearChat')}
               </button>
             </div>
           </div>
-        </div>
+
+          {/* Note save modal (desktop only) */}
+          {!isMobile && noteModalOpen && noteModalMsg && (
+            <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
+              <div className="bg-white rounded-lg shadow-xl w-[500px] max-w-[90vw] max-h-[80vh] flex flex-col">
+                <div className="flex items-center justify-between p-4 border-b border-gray-200">
+                  <h3 className="text-sm font-semibold text-gray-800">Save as Note</h3>
+                  <button
+                    onClick={() => setNoteModalOpen(false)}
+                    className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+                <div className="flex-1 overflow-auto p-4">
+                  <p className="text-xs text-gray-500 mb-2">Edit the content before saving:</p>
+                  <textarea
+                    value={noteContent}
+                    onChange={(e) => setNoteContent(e.target.value)}
+                    className="w-full h-48 px-3 py-2 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+                  />
+                </div>
+                <div className="flex justify-end gap-2 p-4 border-t border-gray-200">
+                  <button
+                    onClick={() => setNoteModalOpen(false)}
+                    className="px-4 py-1.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSaveNote}
+                    disabled={savingNote || !noteContent.trim()}
+                    className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+                  >
+                    {savingNote ? 'Saving...' : 'Save'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   )
