@@ -51,3 +51,21 @@ class TestMobileShell:
         expect(page).to_have_url("http://localhost:9090/wiki")
         page.get_by_label("chat").click()
         expect(page).to_have_url("http://localhost:9090/chat")
+
+
+class TestMobileListPages:
+    def test_inbox_renders(self, mobile_page: Page):
+        page = mobile_page
+        # We're already on / from fixture
+        expect(page.locator("h2")).to_be_visible()
+
+    def test_documents_renders(self, mobile_page: Page):
+        page = mobile_page
+        page.get_by_label("documents").click()
+        expect(page).to_have_url("http://localhost:9090/documents")
+
+    def test_tags_via_drawer(self, mobile_page: Page):
+        page = mobile_page
+        page.get_by_label("more").click()
+        page.get_by_role("link", name="Tags").click()
+        expect(page).to_have_url("http://localhost:9090/tags")

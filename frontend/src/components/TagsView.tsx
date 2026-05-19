@@ -2,14 +2,23 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { fetchDocuments } from '../api'
+import { useMobileShell } from './Layout/MobileShellStore'
 import type { Document, Tag } from '../types'
 
 export default function TagsView() {
   const { t, i18n } = useTranslation()
+  const setTitle = useMobileShell((s) => s.setTitle)
+  const setRightSlot = useMobileShell((s) => s.setRightSlot)
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedTag, setSelectedTag] = useState<string | null>(null)
+
+  useEffect(() => {
+    setTitle(t('sidebar.tags'))
+    setRightSlot(null)
+    return () => setTitle('')
+  }, [t, setTitle, setRightSlot])
 
   useEffect(() => {
     loadDocuments()
@@ -49,7 +58,7 @@ export default function TagsView() {
 
   if (loading) {
     return (
-      <div className="p-6">
+      <div className="p-3 md:p-6">
         <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('tagsView.title')}</h2>
         <div className="flex items-center justify-center py-12">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
@@ -60,7 +69,7 @@ export default function TagsView() {
 
   if (error) {
     return (
-      <div className="p-6">
+      <div className="p-3 md:p-6">
         <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('tagsView.title')}</h2>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
           {error}
@@ -73,7 +82,7 @@ export default function TagsView() {
   }
 
   return (
-    <div className="p-6">
+    <div className="p-3 md:p-6">
       <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('tagsView.title')}</h2>
       <p className="text-gray-600 mb-6">{t('tagsView.browseByTag')}</p>
 
