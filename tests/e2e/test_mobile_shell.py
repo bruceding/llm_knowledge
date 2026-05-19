@@ -78,3 +78,19 @@ class TestMobileListPages:
         page.get_by_label("more").click()
         page.get_by_role("link", name="Tags").click()
         expect(page).to_have_url("http://localhost:9090/tags")
+
+    def test_settings_hides_advanced_sections(self, mobile_page: Page):
+        page = mobile_page
+        page.get_by_label("more").click()
+        page.get_by_role("link", name="Settings").click()
+        expect(page).to_have_url("http://localhost:9090/settings")
+        # Advanced IMAP section hidden on mobile via hidden md:block
+        expect(page.locator('[data-testid="advanced-section-imap"]')).not_to_be_visible()
+
+    def test_import_shows_desktop_only_page(self, mobile_page: Page):
+        page = mobile_page
+        page.goto("http://localhost:9090/import")
+        # Mobile guard shows desktop-only message
+        expect(page.get_by_text("Import is desktop-only")).to_be_visible()
+        # And a link back to inbox
+        expect(page.get_by_text("Back to Inbox")).to_be_visible()
