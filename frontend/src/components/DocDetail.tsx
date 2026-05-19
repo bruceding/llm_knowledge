@@ -388,6 +388,13 @@ export default function DocDetail() {
     }
   }
 
+  // Load notes on mobile (desktop loads lazily when notes tab is clicked)
+  useEffect(() => {
+    if (isMobile && document) {
+      loadNotes()
+    }
+  }, [isMobile, document?.id])
+
   // Handle panel resize
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -490,7 +497,7 @@ export default function DocDetail() {
           if (event.translatedPdf) {
             setTranslatedPdfPath(event.translatedPdf)
             setPdfTranslationStatus({ exists: true, path: event.translatedPdf, targetLang: lang })
-            setViewMode('dual-pdf')
+            setViewMode(isMobile ? 'translation' : 'dual-pdf')
           }
         }
       }, lang)
@@ -498,7 +505,7 @@ export default function DocDetail() {
       setError(err instanceof Error ? err.message : 'Failed to translate PDF')
       setPdfTranslating(false)
     }
-  }, [document, settings, t])
+  }, [document, settings, t, isMobile])
 
   // Markdown Translation handler (for Web/RSS)
   const handleMarkdownTranslate = useCallback(async (targetLang?: string) => {
@@ -516,7 +523,7 @@ export default function DocDetail() {
           setMarkdownTranslating(false)
           if (event.path) {
             setMarkdownTranslationStatus({ exists: true, path: event.path, targetLang: lang })
-            setViewMode('bilingual')
+            setViewMode(isMobile ? 'translation' : 'bilingual')
             // Load bilingual content - path is /data/... so need to encode properly
             const relativePath = event.path.replace('/data/', '')
             const encodedPath = `/data/${encodeURIPath(relativePath)}`
@@ -528,7 +535,7 @@ export default function DocDetail() {
       setError(err instanceof Error ? err.message : 'Failed to translate markdown')
       setMarkdownTranslating(false)
     }
-  }, [document, settings])
+  }, [document, settings, isMobile])
 
   // Mobile header configuration
   useEffect(() => {
@@ -569,8 +576,9 @@ export default function DocDetail() {
     }
   }, [isMobile, document?.title, document?.id, document?.sourceType, t, navigate, setMobileTitle, setLeftSlot, setRightSlot, handlePDFTranslate, handleMarkdownTranslate, settings?.translationEnabled])
 
-  const getDisplayContent = () => {
-    switch (viewMode) {
+  const getDisplayContent = (mode?: typeof viewMode) => {
+    const m = mode ?? viewMode
+    switch (m) {
       case 'wiki':
         return wikiContent
       case 'translation':
@@ -737,7 +745,7 @@ export default function DocDetail() {
             },
           }}
         >
-          {getDisplayContent() || t('docDetail.noContent')}
+          {getDisplayContent(mode) || t('docDetail.noContent')}
         </ReactMarkdown>
       </div>
     )
@@ -750,6 +758,22 @@ export default function DocDetail() {
         {confirmDialog}
         <div className="flex-1 overflow-auto">
           {renderContent(effectiveViewMode)}
+          {/* Notes (read-only) */}
+          {notes.length > 0 && (
+            <section className="mt-6 px-3 pb-20" aria-label="document notes">
+              <h2 className="text-sm font-semibold text-gray-700 mb-2">
+                {t('docDetail.notesTab') || 'Notes'}
+              </h2>
+              <ul className="space-y-2">
+                {notes.map(note => (
+                  <li key={note.id} className="bg-gray-50 border border-gray-200 rounded p-3 text-sm text-gray-800">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{note.content}</ReactMarkdown>
+                    <div className="mt-1 text-xs text-gray-500">{new Date(note.createdAt).toLocaleString()}</div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
         </div>
 
         {/* FAB */}
