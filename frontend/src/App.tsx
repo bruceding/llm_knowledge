@@ -38,7 +38,7 @@ function Layout() {
   return (
     <div className="flex flex-col h-[100dvh] bg-white">
       <MobileHeader />
-      <main className="flex-1 overflow-auto pb-14"><Outlet /></main>
+      <main className={`flex-1 overflow-auto ${hideShellOnDocDetail ? '' : 'pb-14'}`}><Outlet /></main>
       {!hideShellOnDocDetail && <BottomTabBar />}
       <MobileDrawer />
     </div>
