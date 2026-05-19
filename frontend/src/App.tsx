@@ -2,6 +2,10 @@ import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, useLocation, Outlet } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import Sidebar from './components/Sidebar'
+import { useIsMobile } from './hooks/useIsMobile'
+import MobileHeader from './components/Layout/MobileHeader'
+import BottomTabBar from './components/Layout/BottomTabBar'
+import MobileDrawer from './components/Layout/MobileDrawer'
 import Inbox from './components/Inbox'
 import DocDetail from './components/DocDetail'
 import DocumentsList from './components/DocumentsList'
@@ -18,17 +22,25 @@ import { fetchSettings } from './api'
 
 // Layout component that decides whether to show sidebar
 function Layout() {
+  const isMobile = useIsMobile()
   const location = useLocation()
+  const hideShellOnDocDetail = !!location.pathname.match(/^\/documents\/\d+$/)
 
-  // Hide sidebar when viewing a specific document
-  const hideSidebar = location.pathname.match(/^\/documents\/\d+$/)
+  if (!isMobile) {
+    return (
+      <div className="flex h-screen bg-white">
+        {!hideShellOnDocDetail && <Sidebar />}
+        <main className="flex-1 overflow-auto"><Outlet /></main>
+      </div>
+    )
+  }
 
   return (
-    <div className="flex h-screen bg-white">
-      {!hideSidebar && <Sidebar />}
-      <main className="flex-1 overflow-auto">
-        <Outlet />
-      </main>
+    <div className="flex flex-col h-[100dvh] bg-white">
+      <MobileHeader />
+      <main className="flex-1 overflow-auto pb-14"><Outlet /></main>
+      {!hideShellOnDocDetail && <BottomTabBar />}
+      <MobileDrawer />
     </div>
   )
 }
