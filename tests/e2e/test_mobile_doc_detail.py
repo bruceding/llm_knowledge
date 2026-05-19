@@ -69,3 +69,19 @@ class TestMobileDocDetail:
         # No centered modal layered on top
         centered_modal = page.locator('div.fixed.inset-0.bg-opacity-40')
         expect(centered_modal).to_have_count(0)
+
+    def test_chat_send_and_receive_on_mobile(self, mobile_page: Page, first_doc_id: int):
+        page = mobile_page
+        page.goto(f"http://localhost:9090/documents/{first_doc_id}")
+        page.get_by_label("open chat").click()
+        sheet = page.get_by_role("dialog", name="document chat")
+        expect(sheet).to_be_visible()
+
+        # send a message
+        inp = sheet.get_by_role("textbox")
+        inp.fill("hi")
+        page.keyboard.press("Enter")
+
+        # AI reply renders (Save button next to assistant message appears)
+        save_btn = sheet.get_by_role("button", name="Save").first
+        save_btn.wait_for(state="visible", timeout=20000)
