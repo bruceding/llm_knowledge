@@ -613,7 +613,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   const isAnyStreaming = messages.some(m => m.isStreaming)
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full w-full">
       {/* Messages area */}
       <div className="flex-1 overflow-auto p-2 space-y-2">
         {messages.length === 0 && !connecting && (
