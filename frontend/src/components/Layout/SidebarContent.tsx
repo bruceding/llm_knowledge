@@ -53,8 +53,8 @@ export default function SidebarContent({ onNavigate, hideImport }: SidebarConten
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault()
     if (searchQuery.trim()) {
-      // Navigate to search results or wiki with query
       navigate(`/wiki?search=${encodeURIComponent(searchQuery.trim())}`)
+      onNavigate?.()
     }
   }
 
