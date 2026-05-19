@@ -7,11 +7,14 @@ import 'highlight.js/styles/github.css'
 import { useTranslation } from 'react-i18next'
 import { fetchDocument, updateDocument, publishDocument, deleteDocument, regenerateSummary, getPagesStatus, fetchSettings, checkPDFTranslationStatus, translatePDF, checkMarkdownTranslationStatus, translateMarkdown, fetchDocNotes, deleteDocNote, pushNoteToWiki, type DocNote, getAuthHeaders } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
+import { useIsMobile } from '../hooks/useIsMobile'
 import type { Document, SSEEvent, UserSettings } from '../types'
 import PDFViewer from './PDFViewer'
 import PDFTranslationView from './PDFTranslationView'
 import DocumentChatPanel from './DocumentChatPanel'
 import DualPDFViewer from './DualPDFViewer'
+import { useMobileShell } from './Layout/MobileShellStore'
+import DocChatBottomSheet from './DocChatBottomSheet'
 
 // Helper to properly encode URL path segments (encode special chars but keep /)
 // Note: encodeURIComponent doesn't encode '!' which can cause issues with some servers
@@ -98,6 +101,13 @@ export default function DocDetail() {
 
   // Publish state
   const [publishing, setPublishing] = useState(false)
+
+  // Mobile support
+  const isMobile = useIsMobile()
+  const setMobileTitle = useMobileShell((s) => s.setTitle)
+  const setRightSlot = useMobileShell((s) => s.setRightSlot)
+  const setLeftSlot = useMobileShell((s) => s.setLeftSlot)
+  const [chatSheetOpen, setChatSheetOpen] = useState(false)
 
   // Keyboard shortcut: 'o' to open original URL for web/rss/newsletter documents
   useEffect(() => {
@@ -520,6 +530,45 @@ export default function DocDetail() {
     }
   }, [document, settings])
 
+  // Mobile header configuration
+  useEffect(() => {
+    if (!isMobile || !document) return
+
+    setMobileTitle(document.title || '')
+
+    setLeftSlot(
+      <button onClick={() => navigate(-1)} aria-label="back" className="p-1 -ml-1 text-gray-700">
+        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+        </svg>
+      </button>
+    )
+
+    setRightSlot(
+      <button
+        onClick={() => {
+          if (!document) return
+          if (document.sourceType === 'pdf') {
+            handlePDFTranslate()
+          } else {
+            handleMarkdownTranslate()
+          }
+        }}
+        aria-label="translate"
+        className="p-2 text-sm text-blue-600"
+        disabled={!settings?.translationEnabled}
+      >
+        {t('mobile.docDetail.translate')}
+      </button>
+    )
+
+    return () => {
+      setMobileTitle('')
+      setLeftSlot(null)
+      setRightSlot(null)
+    }
+  }, [isMobile, document?.title, document?.id, document?.sourceType, t, navigate, setMobileTitle, setLeftSlot, setRightSlot, handlePDFTranslate, handleMarkdownTranslate, settings?.translationEnabled])
+
   const getDisplayContent = () => {
     switch (viewMode) {
       case 'wiki':
@@ -595,6 +644,137 @@ export default function DocDetail() {
 
   const isPDF = document.sourceType === 'pdf'
 
+  // On mobile, restrict viewMode to allowed set
+  const mobileAllowedModes = ['raw', 'translation', 'pdf'] as const
+  const effectiveViewMode = isMobile && !mobileAllowedModes.includes(viewMode as typeof mobileAllowedModes[number])
+    ? (isPDF ? 'pdf' : 'raw')
+    : viewMode
+
+  // Shared content renderer (used by both mobile and desktop)
+  const renderContent = (mode: typeof viewMode) => {
+    if (mode === 'html' && htmlContent) {
+      return (
+        <iframe
+          srcDoc={htmlContent}
+          sandbox="allow-same-origin"
+          title="Newsletter HTML"
+          className="w-full border-0"
+          style={{ minHeight: '100%' }}
+          onLoad={(e) => {
+            const iframe = e.target as HTMLIFrameElement
+            if (!iframe.contentDocument) return
+            const resizeIframe = () => {
+              const height = iframe.contentDocument!.documentElement.scrollHeight
+              iframe.style.height = height + 'px'
+            }
+            resizeIframe()
+            const observer = new ResizeObserver(resizeIframe)
+            observer.observe(iframe.contentDocument.documentElement)
+
+            // Forward iframe keydown to parent window so window-level shortcuts (j/k/g/G/o/d) still fire
+            iframe.contentDocument.addEventListener('keydown', (ke) => {
+              window.dispatchEvent(new KeyboardEvent('keydown', {
+                key: ke.key,
+                code: ke.code,
+                shiftKey: ke.shiftKey,
+                ctrlKey: ke.ctrlKey,
+                altKey: ke.altKey,
+                metaKey: ke.metaKey,
+              }))
+            })
+          }}
+        />
+      )
+    }
+    if (mode === 'pdf' && pdfUrl) {
+      return (
+        <div className="h-full">
+          <PDFViewer url={pdfUrl} />
+        </div>
+      )
+    }
+    if (mode === 'dual-pdf' && pdfUrl && translatedPdfPath) {
+      return <DualPDFViewer originalUrl={pdfUrl} translatedUrl={addTokenParam(translatedPdfPath)} />
+    }
+    if (mode === 'bilingual' && isPDF && document?.rawPath) {
+      return (
+        <PDFTranslationView
+          rawPath={document.rawPath}
+          translatedContent={translationContent}
+          totalPages={totalPages}
+        />
+      )
+    }
+    return (
+      <div className="p-6 max-w-4xl mx-auto prose prose-slate">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeHighlight]}
+          components={{
+            a: ({ href, children }) => {
+              if (href?.startsWith('wiki://')) {
+                const wikiPath = href.replace('wiki://', '')
+                return (
+                  <a
+                    href={`/wiki/${wikiPath}`}
+                    className="text-blue-600 hover:underline"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      navigate(`/wiki/${wikiPath}`)
+                    }}
+                  >
+                    {children}
+                  </a>
+                )
+              }
+              return <a href={href} className="text-blue-600 hover:underline">{children}</a>
+            },
+            img: ({ src, alt }) => {
+              if (src && !src.startsWith('/') && !src.startsWith('http')) {
+                src = addTokenParam(`${imageBasePath}/${src}`)
+              }
+              return <img src={src} alt={alt} className="max-w-full h-auto rounded-lg shadow-sm my-6" />
+            },
+          }}
+        >
+          {getDisplayContent() || t('docDetail.noContent')}
+        </ReactMarkdown>
+      </div>
+    )
+  }
+
+  // Mobile branch
+  if (isMobile) {
+    return (
+      <div className="flex flex-col h-full relative">
+        {confirmDialog}
+        <div className="flex-1 overflow-auto">
+          {renderContent(effectiveViewMode)}
+        </div>
+
+        {/* FAB */}
+        <button
+          onClick={() => setChatSheetOpen(true)}
+          aria-label="open chat"
+          className="fixed bottom-4 right-4 z-30 w-14 h-14 rounded-full bg-blue-500 text-white shadow-lg flex items-center justify-center"
+        >
+          <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+          </svg>
+        </button>
+
+        <DocChatBottomSheet
+          docId={document.id}
+          open={chatSheetOpen}
+          onClose={() => setChatSheetOpen(false)}
+          onNoteSaved={handleNoteSaved}
+        />
+      </div>
+    )
+  }
+
+  // Desktop branch
   return (
     <>
     <div className="flex h-full">
@@ -729,87 +909,7 @@ export default function DocDetail() {
 
         {/* Content area */}
         <div ref={contentScrollRef} className="flex-1 overflow-auto" data-testid="doc-content-scroll">
-          {viewMode === 'html' && htmlContent ? (
-            <iframe
-              srcDoc={htmlContent}
-              sandbox="allow-same-origin"
-              title="Newsletter HTML"
-              className="w-full border-0"
-              style={{ minHeight: '100%' }}
-              onLoad={(e) => {
-                const iframe = e.target as HTMLIFrameElement
-                if (!iframe.contentDocument) return
-                const resizeIframe = () => {
-                  const height = iframe.contentDocument!.documentElement.scrollHeight
-                  iframe.style.height = height + 'px'
-                }
-                resizeIframe()
-                const observer = new ResizeObserver(resizeIframe)
-                observer.observe(iframe.contentDocument.documentElement)
-
-                // Forward iframe keydown to parent window so window-level shortcuts (j/k/g/G/o/d) still fire
-                iframe.contentDocument.addEventListener('keydown', (ke) => {
-                  window.dispatchEvent(new KeyboardEvent('keydown', {
-                    key: ke.key,
-                    code: ke.code,
-                    shiftKey: ke.shiftKey,
-                    ctrlKey: ke.ctrlKey,
-                    altKey: ke.altKey,
-                    metaKey: ke.metaKey,
-                  }))
-                })
-              }}
-            />
-          ) : viewMode === 'pdf' && pdfUrl ? (
-            <div className="h-full">
-              <PDFViewer url={pdfUrl} />
-            </div>
-          ) : viewMode === 'dual-pdf' && pdfUrl && translatedPdfPath ? (
-            <DualPDFViewer originalUrl={pdfUrl} translatedUrl={addTokenParam(translatedPdfPath)} />
-          ) : viewMode === 'bilingual' && isPDF && document?.rawPath ? (
-            <PDFTranslationView
-              rawPath={document.rawPath}
-              translatedContent={translationContent}
-              totalPages={totalPages}
-            />
-          ) : (
-            <div className="p-6 max-w-4xl mx-auto prose prose-slate">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeHighlight]}
-                components={{
-                  // Custom link handling for wiki links
-                  a: ({ href, children }) => {
-                    if (href?.startsWith('wiki://')) {
-                      const wikiPath = href.replace('wiki://', '')
-                      return (
-                        <a
-                          href={`/wiki/${wikiPath}`}
-                          className="text-blue-600 hover:underline"
-                          onClick={(e) => {
-                            e.preventDefault()
-                            navigate(`/wiki/${wikiPath}`)
-                          }}
-                        >
-                          {children}
-                        </a>
-                      )
-                    }
-                    return <a href={href} className="text-blue-600 hover:underline">{children}</a>
-                  },
-                  // Handle image paths - convert relative to absolute with token
-                  img: ({ src, alt }) => {
-                    if (src && !src.startsWith('/') && !src.startsWith('http')) {
-                      src = addTokenParam(`${imageBasePath}/${src}`)
-                    }
-                    return <img src={src} alt={alt} className="max-w-full h-auto rounded-lg shadow-sm my-6" />
-                  },
-                }}
-              >
-                {getDisplayContent() || t('docDetail.noContent')}
-              </ReactMarkdown>
-            </div>
-          )}
+          {renderContent(viewMode)}
         </div>
       </div>
 
