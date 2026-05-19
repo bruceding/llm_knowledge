@@ -57,8 +57,10 @@ class TestMobileShell:
         page = mobile_page
         page.get_by_label("wiki").click()
         expect(page).to_have_url("http://localhost:9090/wiki")
-        expect(page.get_by_role("link", name="Entities")).to_be_visible()
-        page.get_by_role("link", name="Entities").click()
+        # Scope to <main> — "Entities" link also exists in the off-screen drawer.
+        main = page.get_by_role("main")
+        expect(main.get_by_role("link", name="Entities")).to_be_visible()
+        main.get_by_role("link", name="Entities").click()
         expect(page).to_have_url("http://localhost:9090/wiki/entities")
 
 
