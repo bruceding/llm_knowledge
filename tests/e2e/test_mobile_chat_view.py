@@ -15,8 +15,8 @@ class TestMobileChatView:
     def test_chat_with_id_shows_stream_only(self, mobile_page: Page):
         page = mobile_page
         page.goto("http://localhost:9090/chat")
-        first_session = page.locator('a[href^="/chat/"]').first
-        if first_session.count() == 0:
-            return  # skip; no session
-        first_session.click()
+        sessions = page.locator('[data-testid="chat-session-item"]')
+        if sessions.count() == 0:
+            return  # no sessions, skip
+        sessions.first.click()
         expect(page.get_by_role("textbox", name="message input")).to_be_visible()

@@ -687,6 +687,7 @@ export default function ChatView() {
                 {conversations.map((conv) => (
                   <li key={conv.id}>
                     <button
+                      data-testid="chat-session-item"
                       onClick={() => handleSwitchConversation(conv.id)}
                       className={`w-full px-3 py-2 text-left rounded-lg text-sm ${
                         currentConversationId === conv.id

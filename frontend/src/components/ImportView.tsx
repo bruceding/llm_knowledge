@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { uploadPDF, uploadPDFUrl, clipWeb, addRSSFeed, listRSSFeeds, deleteRSSFeed, syncRSSFeed, getIMAPConfig, syncNewsletter, getNewsletterSyncStatus, addBlogFeed, listBlogFeeds, configBlogFeed, syncBlogFeed, deleteBlogFeed, type BlogFeed, type AddBlogFeedResult } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useMobileShell } from './Layout/MobileShellStore'
 
 type ImportTab = 'pdf' | 'web' | 'rss' | 'blog' | 'newsletter'
 
@@ -112,6 +113,13 @@ export default function ImportView() {
   const [syncingNewsletter, setSyncingNewsletter] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const setTitle = useMobileShell((s) => s.setTitle)
+  useEffect(() => {
+    if (!isMobile) return
+    setTitle(t('sidebar.import'))
+    return () => setTitle('')
+  }, [isMobile, t, setTitle])
 
   useEffect(() => {
     loadRSSFeeds()

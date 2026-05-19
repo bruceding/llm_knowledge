@@ -51,7 +51,7 @@ export default function DocChatBottomSheet({ docId, open, onClose, onNoteSaved }
                     ${open ? 'translate-y-0' : 'translate-y-full'}`}
         style={{
           height: '70dvh',
-          transform: open ? `translateY(${dragOffset}px)` : undefined,
+          transform: open && dragOffset > 0 ? `translateY(${dragOffset}px)` : undefined,
         }}
       >
         <div
