@@ -2,9 +2,15 @@ import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import i18n from '../i18n'
 import { fetchSettings, updateSettings, fetchGlobalSettings, updateGlobalSettings, getIMAPConfig, updateIMAPConfig, deleteIMAPConfig, testIMAPConnection, listIMAPFolders } from '../api'
+import { useMobileShell } from './Layout/MobileShellStore'
 
 export default function SettingsPage() {
   const { t } = useTranslation()
+  const setTitle = useMobileShell((s) => s.setTitle)
+  useEffect(() => {
+    setTitle(t('sidebar.settings'))
+    return () => setTitle('')
+  }, [t, setTitle])
   const [currentLang, setCurrentLang] = useState<'en' | 'zh'>('en')
   const [isAdmin, setIsAdmin] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -247,7 +253,7 @@ export default function SettingsPage() {
 
       {/* Global Translation Section (Admin Only) */}
       {isAdmin && (
-        <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
+        <div className="hidden md:block bg-white border border-gray-200 rounded-lg p-6 mb-6" data-testid="advanced-section-translation">
           <div className="flex items-center gap-2 mb-2">
             <h3 className="text-lg font-medium text-gray-800">{t('settings.pdfTranslation')}</h3>
             <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full">Admin</span>
@@ -342,7 +348,7 @@ export default function SettingsPage() {
       )}
 
       {/* Newsletter IMAP Section */}
-      <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
+      <div className="hidden md:block bg-white border border-gray-200 rounded-lg p-6 mb-6" data-testid="advanced-section-imap">
         <h3 className="text-lg font-medium text-gray-800 mb-2">{t('settings.newsletter')}</h3>
         <p className="text-sm text-gray-600 mb-4">{t('settings.newsletterHint')}</p>
 

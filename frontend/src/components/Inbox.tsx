@@ -3,23 +3,35 @@ import { Link, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { fetchInbox, deleteDocument, updateDocument } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
+import { useIsMobile } from '../hooks/useIsMobile'
+import { useMobileShell } from './Layout/MobileShellStore'
 import type { Document } from '../types'
 
 export default function Inbox() {
   const location = useLocation()
   const { t, i18n } = useTranslation()
   const { confirm, dialog: confirmDialog } = useConfirm()
+  const isMobile = useIsMobile()
+  const setTitle = useMobileShell((s) => s.setTitle)
+  const setRightSlot = useMobileShell((s) => s.setRightSlot)
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [hoveredDocId, setHoveredDocId] = useState<number | null>(null)
 
   useEffect(() => {
+    setTitle(t('sidebar.inbox'))
+    setRightSlot(null)
+    return () => setTitle('')
+  }, [t, setTitle, setRightSlot])
+
+  useEffect(() => {
     loadDocuments()
   }, [location.key])
 
-  // Keyboard shortcut: 'd' to delete hovered document
+  // Keyboard shortcut: 'd' to delete hovered document (desktop only)
   useEffect(() => {
+    if (isMobile) return
     const handleKeyDown = async (e: KeyboardEvent) => {
       if (e.key !== 'd' || hoveredDocId === null) return
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
@@ -33,7 +45,7 @@ export default function Inbox() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [hoveredDocId, t, confirm])
+  }, [hoveredDocId, t, confirm, isMobile])
 
   const loadDocuments = async () => {
     setLoading(true)
@@ -121,7 +133,7 @@ export default function Inbox() {
 
   if (loading) {
     return (
-      <div className="p-6">
+      <div className="p-3 md:p-6">
         <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('inbox.title')}</h2>
         <div className="flex items-center justify-center py-12">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
@@ -132,7 +144,7 @@ export default function Inbox() {
 
   if (error) {
     return (
-      <div className="p-6">
+      <div className="p-3 md:p-6">
         <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('inbox.title')}</h2>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
           {error}
@@ -146,7 +158,7 @@ export default function Inbox() {
 
   return (
     <>
-    <div className="p-6">
+    <div className="p-3 md:p-6">
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-bold text-gray-800">{t('inbox.title')}</h2>
         <div className="flex items-center gap-2 text-sm text-gray-600">

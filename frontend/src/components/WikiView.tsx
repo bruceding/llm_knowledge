@@ -1,15 +1,32 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, useNavigate, Link, useLocation } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useTranslation } from 'react-i18next'
 import { getAuthHeaders } from '../api'
+import { useIsMobile } from '../hooks/useIsMobile'
+import { useMobileShell } from './Layout/MobileShellStore'
 
 export default function WikiView() {
   const params = useParams<{ '*': string }>()
   const navigate = useNavigate()
   const { t } = useTranslation()
+  const isMobile = useIsMobile()
+  const loc = useLocation()
+  const setTitle = useMobileShell((s) => s.setTitle)
   const wikiPath = params['*'] || 'index'
+
+  useEffect(() => {
+    setTitle(t('sidebar.wiki'))
+    return () => setTitle('')
+  }, [t, setTitle])
+
+  const segments = [
+    { path: '/wiki', label: t('sidebar.wikiIndex') },
+    { path: '/wiki/entities', label: t('sidebar.entities') },
+    { path: '/wiki/topics', label: t('sidebar.topics') },
+    { path: '/wiki/sources', label: t('sidebar.sources') },
+  ]
   const [content, setContent] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -106,132 +123,161 @@ export default function WikiView() {
     )
   }
 
+  const renderContent = () => (
+    <>
+      {/* Breadcrumb navigation */}
+      <div className="p-4 border-b border-gray-200 bg-gray-50">
+        <nav className="flex items-center gap-2 text-sm">
+          <Link to="/wiki" className="text-blue-600 hover:underline">
+            {t('wikiView.title')}
+          </Link>
+          {breadcrumbs.map((crumb, index) => (
+            <span key={crumb.path} className="flex items-center gap-2">
+              <span className="text-gray-400">/</span>
+              {index === breadcrumbs.length - 1 ? (
+                <span className="text-gray-800 font-medium">{crumb.name}</span>
+              ) : (
+                <Link to={`/wiki/${crumb.path}`} className="text-blue-600 hover:underline">
+                  {crumb.name}
+                </Link>
+              )}
+            </span>
+          ))}
+        </nav>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-auto">
+        {error ? (
+          <div className="p-6">
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
+              {error}
+              {wikiPath !== 'index' && (
+                <Link to="/wiki" className="ml-4 text-red-800 underline">
+                  {t('wikiView.goToWikiHome')}
+                </Link>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="p-6 max-w-4xl prose prose-slate">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                // Custom link handling for wiki links
+                a: ({ href, children }) => {
+                  if (href?.startsWith('wiki://')) {
+                    const linkPath = href.replace('wiki://', '')
+                    return (
+                      <a
+                        href={`/wiki/${linkPath}`}
+                        className="text-blue-600 hover:underline cursor-pointer"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          navigate(`/wiki/${linkPath}`)
+                        }}
+                      >
+                        {children}
+                      </a>
+                    )
+                  }
+                  // External links
+                  if (href?.startsWith('http://') || href?.startsWith('https://')) {
+                    return (
+                      <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                        {children}
+                      </a>
+                    )
+                  }
+                  // Relative links within wiki - resolve based on current path
+                  if (href && !href.startsWith('#')) {
+                    let fullPath = href.replace('.md', '')
+
+                    // Handle relative paths with .. or .
+                    if (fullPath.startsWith('../')) {
+                      // ../entities/CSA from topics/X becomes entities/CSA
+                      fullPath = fullPath.replace('../', '')
+                    } else if (fullPath.startsWith('./')) {
+                      fullPath = fullPath.replace('./', '')
+                    } else if (!fullPath.includes('/')) {
+                      // Link without / - resolve relative to current directory
+                      const currentDir = wikiPath.includes('/')
+                        ? wikiPath.substring(0, wikiPath.lastIndexOf('/'))
+                        : wikiPath
+                      if (currentDir !== 'index' && currentDir !== '') {
+                        fullPath = currentDir + '/' + fullPath
+                      }
+                    }
+
+                    return (
+                      <a
+                        href={`/wiki/${fullPath}`}
+                        className="text-blue-600 hover:underline cursor-pointer"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          navigate(`/wiki/${fullPath}`)
+                        }}
+                      >
+                        {children}
+                      </a>
+                    )
+                  }
+                  return <a href={href} className="text-blue-600 hover:underline">{children}</a>
+                },
+                // Custom heading with anchor links
+                h1: ({ children, id }) => (
+                  <h1 id={id} className="text-3xl font-bold text-gray-900 mb-4">
+                    {children}
+                  </h1>
+                ),
+                h2: ({ children, id }) => (
+                  <h2 id={id} className="text-2xl font-semibold text-gray-800 mt-8 mb-4 border-b border-gray-200 pb-2">
+                    {children}
+                  </h2>
+                ),
+                h3: ({ children, id }) => (
+                  <h3 id={id} className="text-xl font-semibold text-gray-800 mt-6 mb-3">
+                    {children}
+                  </h3>
+                ),
+              }}
+            >
+              {processedContent}
+            </ReactMarkdown>
+          </div>
+        )}
+      </div>
+    </>
+  )
+
+  if (isMobile) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex border-b border-gray-200 bg-white sticky top-0 z-10 overflow-x-auto">
+          {segments.map((s) => (
+            <Link key={s.path} to={s.path}
+              className={`px-4 py-2 text-sm whitespace-nowrap border-b-2 ${
+                loc.pathname === s.path
+                  ? 'border-blue-500 text-blue-600 font-medium'
+                  : 'border-transparent text-gray-600'
+              }`}
+            >
+              {s.label}
+            </Link>
+          ))}
+        </div>
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {renderContent()}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-full">
       {/* Main content area */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Breadcrumb navigation */}
-        <div className="p-4 border-b border-gray-200 bg-gray-50">
-          <nav className="flex items-center gap-2 text-sm">
-            <Link to="/wiki" className="text-blue-600 hover:underline">
-              {t('wikiView.title')}
-            </Link>
-            {breadcrumbs.map((crumb, index) => (
-              <span key={crumb.path} className="flex items-center gap-2">
-                <span className="text-gray-400">/</span>
-                {index === breadcrumbs.length - 1 ? (
-                  <span className="text-gray-800 font-medium">{crumb.name}</span>
-                ) : (
-                  <Link to={`/wiki/${crumb.path}`} className="text-blue-600 hover:underline">
-                    {crumb.name}
-                  </Link>
-                )}
-              </span>
-            ))}
-          </nav>
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-auto">
-          {error ? (
-            <div className="p-6">
-              <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
-                {error}
-                {wikiPath !== 'index' && (
-                  <Link to="/wiki" className="ml-4 text-red-800 underline">
-                    {t('wikiView.goToWikiHome')}
-                  </Link>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="p-6 max-w-4xl prose prose-slate">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  // Custom link handling for wiki links
-                  a: ({ href, children }) => {
-                    if (href?.startsWith('wiki://')) {
-                      const linkPath = href.replace('wiki://', '')
-                      return (
-                        <a
-                          href={`/wiki/${linkPath}`}
-                          className="text-blue-600 hover:underline cursor-pointer"
-                          onClick={(e) => {
-                            e.preventDefault()
-                            navigate(`/wiki/${linkPath}`)
-                          }}
-                        >
-                          {children}
-                        </a>
-                      )
-                    }
-                    // External links
-                    if (href?.startsWith('http://') || href?.startsWith('https://')) {
-                      return (
-                        <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                          {children}
-                        </a>
-                      )
-                    }
-                    // Relative links within wiki - resolve based on current path
-                    if (href && !href.startsWith('#')) {
-                      let fullPath = href.replace('.md', '')
-
-                      // Handle relative paths with .. or .
-                      if (fullPath.startsWith('../')) {
-                        // ../entities/CSA from topics/X becomes entities/CSA
-                        fullPath = fullPath.replace('../', '')
-                      } else if (fullPath.startsWith('./')) {
-                        fullPath = fullPath.replace('./', '')
-                      } else if (!fullPath.includes('/')) {
-                        // Link without / - resolve relative to current directory
-                        const currentDir = wikiPath.includes('/')
-                          ? wikiPath.substring(0, wikiPath.lastIndexOf('/'))
-                          : wikiPath
-                        if (currentDir !== 'index' && currentDir !== '') {
-                          fullPath = currentDir + '/' + fullPath
-                        }
-                      }
-
-                      return (
-                        <a
-                          href={`/wiki/${fullPath}`}
-                          className="text-blue-600 hover:underline cursor-pointer"
-                          onClick={(e) => {
-                            e.preventDefault()
-                            navigate(`/wiki/${fullPath}`)
-                          }}
-                        >
-                          {children}
-                        </a>
-                      )
-                    }
-                    return <a href={href} className="text-blue-600 hover:underline">{children}</a>
-                  },
-                  // Custom heading with anchor links
-                  h1: ({ children, id }) => (
-                    <h1 id={id} className="text-3xl font-bold text-gray-900 mb-4">
-                      {children}
-                    </h1>
-                  ),
-                  h2: ({ children, id }) => (
-                    <h2 id={id} className="text-2xl font-semibold text-gray-800 mt-8 mb-4 border-b border-gray-200 pb-2">
-                      {children}
-                    </h2>
-                  ),
-                  h3: ({ children, id }) => (
-                    <h3 id={id} className="text-xl font-semibold text-gray-800 mt-6 mb-3">
-                      {children}
-                    </h3>
-                  ),
-                }}
-              >
-                {processedContent}
-              </ReactMarkdown>
-            </div>
-          )}
-        </div>
+        {renderContent()}
       </div>
 
       {/* Sidebar with quick navigation - only visible on large screens */}

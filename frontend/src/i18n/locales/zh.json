@@ -264,5 +264,31 @@
     "loginLink": "点击登录",
     "noAccount": "没有账号？",
     "registerLink": "点击注册"
+  },
+  "mobile": {
+    "tabs": {
+      "inbox": "收件箱",
+      "documents": "文档",
+      "wiki": "Wiki",
+      "chat": "对话",
+      "more": "更多"
+    },
+    "import": {
+      "desktopOnly": "导入功能仅桌面端可用",
+      "desktopOnlyHint": "请使用电脑访问以导入文档",
+      "backToInbox": "返回收件箱"
+    },
+    "docDetail": {
+      "openChat": "与文档对话",
+      "translate": "翻译",
+      "showOriginal": "原文",
+      "showTranslation": "中文"
+    },
+    "chatBottomSheet": {
+      "saveNoteTitle": "保存为笔记",
+      "saveNoteHint": "保存前可以编辑内容：",
+      "cancel": "取消",
+      "save": "保存"
+    }
   }
 }

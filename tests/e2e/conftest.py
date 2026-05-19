@@ -135,6 +135,33 @@ def authenticated_page(saved_auth_state: str, browser: Browser):
     context.close()
 
 
+@pytest.fixture(scope="function")
+def mobile_page(saved_auth_state: str, browser: Browser):
+    """
+    Authenticated page with mobile viewport (iPhone 12: 390x844).
+    """
+    context = browser.new_context(
+        storage_state=saved_auth_state,
+        viewport={"width": 390, "height": 844},
+        device_scale_factor=3,
+        is_mobile=True,
+        has_touch=True,
+        user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                   "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    )
+    page = context.new_page()
+    page.goto("http://localhost:9090/")
+
+    if page.url.endswith("/login"):
+        Path(saved_auth_state).unlink(missing_ok=True)
+        context.close()
+        pytest.skip("Auth state expired - restart tests to re-login")
+
+    yield page
+
+    context.close()
+
+
 def pytest_configure(config):
     """
     Configure pytest with custom markers

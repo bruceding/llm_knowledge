@@ -3,11 +3,16 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { fetchDocuments, deleteDocument } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
+import { useIsMobile } from '../hooks/useIsMobile'
+import { useMobileShell } from './Layout/MobileShellStore'
 import type { Document } from '../types'
 
 export default function DocumentsList() {
   const { t, i18n } = useTranslation()
   const { confirm, dialog: confirmDialog } = useConfirm()
+  const isMobile = useIsMobile()
+  const setTitle = useMobileShell((s) => s.setTitle)
+  const setRightSlot = useMobileShell((s) => s.setRightSlot)
   const [searchParams] = useSearchParams()
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
@@ -15,6 +20,20 @@ export default function DocumentsList() {
   const [statusFilter, setStatusFilter] = useState<string>(() => searchParams.get('status') || '')
   const [searchQuery, setSearchQuery] = useState('')
   const [hoveredDocId, setHoveredDocId] = useState<number | null>(null)
+
+  // Set mobile header title based on status query
+  useEffect(() => {
+    const status = searchParams.get('status') || ''
+    if (status === 'later') {
+      setTitle(t('sidebar.later'))
+    } else if (status === 'archived') {
+      setTitle(t('sidebar.archived'))
+    } else {
+      setTitle(t('sidebar.allDocuments'))
+    }
+    setRightSlot(null)
+    return () => setTitle('')
+  }, [searchParams, t, setTitle, setRightSlot])
 
   // Sync status filter with URL params when URL changes
   useEffect(() => {
@@ -49,8 +68,9 @@ export default function DocumentsList() {
     loadDocuments(statusFilter)
   }, [statusFilter, loadDocuments])
 
-  // Keyboard shortcut: 'd' to delete hovered document
+  // Keyboard shortcut: 'd' to delete hovered document (desktop only)
   useEffect(() => {
+    if (isMobile) return
     const handleKeyDown = async (e: KeyboardEvent) => {
       if (e.key !== 'd' || hoveredDocId === null) return
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
@@ -64,7 +84,7 @@ export default function DocumentsList() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [hoveredDocId, t, statusFilter, confirm])
+  }, [hoveredDocId, t, statusFilter, confirm, isMobile])
 
   const getSourceIcon = (sourceType: string) => {
     switch (sourceType) {
@@ -143,7 +163,7 @@ export default function DocumentsList() {
 
   if (loading) {
     return (
-      <div className="p-6">
+      <div className="p-3 md:p-6">
         <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('documentsList.title')}</h2>
         <div className="flex items-center justify-center py-12">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
@@ -154,7 +174,7 @@ export default function DocumentsList() {
 
   if (error) {
     return (
-      <div className="p-6">
+      <div className="p-3 md:p-6">
         <h2 className="text-2xl font-bold text-gray-800 mb-4">{t('documentsList.title')}</h2>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
           {error}
@@ -168,7 +188,7 @@ export default function DocumentsList() {
 
   return (
     <>
-    <div className="p-6">
+    <div className="p-3 md:p-6">
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-2xl font-bold text-gray-800">{t('documentsList.title')}</h2>
         <div className="flex items-center gap-4">
