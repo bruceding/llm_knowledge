@@ -53,6 +53,15 @@ class TestMobileShell:
         expect(page).to_have_url("http://localhost:9090/chat")
 
 
+    def test_wiki_segmented_tabs(self, mobile_page: Page):
+        page = mobile_page
+        page.get_by_label("wiki").click()
+        expect(page).to_have_url("http://localhost:9090/wiki")
+        expect(page.get_by_role("link", name="Entities")).to_be_visible()
+        page.get_by_role("link", name="Entities").click()
+        expect(page).to_have_url("http://localhost:9090/wiki/entities")
+
+
 class TestMobileListPages:
     def test_inbox_renders(self, mobile_page: Page):
         page = mobile_page
