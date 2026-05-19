@@ -52,7 +52,9 @@ export default function ChatView() {
   const params = useParams<{ id?: string }>()
   const navigate = useNavigate()
   const { t, i18n } = useTranslation()
-  const urlConversationId = params.id ? parseInt(params.id) : undefined
+  // 'new' is a mobile-only sentinel for the compose view (no real conversation yet)
+  const isMobileComposeMode = params.id === 'new'
+  const urlConversationId = params.id && params.id !== 'new' ? parseInt(params.id) : undefined
 
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -81,7 +83,7 @@ export default function ChatView() {
   useEffect(() => {
     if (!isMobile) return
     setTitle(t('sidebar.chatHistory'))
-    if (urlConversationId) {
+    if (urlConversationId || isMobileComposeMode) {
       setLeftSlot(
         <button onClick={() => navigate('/chat')} aria-label="back to chat list" className="p-1 -ml-1 text-gray-700">
           <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -93,7 +95,7 @@ export default function ChatView() {
       setLeftSlot(null)
     }
     return () => { setTitle(''); setLeftSlot(null) }
-  }, [isMobile, urlConversationId, t, navigate, setTitle, setLeftSlot])
+  }, [isMobile, urlConversationId, isMobileComposeMode, t, navigate, setTitle, setLeftSlot])
 
   // Load conversation list
   const loadConversations = useCallback(async () => {
@@ -626,9 +628,11 @@ export default function ChatView() {
     sseFailedRef.current = false
     setConnectionError(null)
 
-    // Navigate to new chat route (without conversation ID)
-    navigate('/chat')
-  }, [navigate])
+    // Navigate to new chat route. On mobile, use a sentinel '/chat/new' to switch
+    // to the compose view (input area). Desktop stays at '/chat' since its layout
+    // already shows the input panel inline.
+    navigate(isMobile ? '/chat/new' : '/chat')
+  }, [navigate, isMobile])
 
   // Switch to a different conversation
   const handleSwitchConversation = (convId: number) => {
@@ -661,7 +665,7 @@ export default function ChatView() {
 
   // --- Mobile: single-column routing ---
   if (isMobile) {
-    if (!urlConversationId) {
+    if (!urlConversationId && !isMobileComposeMode) {
       // Mobile: session list only
       return (
         <>
