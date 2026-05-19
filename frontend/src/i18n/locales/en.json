@@ -264,5 +264,31 @@
     "loginLink": "Login here",
     "noAccount": "Don't have an account?",
     "registerLink": "Register here"
+  },
+  "mobile": {
+    "tabs": {
+      "inbox": "Inbox",
+      "documents": "Documents",
+      "wiki": "Wiki",
+      "chat": "Chat",
+      "more": "More"
+    },
+    "import": {
+      "desktopOnly": "Import is desktop-only",
+      "desktopOnlyHint": "Please use a desktop browser to import documents",
+      "backToInbox": "Back to Inbox"
+    },
+    "docDetail": {
+      "openChat": "Chat with this doc",
+      "translate": "Translate",
+      "showOriginal": "Original",
+      "showTranslation": "Translation"
+    },
+    "chatBottomSheet": {
+      "saveNoteTitle": "Save as Note",
+      "saveNoteHint": "Edit the content before saving:",
+      "cancel": "Cancel",
+      "save": "Save"
+    }
   }
 }
