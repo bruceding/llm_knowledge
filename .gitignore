@@ -8,6 +8,7 @@ build-if-needed.sh
 .worktrees/
 backend/fs/dist/
 llm-knowledge
+llm-knowledge-test
 .claude/
 .playwright-mcp/
 .venv/
