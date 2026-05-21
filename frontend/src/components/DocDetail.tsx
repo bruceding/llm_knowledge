@@ -551,6 +551,9 @@ export default function DocDetail() {
       </button>
     )
 
+    const translateDisabled =
+      !settings?.translationEnabled || pdfTranslating || markdownTranslating
+
     setRightSlot(
       <button
         onClick={() => {
@@ -562,8 +565,8 @@ export default function DocDetail() {
           }
         }}
         aria-label="translate"
-        className="p-2 text-sm text-blue-600"
-        disabled={!settings?.translationEnabled}
+        className="p-2 text-sm text-blue-600 disabled:text-gray-400 disabled:cursor-not-allowed"
+        disabled={translateDisabled}
       >
         {t('mobile.docDetail.translate')}
       </button>
@@ -574,7 +577,7 @@ export default function DocDetail() {
       setLeftSlot(null)
       setRightSlot(null)
     }
-  }, [isMobile, document?.title, document?.id, document?.sourceType, t, navigate, setMobileTitle, setLeftSlot, setRightSlot, handlePDFTranslate, handleMarkdownTranslate, settings?.translationEnabled])
+  }, [isMobile, document?.title, document?.id, document?.sourceType, t, navigate, setMobileTitle, setLeftSlot, setRightSlot, handlePDFTranslate, handleMarkdownTranslate, settings?.translationEnabled, pdfTranslating, markdownTranslating])
 
   const getDisplayContent = (mode?: typeof viewMode) => {
     const m = mode ?? viewMode
@@ -582,7 +585,10 @@ export default function DocDetail() {
       case 'wiki':
         return wikiContent
       case 'translation':
-        return translationContent
+        // PDF docs populate translationContent (paper_zh.md / paper_en.md);
+        // RSS/blog/newsletter/web populate bilingualContent only — fall back so
+        // mobile's post-translate viewMode='translation' isn't blank for them.
+        return translationContent || bilingualContent
       case 'bilingual':
         return bilingualContent || rawContent
       case 'html':
@@ -753,9 +759,24 @@ export default function DocDetail() {
 
   // Mobile branch
   if (isMobile) {
+    const translatingProgress = pdfTranslating
+      ? (pdfTranslationProgress || t('docDetail.translationProgress'))
+      : markdownTranslating
+        ? t('docDetail.translating')
+        : null
     return (
       <div className="flex flex-col h-full relative">
         {confirmDialog}
+        {translatingProgress && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="flex items-center gap-2 px-3 py-2 bg-purple-50 border-b border-purple-100 text-purple-700 text-sm"
+          >
+            <div className="animate-spin h-4 w-4 border-2 border-purple-500 rounded-full border-t-transparent" />
+            <span className="truncate">{translatingProgress}</span>
+          </div>
+        )}
         <div className="flex-1 overflow-auto">
           {renderContent(effectiveViewMode)}
           {/* Notes (read-only) */}
