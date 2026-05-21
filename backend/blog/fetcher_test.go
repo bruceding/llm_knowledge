@@ -1,8 +1,10 @@
 package blog
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -139,5 +141,71 @@ func TestFetcher_FetchArticle_ReturnsInnerHTML(t *testing.T) {
 	want := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
 	if !pub.Equal(want) {
 		t.Errorf("pub = %v, want %v", pub, want)
+	}
+}
+
+// TestFetcher_FetchArticle_ConcatenatesMultipleNodes mirrors claude.com's
+// article layout where the body is split across many sibling
+// .u-rich-text-blog blocks. The fix must concatenate all matched nodes,
+// not just the first one.
+func TestFetcher_FetchArticle_ConcatenatesMultipleNodes(t *testing.T) {
+	const paragraphCount = 31
+	const paragraphText = "This paragraph carries enough text to make the assertion meaningful when only the first node is captured."
+
+	var b strings.Builder
+	b.WriteString("<html><body><main>")
+	for i := 0; i < paragraphCount; i++ {
+		fmt.Fprintf(&b, `<div class="u-rich-text-blog"><p>%s block %d</p></div>`, paragraphText, i)
+	}
+	b.WriteString("</main></body></html>")
+	body := b.String()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	f := &Fetcher{Pool: nil, validateURL: func(string) error { return nil }}
+	html, _, _, err := f.FetchArticle(srv.URL, ".u-rich-text-blog")
+	if err != nil {
+		t.Fatalf("FetchArticle: %v", err)
+	}
+
+	// Inner HTML of one block is "<p>...</p>"; concatenated output must
+	// include every block. Asserting count > 10x guards against any naive
+	// .First()-only regression.
+	gotCount := strings.Count(html, "block ")
+	if gotCount < paragraphCount {
+		t.Fatalf("expected %d blocks in concatenated output, got %d. html=%q", paragraphCount, gotCount, html)
+	}
+
+	singleInnerLen := len(fmt.Sprintf("<p>%s block 0</p>", paragraphText))
+	if len(html) < singleInnerLen*10 {
+		t.Fatalf("expected concatenated HTML > 10x single block (%d), got %d", singleInnerLen*10, len(html))
+	}
+}
+
+// TestFetcher_FetchArticle_SecondaryFallback covers the case where the
+// configured selector matches an empty wrapper. The fetcher must detect the
+// thin output and switch to a fallback selector that produces more text.
+func TestFetcher_FetchArticle_SecondaryFallback(t *testing.T) {
+	realBody := strings.Repeat("Real article body sentence. ", 80) // > 500 chars
+	body := `<html><body>
+<div class="u-rich-text-blog"></div>
+<main><article><p>` + realBody + `</p></article></main>
+</body></html>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	f := &Fetcher{Pool: nil, validateURL: func(string) error { return nil }}
+	html, _, _, err := f.FetchArticle(srv.URL, ".u-rich-text-blog")
+	if err != nil {
+		t.Fatalf("FetchArticle: %v", err)
+	}
+	if !strings.Contains(html, "Real article body sentence.") {
+		t.Fatalf("expected secondary fallback to capture <main> content, got %q", html)
 	}
 }
