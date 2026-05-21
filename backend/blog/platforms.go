@@ -15,7 +15,9 @@ var PlatformRules = []PlatformRule{
 		URLPatterns:     []string{"claude.com"},
 		LinkSelector:    ".card_blog_wrap a[href^='/blog/']",
 		LinkExclude:     "a[aria-hidden='true']",
-		ContentSelector: ".u-rich-text-blog",
+		// claude.com renders article body as many sibling .u-rich-text-blog
+		// blocks; selecting <main> captures all of them with a single match.
+		ContentSelector: "main",
 	},
 	{
 		Name:            "webflow",

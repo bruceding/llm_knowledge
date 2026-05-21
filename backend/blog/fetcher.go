@@ -126,24 +126,42 @@ func (f *Fetcher) FetchArticle(articleURL, contentSelector string) (string, time
 		return "", time.Time{}, "", err
 	}
 
+	fallbacks := []string{"article", "main", ".content", ".post-content"}
+
 	contentNode := doc.Find(contentSelector)
 	if contentNode.Length() == 0 {
-		fallbacks := []string{"article", "main", ".content", ".post-content"}
+		// Primary selector matched nothing: fall back to common containers.
 		for _, sel := range fallbacks {
-			if doc.Find(sel).Length() > 0 {
-				contentNode = doc.Find(sel).First()
+			if cand := doc.Find(sel); cand.Length() > 0 {
+				contentNode = cand.First()
 				break
 			}
 		}
 	}
 
-	contentHTML := ""
-	if contentNode.Length() > 0 {
-		// Remove style and script tags before extracting content
-		contentNode.First().Find("style, script").Remove()
-		inner, herr := contentNode.First().Html()
-		if herr == nil {
-			contentHTML = inner
+	contentHTML := extractInnerHTMLAll(contentNode)
+
+	// Secondary fallback: when the primary node yields very little text it is
+	// probably an empty wrapper (e.g. selector matched only a heading shell).
+	// Re-scan the fallback list and replace it with whichever candidate yields
+	// the most text.
+	const minContentTextLen = 500
+	if textLength(contentNode) < minContentTextLen {
+		bestNode := contentNode
+		bestLen := textLength(contentNode)
+		for _, sel := range fallbacks {
+			cand := doc.Find(sel)
+			if cand.Length() == 0 {
+				continue
+			}
+			if candLen := textLength(cand); candLen > bestLen {
+				bestNode = cand
+				bestLen = candLen
+			}
+		}
+		if bestLen > textLength(contentNode) {
+			contentNode = bestNode
+			contentHTML = extractInnerHTMLAll(contentNode)
 		}
 	}
 
@@ -159,6 +177,45 @@ func (f *Fetcher) FetchArticle(articleURL, contentSelector string) (string, time
 	publishedTime := extractPublishedTime(doc)
 
 	return contentHTML, publishedTime, title, nil
+}
+
+// extractInnerHTMLAll strips <style>/<script> from every matched node and
+// concatenates the remaining inner HTML in document order, separated by
+// newlines. Inner HTML (not OuterHtml) keeps the wrapping element out of the
+// output, which matters when the selector matches many sibling content blocks.
+func extractInnerHTMLAll(sel *goquery.Selection) string {
+	if sel.Length() == 0 {
+		return ""
+	}
+	sel.Find("style, script").Remove()
+	if sel.Length() == 1 {
+		inner, err := sel.Html()
+		if err != nil {
+			return ""
+		}
+		return inner
+	}
+	parts := make([]string, 0, sel.Length())
+	sel.Each(func(_ int, s *goquery.Selection) {
+		inner, err := s.Html()
+		if err != nil {
+			return
+		}
+		if strings.TrimSpace(inner) == "" {
+			return
+		}
+		parts = append(parts, inner)
+	})
+	return strings.Join(parts, "\n")
+}
+
+// textLength returns the length of the trimmed plain-text content of the
+// selection. Used when comparing candidate nodes for the secondary fallback.
+func textLength(sel *goquery.Selection) int {
+	if sel.Length() == 0 {
+		return 0
+	}
+	return len(strings.TrimSpace(sel.Text()))
 }
 
 // browserUserAgent is sent on the http path so origins fronted by CDNs (e.g.
