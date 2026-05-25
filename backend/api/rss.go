@@ -914,7 +914,7 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 	// .enlighter-code text), and return early so descendants are never re-walked.
 	if s.HasClass("EnlighterJSWrapper") || s.HasClass("enlighter-default") {
 		raw := s.Find(".enlighter-raw").First()
-		code := strings.TrimRight(raw.Text(), "\n")
+		code := strings.TrimRight(raw.Text(), "\r\n")
 		if code == "" {
 			// Fallbacks when .enlighter-raw is missing — try, in order:
 			//   1. an explicit .enlighter-code element
@@ -927,7 +927,7 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 			if codeEl.Length() == 0 && s.HasClass("enlighter-default") {
 				codeEl = s
 			}
-			code = strings.TrimRight(codeEl.Text(), "\n")
+			code = strings.TrimRight(codeEl.Text(), "\r\n")
 		}
 		if strings.TrimSpace(code) == "" {
 			return ""
