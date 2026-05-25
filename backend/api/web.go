@@ -810,6 +810,14 @@ func ExtractContent(doc *goquery.Document) string {
 	// Remove cookie notices and other non-content
 	doc.Find(".Cookie-notice, .cookie-notice, .js-cookieNotice").Remove()
 
+	// Common heading-anchor / utility-only elements that leak into Markdown:
+	//   - .copy-button, button[aria-label*='Copy']: JetBrains "Copy heading link" affordance
+	//     (appears next to every <h2>/<h3>, contaminating the heading text)
+	//   - .sr-only: screen-reader-only labels paired with those buttons
+	//   - .enlighter-toolbar-top: second line of defense for Enlighter code-block toolbars
+	//     (the dedicated Enlighter handler in convertNodeToMarkdown is primary)
+	doc.Find(".copy-button, .sr-only, button[aria-label*='Copy'], .enlighter-toolbar-top").Remove()
+
 	// Medium noise cleanup (byline / overlays / action buttons) at the doc
 	// level so it works for both the data-selectable-paragraph fast path AND
 	// for custom-domain publications whose extension snapshot lacks the
@@ -828,6 +836,10 @@ func ExtractContent(doc *goquery.Document) string {
 	// Key insight: some sites have <article> for footer, <main> for content (e.g. Aliyun docs)
 	// Solution: pick the selector with most text content, not first match
 	selectors := []string{
+		// Platform-specific: JetBrains blog (data-clarity-region marks the article body,
+		// scoping content extraction here drops nav/footer/Subscribe/Discover-more sections)
+		"[data-clarity-region='article']",
+
 		// Platform-specific: GitHub / markdown renderers
 		".markdown-body",    // GitHub, Aliyun docs, many markdown-based sites
 		".prose",            // Tailwind Typography (modern blogs)

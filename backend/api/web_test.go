@@ -247,6 +247,33 @@ func TestConvertNodeToMarkdown(t *testing.T) {
 			html:     `<pre><span data-selectable-paragraph>// The generic helper found in almost every Go codebase<br/>func Ptr[T any](v T) *T {<br/>    return &amp;v<br/>}</span></pre>`,
 			expected: "```\n// The generic helper found in almost every Go codebase\nfunc Ptr[T any](v T) *T {\n    return &v\n}\n```",
 		},
+		{
+			// Issue #63: JetBrains blog uses EnlighterJS which renders a triple
+			// payload (toolbar + raw textarea + highlighted spans). Without a
+			// dedicated handler, each block appears 3× plus 4 toolbar lines.
+			// Detect the wrapper, extract once from .enlighter-raw, return early.
+			name: "Enlighter wrapper with raw + highlighted code (JetBrains blog)",
+			html: `<div class="EnlighterJSWrapper"><div class="enlighter-toolbar-top"><a>Plain text</a><a>Copy to clipboard</a><a>Open code in new window</a><a>EnlighterJS 3 Syntax Highlighter</a></div><ol class="enlighter enlighter-default enlighter-go"><li><span class="enlighter-text">func main() {}</span></li></ol><div class="enlighter-raw">func main() {}</div></div>`,
+			expected: "```go\nfunc main() {}\n```",
+		},
+		{
+			// Multi-line Enlighter block: verify raw text is preserved verbatim
+			// (no per-token concatenation, no toolbar bleed-through).
+			name: "Enlighter multi-line code preserves newlines",
+			html: `<div class="EnlighterJSWrapper"><div class="enlighter-toolbar-top"><a>Plain text</a></div><ol class="enlighter enlighter-default enlighter-go"><li>noise</li></ol><div class="enlighter-raw">package main
+
+func main() {
+    println("hi")
+}</div></div>`,
+			expected: "```go\npackage main\n\nfunc main() {\n    println(\"hi\")\n}\n```",
+		},
+		{
+			// Fallback path: when .enlighter-raw is missing, derive code from
+			// the .enlighter-default highlighted box's text (still single copy).
+			name: "Enlighter without raw falls back to highlighted box text",
+			html: `<div class="EnlighterJSWrapper"><ol class="enlighter enlighter-default enlighter-python"><li>print('x')</li></ol></div>`,
+			expected: "```python\nprint('x')\n```",
+		},
 	}
 
 	for _, tt := range tests {
@@ -268,6 +295,89 @@ func TestConvertNodeToMarkdown(t *testing.T) {
 				t.Errorf("Expected:\n%s\nGot:\n%s", expected, result)
 			}
 		})
+	}
+}
+
+// TestExtractContentJetBrainsBlog reproduces the JetBrains Go blog structure
+// from issue #63: data-clarity-region="article" scopes the body, Copy-heading-link
+// buttons leak into <h2>, and Enlighter wrappers emit code in triplicate plus a
+// 4-line toolbar. Verifies that ExtractContent + convertNodeToMarkdown together:
+//   - drop nav/footer/Subscribe/Discover-more (P0-B selector scope)
+//   - strip Copy-heading-link / sr-only noise (P1-A removal pass)
+//   - render each Enlighter block exactly once with the right language fence (P0-A)
+func TestExtractContentJetBrainsBlog(t *testing.T) {
+	html := `<!doctype html><html><body>
+<nav class="Header">SITE NAV — should be dropped</nav>
+<main>
+<div data-clarity-region="article">
+<h1>Golang Profiling Guide<button class="copy-button" aria-label="Copy heading link"><span class="sr-only">Copy heading link</span></button></h1>
+<p>Intro paragraph that explains profiling.</p>
+<h2>CPU profiles<button class="copy-button" aria-label="Copy heading link"><span class="sr-only">Copy heading link</span></button></h2>
+<p>Use the runtime/pprof package.</p>
+<div class="EnlighterJSWrapper">
+  <div class="enlighter-toolbar-top">
+    <a>Plain text</a><a>Copy to clipboard</a><a>Open code in new window</a><a>EnlighterJS 3 Syntax Highlighter</a>
+  </div>
+  <ol class="enlighter enlighter-default enlighter-go">
+    <li>noise highlight tokens here</li>
+  </ol>
+  <div class="enlighter-raw">import "runtime/pprof"
+
+func main() {
+    pprof.StartCPUProfile(nil)
+}</div>
+</div>
+<p>Trailing paragraph.</p>
+</div>
+</main>
+<footer>FOOTER — should be dropped</footer>
+<section class="Subscribe">Subscribe form — should be dropped</section>
+<section class="DiscoverMore">Discover more — should be dropped</section>
+</body></html>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	result := ExtractContent(doc)
+
+	// UI noise must be gone (regions outside data-clarity-region).
+	for _, banned := range []string{
+		"SITE NAV",
+		"FOOTER",
+		"Subscribe form",
+		"Discover more",
+		"Copy heading link",
+		"Plain text",
+		"Copy to clipboard",
+		"Open code in new window",
+		"EnlighterJS 3 Syntax Highlighter",
+		"noise highlight tokens",
+	} {
+		if strings.Contains(result, banned) {
+			t.Errorf("expected %q to be stripped, still present in:\n%s", banned, result)
+		}
+	}
+
+	// Code block must appear exactly once, with the go fence.
+	if got := strings.Count(result, "```go"); got != 1 {
+		t.Errorf("expected exactly 1 ```go fence, got %d in:\n%s", got, result)
+	}
+	if !strings.Contains(result, "import \"runtime/pprof\"") {
+		t.Errorf("expected raw code preserved verbatim, got:\n%s", result)
+	}
+	// Three identical bodies would indicate the duplication bug returned.
+	if strings.Count(result, "pprof.StartCPUProfile(nil)") != 1 {
+		t.Errorf("code body should appear once, got %d in:\n%s",
+			strings.Count(result, "pprof.StartCPUProfile(nil)"), result)
+	}
+
+	// Headings should be clean (no Copy heading link suffix).
+	if !strings.Contains(result, "# Golang Profiling Guide\n") {
+		t.Errorf("expected clean h1, got:\n%s", result)
+	}
+	if !strings.Contains(result, "## CPU profiles\n") {
+		t.Errorf("expected clean h2, got:\n%s", result)
 	}
 }
 
