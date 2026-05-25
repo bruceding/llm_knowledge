@@ -500,6 +500,14 @@ func TestEnlighterJSRAWSkippedBeforeWrapper(t *testing.T) {
 // category nav) and footer (tags / share / subscribe / recommended cards /
 // table-of-contents) noise INSIDE the data-clarity-region article wrapper.
 // Verifies these class-based UI regions are removed.
+//
+// Issue #67 follow-up: the JetBrains article BODY lives inside
+// "<div class='content js-toc-content'>" — "js-toc-content" is a TOC-aware
+// content region (the floating TOC tracks its scroll position), NOT the TOC
+// itself. The real TOC lives in "<div class='js-toc'>" and is opened via
+// "<a class='toc-opener'>". The previous fix mistakenly stripped
+// .js-toc-content and erased every JetBrains article body; this test now
+// reflects the real markup so the regression cannot return.
 func TestExtractContentJetBrainsBlogNoise(t *testing.T) {
 	html := `<!doctype html><html><body>
 <div data-clarity-region="article">
@@ -510,15 +518,18 @@ func TestExtractContentJetBrainsBlogNoise(t *testing.T) {
   <a class="download-button" href="/download/">Download</a>
   <nav class="category-nav"><a href="/category/goland/">GoLand</a></nav>
 </div>
-<h1>A Practical Guide to Profiling in Go</h1>
-<p>Intro.</p>
-<p>Happy coding!<br>The GoLand Team</p>
+<div class="content js-toc-content">
+  <h1>A Practical Guide to Profiling in Go</h1>
+  <p>Intro.</p>
+  <p>Happy coding!<br>The GoLand Team</p>
+</div>
+<a class="toc-opener" href="#">Open TOC</a>
+<div class="js-toc"><ol class="toc-list"><li>TOC item</li></ol></div>
 <div class="post-tags"><a href="/tag/cpu-profiling/">CPU profiling</a></div>
 <div class="article-share"><a href="#">Share</a><a href="#">Facebook</a></div>
 <aside class="post-navigation"><a href="#">Prev post</a></aside>
 <form class="subscribe-form">Subscribe to GoLang Blog updates<input/></form>
 <div class="discover-more"><h3>Discover more</h3><a href="#">Article A</a></div>
-<div class="js-toc-content"><ol><li>TOC item</li></ol></div>
 </div>
 </body></html>`
 
@@ -528,9 +539,13 @@ func TestExtractContentJetBrainsBlogNoise(t *testing.T) {
 	}
 	result := ExtractContent(doc)
 
-	// Body intro must survive.
+	// Body (inside .js-toc-content) must survive — this is the regression
+	// guard for issue #67.
 	if !strings.Contains(result, "A Practical Guide to Profiling in Go") {
 		t.Errorf("expected article body, got:\n%s", result)
+	}
+	if !strings.Contains(result, "Intro.") {
+		t.Errorf("expected body paragraph, got:\n%s", result)
 	}
 	if !strings.Contains(result, "The GoLand Team") {
 		t.Errorf("expected author byline, got:\n%s", result)
@@ -549,7 +564,8 @@ func TestExtractContentJetBrainsBlogNoise(t *testing.T) {
 		}
 	}
 
-	// Footer-noise classes must be stripped.
+	// Footer-noise classes must be stripped — including the REAL TOC
+	// (".js-toc" + "a.toc-opener"), not the body container.
 	for _, banned := range []string{
 		"CPU profiling",
 		"Facebook",
@@ -557,6 +573,7 @@ func TestExtractContentJetBrainsBlogNoise(t *testing.T) {
 		"Subscribe to GoLang Blog",
 		"Discover more",
 		"Article A",
+		"Open TOC",
 		"TOC item",
 	} {
 		if strings.Contains(result, banned) {

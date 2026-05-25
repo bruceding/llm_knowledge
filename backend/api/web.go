@@ -827,6 +827,12 @@ func ExtractContent(doc *goquery.Document) string {
 	// Only multi-word / scoped class names are listed so a bare ".share" or
 	// ".recommended" used as an in-content callout on other sites is not
 	// accidentally stripped.
+	//
+	// Issue #67: do NOT strip ".js-toc-content" — despite the name it is the
+	// JetBrains article BODY container (a "Table of Contents-aware content"
+	// region the floating TOC tracks for scroll position), not the TOC itself.
+	// The actual TOC lives in ".js-toc" (no -content suffix) and is opened by
+	// "a.toc-opener".
 	doc.Find(
 		".product-header, .site-header, .global-header, .app-header, " +
 			".social-links, .follow-list, .social-icons, .follow-bar, " +
@@ -837,7 +843,7 @@ func ExtractContent(doc *goquery.Document) string {
 			".post-navigation, .prev-post, .next-post, " +
 			".newsletter-signup, .subscribe-form, " +
 			".discover-more, .recommended-articles, .related-posts, " +
-			".js-toc-content, .table-of-contents",
+			"a.toc-opener, .js-toc, .table-of-contents",
 	).Remove()
 
 	// Medium noise cleanup (byline / overlays / action buttons) at the doc
