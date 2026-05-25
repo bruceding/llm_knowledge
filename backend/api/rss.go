@@ -932,16 +932,17 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		if strings.TrimSpace(code) == "" {
 			return ""
 		}
-		// Language hint lives in an "enlighter-{lang}" class. On the wrapper the
-		// class is on a descendant (.enlighter-default), so search both levels.
+		// Language marker lives in "enlighter-l-{lang}" (l = language). Sibling
+		// classes "enlighter-v-{variant}", "enlighter-t-{theme}", etc. are theme
+		// metadata and must NOT be treated as the language (issue #65 bug 3:
+		// the previous "first non-blacklisted enlighter-*" loop returned
+		// "v-standard" instead of "go"). On the wrapper the language class lives
+		// on a descendant (.enlighter-default), so search both levels.
 		language := ""
 		findLang := func(classes string) string {
 			for _, class := range strings.Fields(classes) {
-				if class == "enlighter-default" || class == "enlighter" || class == "enlighter-codebox" {
-					continue
-				}
-				if strings.HasPrefix(class, "enlighter-") {
-					return strings.TrimPrefix(class, "enlighter-")
+				if strings.HasPrefix(class, "enlighter-l-") {
+					return strings.TrimPrefix(class, "enlighter-l-")
 				}
 			}
 			return ""
@@ -959,6 +960,28 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 				}
 				return true
 			})
+		}
+		// Last-resort fallback: some pages tag the wrapper or its
+		// .enlighter-default child with data-enlighter-language="golang" only,
+		// without the enlighter-l-* class.
+		if language == "" {
+			if lang, ok := s.Attr("data-enlighter-language"); ok {
+				language = lang
+			} else {
+				s.Find("[data-enlighter-language]").EachWithBreak(func(i int, sub *goquery.Selection) bool {
+					if lang, ok := sub.Attr("data-enlighter-language"); ok && lang != "" {
+						language = lang
+						return false
+					}
+					return true
+				})
+			}
+		}
+		// Normalize Enlighter alias to the canonical markdown fence identifier.
+		// Applies to all three extraction paths above (some posts ship
+		// enlighter-l-golang as the class, others ship data-enlighter-language="golang").
+		if language == "golang" {
+			language = "go"
 		}
 		return fmt.Sprintf("\n```%s\n%s\n```\n\n", language, code)
 	}
@@ -1185,6 +1208,14 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		}
 		return "`" + innerContent + "`"
 	case "pre":
+		// Skip the original Enlighter source <pre class="EnlighterJSRAW">: it is
+		// the raw input that Enlighter replaces with an adjacent .EnlighterJSWrapper
+		// (handled above). After init it is typically left in the DOM but emptied
+		// or hidden, so re-emitting it produces either a duplicate or an empty
+		// fenced code block (issue #65 bug 4).
+		if s.HasClass("EnlighterJSRAW") {
+			return ""
+		}
 		// Check if pre contains a code tag with language class
 		codeEl := s.Find("code")
 		language := ""
@@ -1264,7 +1295,14 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 			}
 		}
 		codeContent = strings.Join(lines, "\n")
-		return fmt.Sprintf("\n```%s\n%s\n```\n\n", language, strings.TrimSpace(codeContent))
+		trimmed := strings.TrimSpace(codeContent)
+		// Drop empty <pre> entirely instead of emitting an empty ``` fence
+		// (issue #65 bug 4: Enlighter's emptied source <pre> and similar
+		// rendering artifacts otherwise produce stray blank code blocks).
+		if trimmed == "" {
+			return ""
+		}
+		return fmt.Sprintf("\n```%s\n%s\n```\n\n", language, trimmed)
 	case "blockquote":
 		lines := strings.Split(innerContent, "\n")
 		var result strings.Builder

@@ -253,14 +253,14 @@ func TestConvertNodeToMarkdown(t *testing.T) {
 			// dedicated handler, each block appears 3× plus 4 toolbar lines.
 			// Detect the wrapper, extract once from .enlighter-raw, return early.
 			name: "Enlighter wrapper with raw + highlighted code (JetBrains blog)",
-			html: `<div class="EnlighterJSWrapper"><div class="enlighter-toolbar-top"><a>Plain text</a><a>Copy to clipboard</a><a>Open code in new window</a><a>EnlighterJS 3 Syntax Highlighter</a></div><ol class="enlighter enlighter-default enlighter-go"><li><span class="enlighter-text">func main() {}</span></li></ol><div class="enlighter-raw">func main() {}</div></div>`,
+			html: `<div class="EnlighterJSWrapper"><div class="enlighter-toolbar-top"><a>Plain text</a><a>Copy to clipboard</a><a>Open code in new window</a><a>EnlighterJS 3 Syntax Highlighter</a></div><ol class="enlighter enlighter-default enlighter-l-go"><li><span class="enlighter-text">func main() {}</span></li></ol><div class="enlighter-raw">func main() {}</div></div>`,
 			expected: "```go\nfunc main() {}\n```",
 		},
 		{
 			// Multi-line Enlighter block: verify raw text is preserved verbatim
 			// (no per-token concatenation, no toolbar bleed-through).
 			name: "Enlighter multi-line code preserves newlines",
-			html: `<div class="EnlighterJSWrapper"><div class="enlighter-toolbar-top"><a>Plain text</a></div><ol class="enlighter enlighter-default enlighter-go"><li>noise</li></ol><div class="enlighter-raw">package main
+			html: `<div class="EnlighterJSWrapper"><div class="enlighter-toolbar-top"><a>Plain text</a></div><ol class="enlighter enlighter-default enlighter-l-go"><li>noise</li></ol><div class="enlighter-raw">package main
 
 func main() {
     println("hi")
@@ -271,7 +271,7 @@ func main() {
 			// Fallback path: when .enlighter-raw is missing, derive code from
 			// the .enlighter-default highlighted box's text (still single copy).
 			name: "Enlighter without raw falls back to highlighted box text",
-			html: `<div class="EnlighterJSWrapper"><ol class="enlighter enlighter-default enlighter-python"><li>print('x')</li></ol></div>`,
+			html: `<div class="EnlighterJSWrapper"><ol class="enlighter enlighter-default enlighter-l-python"><li>print('x')</li></ol></div>`,
 			expected: "```python\nprint('x')\n```",
 		},
 	}
@@ -318,7 +318,7 @@ func TestExtractContentJetBrainsBlog(t *testing.T) {
   <div class="enlighter-toolbar-top">
     <a>Plain text</a><a>Copy to clipboard</a><a>Open code in new window</a><a>EnlighterJS 3 Syntax Highlighter</a>
   </div>
-  <ol class="enlighter enlighter-default enlighter-go">
+  <ol class="enlighter enlighter-default enlighter-l-go">
     <li>noise highlight tokens here</li>
   </ol>
   <div class="enlighter-raw">import "runtime/pprof"
@@ -378,6 +378,190 @@ func main() {
 	}
 	if !strings.Contains(result, "## CPU profiles\n") {
 		t.Errorf("expected clean h2, got:\n%s", result)
+	}
+}
+
+// TestEnlighterLanguageFromLClass verifies that the language extracted from an
+// Enlighter wrapper is the value of the "enlighter-l-{lang}" class (the actual
+// language marker), not the "enlighter-v-{variant}" theme/variant class.
+// Regression for issue #65 (real JetBrains markup carries both classes; the old
+// findLang loop returned "v-standard" because it accepted the first non-blacklisted
+// "enlighter-*" prefix it saw).
+func TestEnlighterLanguageFromLClass(t *testing.T) {
+	html := `<div class="EnlighterJSWrapper">` +
+		`<ol class="enlighter enlighter-default enlighter-v-standard enlighter-l-go enlighter-t-classic">` +
+		`<li>noise</li></ol>` +
+		`<div class="enlighter-raw">package main</div></div>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var result string
+	doc.Find("body").Contents().Each(func(_ int, s *goquery.Selection) {
+		result += convertNodeToMarkdown(s)
+	})
+	result = strings.TrimSpace(result)
+	want := "```go\npackage main\n```"
+	if result != want {
+		t.Errorf("expected\n%s\ngot\n%s", want, result)
+	}
+}
+
+// TestEnlighterLanguageFromDataAttr verifies the data-enlighter-language fallback
+// when no enlighter-l-{lang} class is present (some JetBrains pages put the
+// language on the original <pre> via data-enlighter-language="golang" only).
+func TestEnlighterLanguageFromDataAttr(t *testing.T) {
+	html := `<div class="EnlighterJSWrapper" data-enlighter-language="golang">` +
+		`<ol class="enlighter enlighter-default"><li>noise</li></ol>` +
+		`<div class="enlighter-raw">package main</div></div>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var result string
+	doc.Find("body").Contents().Each(func(_ int, s *goquery.Selection) {
+		result += convertNodeToMarkdown(s)
+	})
+	result = strings.TrimSpace(result)
+	want := "```go\npackage main\n```"
+	if result != want {
+		t.Errorf("expected\n%s\ngot\n%s", want, result)
+	}
+}
+
+// TestPreEmptyProducesNoFence ensures an empty <pre> does not emit a stray
+// empty fenced code block. Reproduces issue #65 bug 4 where every real
+// code block was preceded by an empty ``` ``` (origin: empty Enlighter source
+// <pre> or .enlighter-code render box after Enlighter init).
+//
+// Two defenses are exercised here: the EnlighterJSRAW short-circuit at the
+// top of `case "pre":` (skips before any extraction), and the empty-content
+// guard at the bottom (catches every other empty/whitespace shape).
+func TestPreEmptyProducesNoFence(t *testing.T) {
+	cases := []struct {
+		name string
+		html string
+	}{
+		{"truly empty pre", `<pre></pre>`},
+		{"pre with whitespace only", `<pre>
+
+	</pre>`},
+		{"pre with empty code child", `<pre><code></code></pre>`},
+		// Short-circuited by the EnlighterJSRAW class check (path 1).
+		{"pre with EnlighterJSRAW class", `<pre class="EnlighterJSRAW" data-enlighter-language="golang"></pre>`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, err := goquery.NewDocumentFromReader(strings.NewReader(tc.html))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			var result string
+			doc.Find("body").Contents().Each(func(_ int, s *goquery.Selection) {
+				result += convertNodeToMarkdown(s)
+			})
+			if strings.Contains(result, "```") {
+				t.Errorf("expected no fenced block, got:\n%q", result)
+			}
+		})
+	}
+}
+
+// TestEnlighterJSRAWSkippedBeforeWrapper verifies that the original
+// <pre class="EnlighterJSRAW"> source block (which Enlighter renders via the
+// adjacent .EnlighterJSWrapper) does not also emit a duplicate or empty
+// fenced block.
+func TestEnlighterJSRAWSkippedBeforeWrapper(t *testing.T) {
+	html := `<pre class="EnlighterJSRAW" data-enlighter-language="golang">package main</pre>` +
+		`<div class="EnlighterJSWrapper">` +
+		`<ol class="enlighter enlighter-default enlighter-l-go"><li>noise</li></ol>` +
+		`<div class="enlighter-raw">package main</div></div>`
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var result string
+	doc.Find("body").Contents().Each(func(_ int, s *goquery.Selection) {
+		result += convertNodeToMarkdown(s)
+	})
+	if got := strings.Count(result, "```go"); got != 1 {
+		t.Errorf("expected exactly 1 ```go fence, got %d in:\n%s", got, result)
+	}
+	if strings.Count(result, "package main") != 1 {
+		t.Errorf("expected exactly 1 'package main', got %d in:\n%s",
+			strings.Count(result, "package main"), result)
+	}
+}
+
+// TestExtractContentJetBrainsBlogNoise reproduces issue #65: the JetBrains
+// blog injects header (site logo / social-follow row / download button /
+// category nav) and footer (tags / share / subscribe / recommended cards /
+// table-of-contents) noise INSIDE the data-clarity-region article wrapper.
+// Verifies these class-based UI regions are removed.
+func TestExtractContentJetBrainsBlogNoise(t *testing.T) {
+	html := `<!doctype html><html><body>
+<div data-clarity-region="article">
+<div class="product-header">
+  <a href="/go/"><img src="logo.svg" alt="Go logo"/> GoLand</a>
+  <p>The IDE for professional development in Go</p>
+  <ul class="social-links"><li><a href="#">Follow</a></li><li><a href="#">X</a></li></ul>
+  <a class="download-button" href="/download/">Download</a>
+  <nav class="category-nav"><a href="/category/goland/">GoLand</a></nav>
+</div>
+<h1>A Practical Guide to Profiling in Go</h1>
+<p>Intro.</p>
+<p>Happy coding!<br>The GoLand Team</p>
+<div class="post-tags"><a href="/tag/cpu-profiling/">CPU profiling</a></div>
+<div class="article-share"><a href="#">Share</a><a href="#">Facebook</a></div>
+<aside class="post-navigation"><a href="#">Prev post</a></aside>
+<form class="subscribe-form">Subscribe to GoLang Blog updates<input/></form>
+<div class="discover-more"><h3>Discover more</h3><a href="#">Article A</a></div>
+<div class="js-toc-content"><ol><li>TOC item</li></ol></div>
+</div>
+</body></html>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	result := ExtractContent(doc)
+
+	// Body intro must survive.
+	if !strings.Contains(result, "A Practical Guide to Profiling in Go") {
+		t.Errorf("expected article body, got:\n%s", result)
+	}
+	if !strings.Contains(result, "The GoLand Team") {
+		t.Errorf("expected author byline, got:\n%s", result)
+	}
+
+	// Header-noise classes must be stripped.
+	for _, banned := range []string{
+		"Go logo",
+		"The IDE for professional development",
+		"Follow",
+		"Download",
+		"category/goland",
+	} {
+		if strings.Contains(result, banned) {
+			t.Errorf("header noise %q leaked, full output:\n%s", banned, result)
+		}
+	}
+
+	// Footer-noise classes must be stripped.
+	for _, banned := range []string{
+		"CPU profiling",
+		"Facebook",
+		"Prev post",
+		"Subscribe to GoLang Blog",
+		"Discover more",
+		"Article A",
+		"TOC item",
+	} {
+		if strings.Contains(result, banned) {
+			t.Errorf("footer noise %q leaked, full output:\n%s", banned, result)
+		}
 	}
 }
 
