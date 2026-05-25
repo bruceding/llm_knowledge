@@ -904,6 +904,65 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 
 	tag := node.Data
 
+	// Enlighter-rendered code blocks (e.g. JetBrains blog) ship a triple structure:
+	//   .enlighter-toolbar-top  (Plain text / Copy to clipboard / Open in new window / EnlighterJS 3 …)
+	//   .enlighter-raw          (the original raw source — single textarea-like node)
+	//   .enlighter-code / .enlighter-default  (syntax-highlighted spans, one per token)
+	// Recursing produces three duplicated copies plus the four toolbar noise lines.
+	// Detect the outer wrapper (.EnlighterJSWrapper) or the inner highlight box
+	// (.enlighter-default), extract once from .enlighter-raw (fallback to
+	// .enlighter-code text), and return early so descendants are never re-walked.
+	if s.HasClass("EnlighterJSWrapper") || s.HasClass("enlighter-default") {
+		raw := s.Find(".enlighter-raw").First()
+		code := strings.TrimRight(raw.Text(), "\n")
+		if code == "" {
+			// Fallbacks when .enlighter-raw is missing — try, in order:
+			//   1. an explicit .enlighter-code element
+			//   2. the highlighted box itself (.enlighter-default descendant)
+			//   3. the element `s` directly (when `s` already IS .enlighter-default)
+			codeEl := s.Find(".enlighter-code").First()
+			if codeEl.Length() == 0 {
+				codeEl = s.Find(".enlighter-default").First()
+			}
+			if codeEl.Length() == 0 && s.HasClass("enlighter-default") {
+				codeEl = s
+			}
+			code = strings.TrimRight(codeEl.Text(), "\n")
+		}
+		if strings.TrimSpace(code) == "" {
+			return ""
+		}
+		// Language hint lives in an "enlighter-{lang}" class. On the wrapper the
+		// class is on a descendant (.enlighter-default), so search both levels.
+		language := ""
+		findLang := func(classes string) string {
+			for _, class := range strings.Fields(classes) {
+				if class == "enlighter-default" || class == "enlighter" || class == "enlighter-codebox" {
+					continue
+				}
+				if strings.HasPrefix(class, "enlighter-") {
+					return strings.TrimPrefix(class, "enlighter-")
+				}
+			}
+			return ""
+		}
+		if cls, ok := s.Attr("class"); ok {
+			language = findLang(cls)
+		}
+		if language == "" {
+			s.Find(".enlighter-default").EachWithBreak(func(i int, sub *goquery.Selection) bool {
+				if cls, ok := sub.Attr("class"); ok {
+					if l := findLang(cls); l != "" {
+						language = l
+						return false
+					}
+				}
+				return true
+			})
+		}
+		return fmt.Sprintf("\n```%s\n%s\n```\n\n", language, code)
+	}
+
 	// Handle img tag specially - it has no children
 	if tag == "img" {
 		src, _ := s.Attr("src")
