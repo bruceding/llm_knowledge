@@ -818,6 +818,28 @@ func ExtractContent(doc *goquery.Document) string {
 	//     (the dedicated Enlighter handler in convertNodeToMarkdown is primary)
 	doc.Find(".copy-button, .sr-only, button[aria-label*='Copy'], .enlighter-toolbar-top").Remove()
 
+	// Issue #65: JetBrains GoLand blog injects header/footer UI INSIDE the
+	// [data-clarity-region='article'] wrapper, so the global semantic-tag pass
+	// above does not catch class-only divs. Strip the known noise containers:
+	//   header: site/product logo strip, follow-social row, download CTA, category nav
+	//   footer: tag list, share buttons, prev/next post navigation, subscribe form,
+	//           recommendation cards ("Discover more"), table-of-contents block
+	// Only multi-word / scoped class names are listed so a bare ".share" or
+	// ".recommended" used as an in-content callout on other sites is not
+	// accidentally stripped.
+	doc.Find(
+		".product-header, .site-header, .global-header, .app-header, " +
+			".social-links, .follow-list, .social-icons, .follow-bar, " +
+			".download-button, .download-link, .download-cta, " +
+			".category-nav, " +
+			".post-tags, .article-tags, .tag-list, .post-tag, " +
+			".share-buttons, .article-share, .post-share, " +
+			".post-navigation, .prev-post, .next-post, " +
+			".newsletter-signup, .subscribe-form, " +
+			".discover-more, .recommended-articles, .related-posts, " +
+			".js-toc-content, .table-of-contents",
+	).Remove()
+
 	// Medium noise cleanup (byline / overlays / action buttons) at the doc
 	// level so it works for both the data-selectable-paragraph fast path AND
 	// for custom-domain publications whose extension snapshot lacks the
