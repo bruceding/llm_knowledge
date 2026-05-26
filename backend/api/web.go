@@ -1355,6 +1355,17 @@ func slugify(title string) string {
 	title = strings.ReplaceAll(title, "\"", "")
 	title = strings.ReplaceAll(title, "<", "")
 	title = strings.ReplaceAll(title, ">", "")
+	title = strings.ReplaceAll(title, "&", "-and-")
+	title = strings.ReplaceAll(title, "%", "pct")
+	title = strings.ReplaceAll(title, ",", "")
+	title = strings.ReplaceAll(title, "#", "")
+	title = strings.ReplaceAll(title, "'", "")
+	// Trim leading/trailing dots, spaces, and dashes to avoid hidden dirs
+	// or boundary noise (e.g. "  .title.  " → space-to-dash leaves "--.title.--").
+	title = strings.Trim(title, ". -")
+	if title == "" {
+		title = "untitled"
+	}
 	return title
 }
 
@@ -1670,7 +1681,10 @@ func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, origi
 	userIdStr := strconv.FormatUint(uint64(userId), 10)
 
 	// Ensure user directory exists
-	fs.InitUserDirs(h.DataDir, userId)
+	if err := fs.InitUserDirs(h.DataDir, userId); err != nil {
+		log.Printf("[web] InitUserDirs failed: user=%d dataDir=%s err=%v", userId, h.DataDir, err)
+		return c.JSON(500, echo.Map{"error": "failed to initialize user directories"})
+	}
 
 	// Dedup: hard-delete any soft-deleted records with the same source_url for this user
 	// This prevents "ghost" records from causing confusion and accidental deletion of re-imported files
@@ -1708,6 +1722,7 @@ func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, origi
 	dir := filepath.Join(userDir, "raw", "web", title)
 	assetsDir := filepath.Join(dir, "assets")
 	if err := os.MkdirAll(assetsDir, 0755); err != nil {
+		log.Printf("[web] MkdirAll failed: path=%s err=%v", assetsDir, err)
 		return c.JSON(500, echo.Map{"error": "failed to create directory"})
 	}
 
@@ -1868,7 +1883,10 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 	userIdStr := strconv.FormatUint(uint64(userId), 10)
 
 	// Ensure user directory exists
-	fs.InitUserDirs(h.DataDir, userId)
+	if err := fs.InitUserDirs(h.DataDir, userId); err != nil {
+		log.Printf("[web] InitUserDirs failed: user=%d dataDir=%s err=%v", userId, h.DataDir, err)
+		return c.JSON(500, echo.Map{"error": "failed to initialize user directories"})
+	}
 
 	// Dedup
 	var staleDocs []db.Document
@@ -1900,6 +1918,7 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 	dir := filepath.Join(userDir, "raw", "web", title)
 	assetsDir := filepath.Join(dir, "assets")
 	if err := os.MkdirAll(assetsDir, 0755); err != nil {
+		log.Printf("[web] MkdirAll failed: path=%s err=%v", assetsDir, err)
 		return c.JSON(500, echo.Map{"error": "failed to create directory"})
 	}
 
