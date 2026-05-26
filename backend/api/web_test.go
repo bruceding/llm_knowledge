@@ -2028,17 +2028,41 @@ func TestFetchXTwitterViaAPI(t *testing.T) {
 // TestSlugify tests the slugify function
 func TestSlugify(t *testing.T) {
 	tests := []struct {
+		name     string
 		input    string
 		expected string
 	}{
-		{"Hello World", "Hello-World"},
-		{"foo/bar:baz", "foo-bar-baz"},
-		{"a?b*c|d", "abcd"},
-		{`quote"here`, "quotehere"},
-		{"normal", "normal"},
+		{"plain text gets dashed", "Hello World", "Hello-World"},
+		{"slash and colon become dash", "foo/bar:baz", "foo-bar-baz"},
+		{"unsafe glob chars stripped", "a?b*c|d", "abcd"},
+		{"double quote stripped", `quote"here`, "quotehere"},
+		{"untouched normal", "normal", "normal"},
+
+		// Regression for issue #68: title with `, % & .` etc. was producing
+		// odd slugs like `Title.-75,700-...-tokens-75%.---Towards-AI`.
+		{"comma stripped", "75,700 stars", "75700-stars"},
+		{"percent replaced with pct", "cut tokens 75%", "cut-tokens-75pct"},
+		{"ampersand becomes and", "Rock & Roll", "Rock--and--Roll"},
+		{"hash stripped", "issue #68 fix", "issue-68-fix"},
+		{"apostrophe stripped", "don't panic", "dont-panic"},
+		{"trailing dot trimmed", "Hello.", "Hello"},
+		{"leading dot trimmed - no hidden dir", ".bashrc-style", "bashrc-style"},
+		{"trailing-and-leading dots and spaces trimmed", "  .title.  ", "title"},
+		{"empty input returns untitled", "", "untitled"},
+		{"only-stripped chars return untitled", "?*|", "untitled"},
+		{"only dots return untitled after trim", "...", "untitled"},
+		{
+			"full failing title from issue #68",
+			`Matt Pocock dumped 17 markdown files on GitHub. 75,700 stars later, one cut my tokens 75%`,
+			`Matt-Pocock-dumped-17-markdown-files-on-GitHub.-75700-stars-later-one-cut-my-tokens-75pct`,
+		},
 	}
 	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
+		name := tt.name
+		if name == "" {
+			name = tt.input
+		}
+		t.Run(name, func(t *testing.T) {
 			result := slugify(tt.input)
 			if result != tt.expected {
 				t.Errorf("slugify(%q) = %q, want %q", tt.input, result, tt.expected)

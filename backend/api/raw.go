@@ -52,12 +52,17 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 	userIdStr := strconv.FormatUint(uint64(userId), 10)
 
 	// Ensure user directory exists
-	fs.InitUserDirs(h.DataDir, userId)
+	if err := fs.InitUserDirs(h.DataDir, userId); err != nil {
+		log.Printf("[raw] InitUserDirs failed: user=%d dataDir=%s err=%v", userId, h.DataDir, err)
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to initialize user directories"})
+	}
 
 	dir := filepath.Join(userDir, "raw", "papers", name)
 
 	// Create directory structure: raw/papers/{name}/ and raw/papers/{name}/assets/
-	if err := os.MkdirAll(filepath.Join(dir, "assets"), 0755); err != nil {
+	assetsDir := filepath.Join(dir, "assets")
+	if err := os.MkdirAll(assetsDir, 0755); err != nil {
+		log.Printf("[raw] MkdirAll failed: path=%s err=%v", assetsDir, err)
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create directory structure"})
 	}
 
@@ -179,11 +184,16 @@ func (h *RawHandler) UploadPDFFromURL(c echo.Context) error {
 	userIdStr := strconv.FormatUint(uint64(userId), 10)
 
 	// Ensure user directory exists
-	fs.InitUserDirs(h.DataDir, userId)
+	if err := fs.InitUserDirs(h.DataDir, userId); err != nil {
+		log.Printf("[raw] InitUserDirs failed: user=%d dataDir=%s err=%v", userId, h.DataDir, err)
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to initialize user directories"})
+	}
 
 	// Create directory structure
 	dir := filepath.Join(userDir, "raw", "papers", name)
-	if err := os.MkdirAll(filepath.Join(dir, "assets"), 0755); err != nil {
+	assetsDir := filepath.Join(dir, "assets")
+	if err := os.MkdirAll(assetsDir, 0755); err != nil {
+		log.Printf("[raw] MkdirAll failed: path=%s err=%v", assetsDir, err)
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to create directory structure"})
 	}
 
