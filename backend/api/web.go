@@ -1366,6 +1366,15 @@ func slugify(title string) string {
 	if title == "" {
 		title = "untitled"
 	}
+	// Truncate to 200 bytes to stay under Linux 255-byte filename limit,
+	// leaving room for suffixes like /assets/. Use rune-based trimming
+	// to avoid splitting multi-byte characters (CJK etc.).
+	for len(title) > 200 {
+		title = strings.TrimRight(title, " .-")
+		if len(title) > 200 {
+			title = string([]rune(title)[:len([]rune(title))-1])
+		}
+	}
 	return title
 }
 

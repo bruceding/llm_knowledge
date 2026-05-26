@@ -2056,6 +2056,17 @@ func TestSlugify(t *testing.T) {
 			`Matt Pocock dumped 17 markdown files on GitHub. 75,700 stars later, one cut my tokens 75%`,
 			`Matt-Pocock-dumped-17-markdown-files-on-GitHub.-75700-stars-later-one-cut-my-tokens-75pct`,
 		},
+		// Regression for issue #70: long CJK+English title exceeds 255-byte filename limit
+		{
+			"long mixed CJK+English title truncated to 200 bytes",
+			"Matt-Pocock-在-GitHub-上发布了-17-个-Markdown-文件。获得-75700-个星标后，有人删减了我的-75pct-的令牌。-作者：Chew-Loong-Nian---人工智能工程师--2026-年-5-月--迈向人工智能-----Matt-Pocock-Dumped-17-Markdown-Files-on-GitHub.-75700-Stars-Later-One-Cut-My-Tokens-75pct",
+			"Matt-Pocock-在-GitHub-上发布了-17-个-Markdown-文件。获得-75700-个星标后，有人删减了我的-75pct-的令牌。-作者：Chew-Loong-Nian---人工智能工程师--2026-年-5-月--迈",
+		},
+		{
+			"very long ASCII title truncated",
+			"A-Very-Long-Title-That-Exceeds-Two-Hundred-Bytes-And-Should-Be-Truncated-To-Prevent-File-Name-Too-Long-Errors-On-The-Linux-File-System-When-Saving-Web-Clipped-Documents-With-CJK-Mixed-Content-And-Multiple-Segments-Combined-Together-Into-One-Single-Long-Slug-Name",
+			"A-Very-Long-Title-That-Exceeds-Two-Hundred-Bytes-And-Should-Be-Truncated-To-Prevent-File-Name-Too-Long-Errors-On-The-Linux-File-System-When-Saving-Web-Clipped-Documents-With-CJK-Mixed-Content-And-Mult",
+		},
 	}
 	for _, tt := range tests {
 		name := tt.name
