@@ -307,6 +307,11 @@ func filterPDF2ZhOutput(line string) string {
 		return ""
 	}
 
+	// Suppress argparse Namespace repr (e.g. "Namespace(files=['...'], debug=False, ...)")
+	if strings.HasPrefix(trimmed, "Namespace(") {
+		return ""
+	}
+
 	// Suppress pure numbers or percentages (progress bar fragments)
 	if strings.Trim(trimmed, " 0123456789.%") == "" {
 		return ""
