@@ -355,12 +355,14 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       if (done) {
         clearWatchdog()
         setConnecting(false)
-        abortRef.current = null
-        // Server closed the stream (session cleaned up, process exit, restart).
-        // If the panel is still visible, silently reconnect — scheduleReconnect
-        // applies exponential backoff and a retry cap so a persistent failure
-        // (e.g. stale ChatSessionID) can't loop on the backend.
-        scheduleReconnect()
+        // Only clear abortRef and schedule reconnect if this is still the
+        // active controller — prevents stale pumps from overwriting
+        // abortRef (breaking the new connection's watchdog) and spawning
+        // phantom reconnects after an explicit user action (Clear Chat).
+        if (abortRef.current === controller) {
+          abortRef.current = null
+          scheduleReconnect()
+        }
         return
       }
       buffer += decoder.decode(value, { stream: true })
@@ -416,7 +418,12 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
         if (err.name !== 'AbortError') {
           clearWatchdog()
           setConnecting(false)
-          scheduleReconnect()
+          // Only reconnect if this controller is still active, to prevent
+          // stale errors (from aborted old connections) from spawning
+          // phantom reconnects that race with the new session.
+          if (abortRef.current === controller) {
+            scheduleReconnect()
+          }
         }
       })
   }, [docId, processSSEStream, scheduleReconnect, armWatchdog, clearWatchdog, cancelPendingReconnect])
