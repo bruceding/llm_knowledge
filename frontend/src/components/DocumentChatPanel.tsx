@@ -451,11 +451,14 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     fetch(`/api/doc-chat/reconnect?sessionId=${sid}`, { headers, signal: controller.signal })
       .then(res => {
         if (!res.ok) {
-          // Session not found — start new session but preserve messages
-          // so the user doesn't lose visible chat history. startNewSession
-          // arms its own watchdog, so disarm ours first to avoid double timers.
-          clearWatchdog()
-          startNewSession()
+          // Session not found — only start a new session if this controller
+          // is still the active one. A stale connectSSE call (superseded by
+          // a newer one via visibility change or re-mount) should not spawn
+          // a duplicate session.
+          if (abortRef.current === controller) {
+            clearWatchdog()
+            startNewSession()
+          }
           return
         }
         return processSSEStream(res, controller)
@@ -464,7 +467,9 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
         if (err.name !== 'AbortError') {
           clearWatchdog()
           setConnecting(false)
-          startNewSession()
+          if (abortRef.current === controller) {
+            startNewSession()
+          }
         }
       })
   }, [startNewSession, processSSEStream, armWatchdog, clearWatchdog, cancelPendingReconnect])

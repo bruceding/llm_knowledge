@@ -81,12 +81,12 @@ func (h *DocChatHandler) Stream(c echo.Context) error {
 	userDir := GetUserDir(c)
 	docIDForCallback := uint(docId)
 	prevSessionID := doc.ChatSessionID
+	// Always close any existing session for this doc before starting a new one.
+	// Without this, each /stream request spawns a new Claude CLI process while
+	// the old one lingers in the pool until its 120s idle timeout. During
+	// reconnect loops this leads to accumulating processes and SSE connections.
+	h.Pool.CloseByDocID(uint(docId))
 	if c.QueryParam("fresh") == "1" {
-		// Close any existing session for this doc before clearing the DB.
-		// Without this, the old session's onRealSessionID / onResumeFailed
-		// callbacks can fire after the new session has written its own ID,
-		// overwriting or clearing it.
-		h.Pool.CloseByDocID(uint(docId))
 		if prevSessionID != "" {
 			if err := db.DB.Model(&db.Document{}).Where("id = ?", docIDForCallback).Update("chat_session_id", "").Error; err != nil {
 				log.Printf("[docchat] Failed to clear chat_session_id for doc %d: %v", docIDForCallback, err)
