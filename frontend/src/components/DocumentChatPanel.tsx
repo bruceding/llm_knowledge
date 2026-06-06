@@ -353,13 +353,12 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     const pump = (): Promise<void> => reader.read().then(({ done, value }) => {
       if (controller.signal.aborted) return
       if (done) {
-        clearWatchdog()
-        setConnecting(false)
-        // Only clear abortRef and schedule reconnect if this is still the
-        // active controller — prevents stale pumps from overwriting
-        // abortRef (breaking the new connection's watchdog) and spawning
-        // phantom reconnects after an explicit user action (Clear Chat).
+        // Only act if this is still the active controller — prevents stale
+        // pumps from clearing connecting state or overwriting abortRef after
+        // a Clear Chat / startNewSession has already established a new one.
         if (abortRef.current === controller) {
+          clearWatchdog()
+          setConnecting(false)
           abortRef.current = null
           scheduleReconnect()
         }
@@ -499,24 +498,25 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     }
   }, [active, connectSSE, clearWatchdog, cancelPendingReconnect])
 
-  // Force reconnect when the tab becomes visible again — but only if the
-  // existing connection looks broken. Without this, a laptop sleep/wake
-  // cycle (or long tab-backgrounding) leaves the SSE socket in a half-dead
-  // state where the kernel reports it open but reads hang forever, and
-  // useEffect([active]) above doesn't re-fire because `active` (the
-  // chat-tab toggle) hasn't changed.
+  // Re-evaluate the SSE connection when the tab becomes visible again.
+  // After a laptop sleep/wake cycle or long tab-backgrounding, the kernel
+  // may still report the TCP socket as "open" but reads hang forever
+  // (half-dead connection). useEffect([active]) won't re-fire because
+  // `active` (the chat-tab toggle) hasn't changed.
   //
-  // Skip the reconnect when sessionId is set AND we're not currently
-  // connecting — that means we have a working session and a brief Cmd+Tab
-  // shouldn't disrupt streaming. Decay (rather than reset) the backoff
-  // counter so a persistently failing backend isn't bypassed by tab
-  // switching.
+  // Strategy: always force a reconnect on visibility restore. A brief
+  // Cmd+Tab is cheap — the old stream is aborted and a new one replaces
+  // it. The alternative (skipping reconnect when sessionId is set) leaves
+  // the UI stuck at "Connecting..." for up to 15 s (watchdog timeout)
+  // because the half-dead socket never delivers a `session` event and
+  // nobody triggers a fresh connection until the watchdog expires.
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return
       if (!activeRef.current) return
-      if (!connectingRef.current && sessionIdRef.current) return
-      reconnectAttemptRef.current = Math.max(0, reconnectAttemptRef.current - 2)
+      // Reset backoff so the reconnection starts immediately without
+      // accumulated delay from prior failed attempts.
+      reconnectAttemptRef.current = 0
       connectSSERef.current()
     }
     document.addEventListener('visibilitychange', onVisible)
