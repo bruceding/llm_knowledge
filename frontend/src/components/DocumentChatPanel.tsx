@@ -509,16 +509,17 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   // (half-dead connection). useEffect([active]) won't re-fire because
   // `active` (the chat-tab toggle) hasn't changed.
   //
-  // Strategy: always force a reconnect on visibility restore. A brief
-  // Cmd+Tab is cheap — the old stream is aborted and a new one replaces
-  // it. The alternative (skipping reconnect when sessionId is set) leaves
-  // the UI stuck at "Connecting..." for up to 15 s (watchdog timeout)
-  // because the half-dead socket never delivers a `session` event and
-  // nobody triggers a fresh connection until the watchdog expires.
+  // Strategy: only reconnect if the connection looks broken (connecting state
+  // stuck or no sessionId). A brief Cmd+Tab with a healthy connection should
+  // not trigger reconnect — that would cause unnecessary /stream requests
+  // every time the user switches windows.
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return
       if (!activeRef.current) return
+      // Skip reconnect if we have a healthy connection (not connecting AND has sessionId).
+      // This prevents aborting a working SSE stream just because the user switched tabs.
+      if (!connectingRef.current && sessionIdRef.current) return
       // Reset backoff so the reconnection starts immediately without
       // accumulated delay from prior failed attempts.
       reconnectAttemptRef.current = 0
