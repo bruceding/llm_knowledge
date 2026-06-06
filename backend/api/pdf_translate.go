@@ -44,26 +44,37 @@ func (h *PDFTranslateHandler) CheckTranslationStatus(c echo.Context) error {
 
 	// Determine target language based on source
 	targetLang := "zh"
+	altLang := "en"
 	if doc.Language == "zh" {
 		targetLang = "en"
+		altLang = "zh"
 	}
 
-	// Check if translated PDF exists
+	// Check if a translated PDF exists — try the expected target first,
+	// then fall back to the alternate direction. This handles documents
+	// that were translated before the default-target-language logic changed.
 	pdfDir := filepath.Join(userDir, rawRelPath)
-	translatedPdfName := fmt.Sprintf("paper_%s.pdf", targetLang)
-	translatedPdfPath := filepath.Join(pdfDir, translatedPdfName)
-
 	exists := false
-	if _, err := os.Stat(translatedPdfPath); err == nil {
-		exists = true
+	translatedPdfName := ""
+
+	for _, lang := range []string{targetLang, altLang} {
+		name := fmt.Sprintf("paper_%s.pdf", lang)
+		if _, err := os.Stat(filepath.Join(pdfDir, name)); err == nil {
+			exists = true
+			translatedPdfName = name
+			targetLang = lang
+			break
+		}
 	}
 
-	// Return path relative to userDir for frontend
-	return c.JSON(http.StatusOK, echo.Map{
+	response := echo.Map{
 		"exists":     exists,
-		"path":       filepath.Join("/data", rawRelPath, translatedPdfName),
 		"targetLang": targetLang,
-	})
+	}
+	if exists {
+		response["path"] = filepath.Join("/data", rawRelPath, translatedPdfName)
+	}
+	return c.JSON(http.StatusOK, response)
 }
 
 // TranslatePDF translates PDF using pdf2zh CLI

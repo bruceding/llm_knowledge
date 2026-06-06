@@ -83,26 +83,41 @@ func (h *MarkdownTranslateHandler) CheckMarkdownTranslationStatus(c echo.Context
 
 	// Determine target language based on source
 	targetLang := "zh"
+	altLang := "en"
 	if doc.Language == "zh" {
 		targetLang = "en"
+		altLang = "zh"
 	}
 
-	// Determine translation file path
+	// Check if a translation file exists — try the expected target first,
+	// then fall back to the alternate direction. This handles documents
+	// that were translated before the default-target-language logic changed
+	// (e.g. blog entries with empty Language that were previously translated
+	// to English under the old default, but the new default is Chinese).
 	rawRelPath := StripUserPrefix(doc.RawPath)
-	translatedPath := h.getTranslatedPath(rawRelPath, targetLang)
 	userDir := GetUserDir(c)
-	fullPath := filepath.Join(userDir, translatedPath)
-
 	exists := false
-	if _, err := os.Stat(fullPath); err == nil {
-		exists = true
+	translatedPath := ""
+
+	for _, lang := range []string{targetLang, altLang} {
+		p := h.getTranslatedPath(rawRelPath, lang)
+		fullPath := filepath.Join(userDir, p)
+		if _, err := os.Stat(fullPath); err == nil {
+			exists = true
+			translatedPath = p
+			targetLang = lang
+			break
+		}
 	}
 
-	return c.JSON(http.StatusOK, echo.Map{
+	response := echo.Map{
 		"exists":     exists,
-		"path":       filepath.Join("/data", translatedPath),
 		"targetLang": targetLang,
-	})
+	}
+	if exists {
+		response["path"] = filepath.Join("/data", translatedPath)
+	}
+	return c.JSON(http.StatusOK, response)
 }
 
 // getTranslatedPath returns the path for translated file

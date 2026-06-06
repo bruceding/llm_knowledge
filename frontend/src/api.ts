@@ -378,7 +378,7 @@ export async function translatePDF(
 // Markdown Translation API
 export async function checkMarkdownTranslationStatus(docId: number): Promise<{
   exists: boolean
-  path: string
+  path?: string
   targetLang: string
 }> {
   const res = await authFetch(`${API_BASE}/documents/${docId}/markdown-translation-status`, { headers: getHeaders() })
