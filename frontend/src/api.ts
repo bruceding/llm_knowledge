@@ -1,6 +1,18 @@
 import type { Document, UpdateDocRequest, SSEEvent, UserSettings, GlobalSettings, Conversation, Message, LoginResponse, RegisterResponse, CaptchaResponse, IMAPConfigInput, IMAPConfigResponse, IMAPTestResult, IMAPFoldersResult, NewsletterSyncStatus } from './types'
+import { useAuthStore } from './store/authStore'
 
 const API_BASE = '/api'
+
+// Authenticated fetch wrapper — intercepts 401, clears auth, redirects to login
+async function authFetch(url: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(url, init)
+  if (res.status === 401) {
+    useAuthStore.getState().clearAuth()
+    window.location.href = '/login'
+    return new Promise<Response>(() => {}) // never resolve — prevent callers from processing 401
+  }
+  return res
+}
 
 // Auth helper - get headers with authorization token
 function getHeaders(): HeadersInit {
@@ -14,7 +26,7 @@ function getHeaders(): HeadersInit {
 
 // Document API
 export async function fetchInbox(): Promise<Document[]> {
-  const res = await fetch(`${API_BASE}/documents/inbox`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/documents/inbox`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch inbox')
   return res.json()
 }
@@ -25,19 +37,19 @@ export async function fetchLater(): Promise<Document[]> {
 
 export async function fetchDocuments(status?: string): Promise<Document[]> {
   const url = status ? `${API_BASE}/documents?status=${status}` : `${API_BASE}/documents`
-  const res = await fetch(url, { headers: getHeaders() })
+  const res = await authFetch(url, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch documents')
   return res.json()
 }
 
 export async function fetchDocument(id: number): Promise<Document> {
-  const res = await fetch(`${API_BASE}/documents/${id}`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/documents/${id}`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch document')
   return res.json()
 }
 
 export async function updateDocument(id: number, data: UpdateDocRequest): Promise<Document> {
-  const res = await fetch(`${API_BASE}/documents/${id}`, {
+  const res = await authFetch(`${API_BASE}/documents/${id}`, {
     method: 'PUT',
     headers: getHeaders(),
     body: JSON.stringify(data),
@@ -47,19 +59,19 @@ export async function updateDocument(id: number, data: UpdateDocRequest): Promis
 }
 
 export async function publishDocument(id: number): Promise<{ id: number; status: string }> {
-  const res = await fetch(`${API_BASE}/documents/${id}/publish`, { method: 'POST', headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/documents/${id}/publish`, { method: 'POST', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to publish document')
   return res.json()
 }
 
 export async function deleteDocument(id: number): Promise<{ id: number; message: string }> {
-  const res = await fetch(`${API_BASE}/documents/${id}`, { method: 'DELETE', headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/documents/${id}`, { method: 'DELETE', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to delete document')
   return res.json()
 }
 
 export async function regenerateSummary(id: number): Promise<{ summary: string }> {
-  const res = await fetch(`${API_BASE}/documents/${id}/regenerate-summary`, { method: 'POST', headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/documents/${id}/regenerate-summary`, { method: 'POST', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to regenerate summary')
   return res.json()
 }
@@ -72,7 +84,7 @@ export async function uploadPDF(file: File): Promise<{ id: number; path: string;
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
-  const res = await fetch(`${API_BASE}/raw/pdf`, {
+  const res = await authFetch(`${API_BASE}/raw/pdf`, {
     method: 'POST',
     headers,
     body: formData,
@@ -90,7 +102,7 @@ export async function uploadPDF(file: File): Promise<{ id: number; path: string;
 }
 
 export async function uploadPDFUrl(url: string): Promise<{ id: number; path: string; message: string; pages: number }> {
-  const res = await fetch(`${API_BASE}/raw/pdf-url`, {
+  const res = await authFetch(`${API_BASE}/raw/pdf-url`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ url }),
@@ -108,7 +120,7 @@ export async function uploadPDFUrl(url: string): Promise<{ id: number; path: str
 }
 
 export async function clipWeb(url: string): Promise<{ id: number; title: string; path: string; images: number; message: string }> {
-  const res = await fetch(`${API_BASE}/raw/web`, {
+  const res = await authFetch(`${API_BASE}/raw/web`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ url }),
@@ -122,7 +134,7 @@ export async function clipWeb(url: string): Promise<{ id: number; title: string;
 
 // RSS API
 export async function addRSSFeed(name: string, url: string, autoSync: boolean): Promise<RSSFeed> {
-  const res = await fetch(`${API_BASE}/rss/feeds`, {
+  const res = await authFetch(`${API_BASE}/rss/feeds`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ name, url, autoSync }),
@@ -133,16 +145,16 @@ export async function addRSSFeed(name: string, url: string, autoSync: boolean): 
 }
 
 export async function listRSSFeeds(): Promise<RSSFeed[]> {
-  const res = await fetch(`${API_BASE}/rss/feeds`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/rss/feeds`, { headers: getHeaders() })
   return res.json()
 }
 
 export async function deleteRSSFeed(id: number): Promise<void> {
-  await fetch(`${API_BASE}/rss/feeds/${id}`, { method: 'DELETE', headers: getHeaders() })
+  await authFetch(`${API_BASE}/rss/feeds/${id}`, { method: 'DELETE', headers: getHeaders() })
 }
 
 export async function syncRSSFeed(id: number): Promise<{ newArticles: number }> {
-  const res = await fetch(`${API_BASE}/rss/feeds/${id}/sync`, { method: 'POST', headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/rss/feeds/${id}/sync`, { method: 'POST', headers: getHeaders() })
   return res.json()
 }
 
@@ -165,13 +177,13 @@ export async function fetchWikiContent(path: string): Promise<string> {
 
 // Conversation API
 export async function fetchConversations(): Promise<Conversation[]> {
-  const res = await fetch(`${API_BASE}/conversations`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/conversations`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch conversations')
   return res.json()
 }
 
 export async function fetchConversationMessages(conversationId: number): Promise<Message[]> {
-  const res = await fetch(`${API_BASE}/conversations/${conversationId}/messages`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/conversations/${conversationId}/messages`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch conversation messages')
   return res.json()
 }
@@ -180,7 +192,7 @@ export async function fetchConversationMessages(conversationId: number): Promise
 
 // Create a new conversation
 export async function createConversation(title?: string, docId?: number): Promise<{ conversationId: number; title: string }> {
-  const res = await fetch(`${API_BASE}/query/conversation`, {
+  const res = await authFetch(`${API_BASE}/query/conversation`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ title, docId }),
@@ -196,7 +208,7 @@ export async function sendQueryMessage(
   images?: string[],
   docId?: number
 ): Promise<{ status: string; messageId: number; sessionId: string; contextLost?: boolean }> {
-  const res = await fetch(`${API_BASE}/query/message`, {
+  const res = await authFetch(`${API_BASE}/query/message`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ conversationId, message, images, docId }),
@@ -207,7 +219,7 @@ export async function sendQueryMessage(
 
 // Interrupt the current turn
 export async function interruptQuery(conversationId: number): Promise<{ status: string }> {
-  const res = await fetch(`${API_BASE}/query/interrupt`, {
+  const res = await authFetch(`${API_BASE}/query/interrupt`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ conversationId }),
@@ -219,7 +231,7 @@ export async function interruptQuery(conversationId: number): Promise<{ status: 
 // Check if a conversation's session is active and thinking
 export async function fetchQueryStatus(conversationId: number): Promise<{ status: string; streamingContent: string }> {
   try {
-    const res = await fetch(`${API_BASE}/query/status?conversationId=${conversationId}`, { headers: getHeaders() })
+    const res = await authFetch(`${API_BASE}/query/status?conversationId=${conversationId}`, { headers: getHeaders() })
     if (!res.ok) return { status: 'idle', streamingContent: '' }
     return res.json()
   } catch {
@@ -229,7 +241,7 @@ export async function fetchQueryStatus(conversationId: number): Promise<{ status
 
 // Delete a conversation
 export async function deleteConversation(conversationId: number): Promise<{ status: string; conversationId: number }> {
-  const res = await fetch(`${API_BASE}/conversations/${conversationId}`, {
+  const res = await authFetch(`${API_BASE}/conversations/${conversationId}`, {
     method: 'DELETE',
     headers: getHeaders(),
   })
@@ -243,7 +255,7 @@ export async function translateDocument(
   targetLang: string,
   onEvent: (event: SSEEvent) => void
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/translate`, {
+  const res = await authFetch(`${API_BASE}/translate`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ docId, targetLang }),
@@ -280,13 +292,13 @@ export async function translateDocument(
 
 // Settings API
 export async function fetchSettings(): Promise<UserSettings> {
-  const res = await fetch(`${API_BASE}/settings`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/settings`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch settings')
   return res.json()
 }
 
 export async function updateSettings(settings: Partial<UserSettings>): Promise<UserSettings> {
-  const res = await fetch(`${API_BASE}/settings`, {
+  const res = await authFetch(`${API_BASE}/settings`, {
     method: 'PUT',
     headers: getHeaders(),
     body: JSON.stringify(settings),
@@ -297,13 +309,13 @@ export async function updateSettings(settings: Partial<UserSettings>): Promise<U
 
 // Admin Settings API
 export async function fetchGlobalSettings(): Promise<GlobalSettings> {
-  const res = await fetch(`${API_BASE}/admin/settings`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/admin/settings`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch global settings')
   return res.json()
 }
 
 export async function updateGlobalSettings(settings: Partial<GlobalSettings>): Promise<GlobalSettings> {
-  const res = await fetch(`${API_BASE}/admin/settings`, {
+  const res = await authFetch(`${API_BASE}/admin/settings`, {
     method: 'PUT',
     headers: getHeaders(),
     body: JSON.stringify(settings),
@@ -318,7 +330,7 @@ export async function checkPDFTranslationStatus(docId: number): Promise<{
   path?: string
   targetLang?: string
 }> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/translation-status`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/documents/${docId}/translation-status`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to check translation status')
   return res.json()
 }
@@ -328,7 +340,7 @@ export async function translatePDF(
   onEvent: (event: SSEEvent) => void,
   targetLang?: string
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/pdf-translate`, {
+  const res = await authFetch(`${API_BASE}/pdf-translate`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ docId, targetLang }),
@@ -369,7 +381,7 @@ export async function checkMarkdownTranslationStatus(docId: number): Promise<{
   path: string
   targetLang: string
 }> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/markdown-translation-status`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/documents/${docId}/markdown-translation-status`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to check markdown translation status')
   return res.json()
 }
@@ -379,7 +391,7 @@ export async function translateMarkdown(
   targetLang: string,
   onEvent: (event: SSEEvent) => void
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/markdown-translate`, {
+  const res = await authFetch(`${API_BASE}/markdown-translate`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ docId, targetLang }),
@@ -416,20 +428,20 @@ export async function translateMarkdown(
 
 // Pages API - generate page images for bilingual view
 export async function generatePages(docId: number): Promise<{ id: number; total_pages: number; message: string }> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/generate-pages`, { method: 'POST', headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/documents/${docId}/generate-pages`, { method: 'POST', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to generate page images')
   return res.json()
 }
 
 export async function getPagesStatus(docId: number): Promise<{ exists: boolean; page_count: number }> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/pages-status`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/documents/${docId}/pages-status`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to get pages status')
   return res.json()
 }
 
 // Image Upload API
 export async function uploadImage(data: string, type: string): Promise<{ path: string; filename: string }> {
-  const res = await fetch(`${API_BASE}/images/upload`, {
+  const res = await authFetch(`${API_BASE}/images/upload`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ data, type }),
@@ -454,13 +466,13 @@ export interface DocNote {
 }
 
 export async function fetchDocNotes(docId: number): Promise<DocNote[]> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/notes`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/documents/${docId}/notes`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch notes')
   return res.json()
 }
 
 export async function createDocNote(docId: number, content: string, sourceMsgId?: string): Promise<DocNote> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/notes`, {
+  const res = await authFetch(`${API_BASE}/documents/${docId}/notes`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ content, sourceMsgId }),
@@ -473,7 +485,7 @@ export async function createDocNote(docId: number, content: string, sourceMsgId?
 }
 
 export async function updateDocNote(docId: number, noteId: number, content: string): Promise<DocNote> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/notes/${noteId}`, {
+  const res = await authFetch(`${API_BASE}/documents/${docId}/notes/${noteId}`, {
     method: 'PUT',
     headers: getHeaders(),
     body: JSON.stringify({ content }),
@@ -483,12 +495,12 @@ export async function updateDocNote(docId: number, noteId: number, content: stri
 }
 
 export async function deleteDocNote(docId: number, noteId: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/notes/${noteId}`, { method: 'DELETE', headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/documents/${docId}/notes/${noteId}`, { method: 'DELETE', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to delete note')
 }
 
 export async function pushNoteToWiki(docId: number, noteId: number): Promise<{ message: string; wikiPath: string }> {
-  const res = await fetch(`${API_BASE}/documents/${docId}/notes/${noteId}/wiki-push`, { method: 'POST', headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/documents/${docId}/notes/${noteId}/wiki-push`, { method: 'POST', headers: getHeaders() })
   if (!res.ok) {
     const err = await res.json()
     throw new Error(err.error || 'Failed to push to wiki')
@@ -542,7 +554,7 @@ export async function login(
 }
 
 export async function logout(): Promise<void> {
-  const res = await fetch(`${API_BASE}/auth/logout`, {
+  const res = await authFetch(`${API_BASE}/auth/logout`, {
     method: 'POST',
     headers: getHeaders(),
   })
@@ -553,14 +565,14 @@ export async function checkAuthStatus(): Promise<{ loggedIn: boolean; userId?: n
   const token = localStorage.getItem('token')
   if (!token) return { loggedIn: false }
 
-  const res = await fetch(`${API_BASE}/auth/status`, {
+  const res = await authFetch(`${API_BASE}/auth/status`, {
     headers: { 'Authorization': `Bearer ${token}` },
   })
   return res.json()
 }
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/auth/password`, {
+  const res = await authFetch(`${API_BASE}/auth/password`, {
     method: 'PUT',
     headers: getHeaders(),
     body: JSON.stringify({ currentPassword, newPassword }),
@@ -571,13 +583,13 @@ export async function changePassword(currentPassword: string, newPassword: strin
 
 // Newsletter IMAP API
 export async function getIMAPConfig(): Promise<IMAPConfigResponse> {
-  const res = await fetch(`${API_BASE}/imap/config`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/imap/config`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch IMAP config')
   return res.json()
 }
 
 export async function updateIMAPConfig(config: IMAPConfigInput): Promise<IMAPConfigResponse> {
-  const res = await fetch(`${API_BASE}/imap/config`, {
+  const res = await authFetch(`${API_BASE}/imap/config`, {
     method: 'PUT',
     headers: getHeaders(),
     body: JSON.stringify(config),
@@ -588,7 +600,7 @@ export async function updateIMAPConfig(config: IMAPConfigInput): Promise<IMAPCon
 }
 
 export async function deleteIMAPConfig(): Promise<void> {
-  const res = await fetch(`${API_BASE}/imap/config`, { method: 'DELETE', headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/imap/config`, { method: 'DELETE', headers: getHeaders() })
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
     throw new Error(data.error || 'Failed to delete IMAP config')
@@ -596,25 +608,25 @@ export async function deleteIMAPConfig(): Promise<void> {
 }
 
 export async function testIMAPConnection(): Promise<IMAPTestResult> {
-  const res = await fetch(`${API_BASE}/imap/test`, { method: 'POST', headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/imap/test`, { method: 'POST', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to test IMAP connection')
   return res.json()
 }
 
 export async function listIMAPFolders(): Promise<IMAPFoldersResult> {
-  const res = await fetch(`${API_BASE}/imap/folders`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/imap/folders`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to list IMAP folders')
   return res.json()
 }
 
 export async function syncNewsletter(): Promise<{status: string}> {
-  const res = await fetch(`${API_BASE}/imap/sync`, { method: 'POST', headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/imap/sync`, { method: 'POST', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to sync newsletters')
   return res.json()
 }
 
 export async function getNewsletterSyncStatus(): Promise<NewsletterSyncStatus> {
-  const res = await fetch(`${API_BASE}/imap/sync-status`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/imap/sync-status`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to get sync status')
   return res.json()
 }
@@ -655,7 +667,7 @@ export interface BlogSyncResult {
 }
 
 export async function addBlogFeed(name: string, indexUrl: string, autoSync: boolean): Promise<AddBlogFeedResult> {
-  const res = await fetch(`${API_BASE}/blog/feeds`, {
+  const res = await authFetch(`${API_BASE}/blog/feeds`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ name, indexUrl, autoSync }),
@@ -666,13 +678,13 @@ export async function addBlogFeed(name: string, indexUrl: string, autoSync: bool
 }
 
 export async function listBlogFeeds(): Promise<BlogFeed[]> {
-  const res = await fetch(`${API_BASE}/blog/feeds`, { headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/blog/feeds`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to list blog feeds')
   return res.json()
 }
 
 export async function configBlogFeed(id: number, linkSelector: string, contentSelector: string, linkExclude?: string): Promise<BlogFeed> {
-  const res = await fetch(`${API_BASE}/blog/feeds/${id}/config`, {
+  const res = await authFetch(`${API_BASE}/blog/feeds/${id}/config`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({ linkSelector, contentSelector, linkExclude }),
@@ -683,13 +695,13 @@ export async function configBlogFeed(id: number, linkSelector: string, contentSe
 }
 
 export async function syncBlogFeed(id: number): Promise<BlogSyncResult> {
-  const res = await fetch(`${API_BASE}/blog/feeds/${id}/sync`, { method: 'POST', headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/blog/feeds/${id}/sync`, { method: 'POST', headers: getHeaders() })
   const data = await res.json()
   if (!res.ok) throw new Error(data.error || 'Failed to sync blog feed')
   return data
 }
 
 export async function deleteBlogFeed(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/blog/feeds/${id}`, { method: 'DELETE', headers: getHeaders() })
+  const res = await authFetch(`${API_BASE}/blog/feeds/${id}`, { method: 'DELETE', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to delete blog feed')
 }
