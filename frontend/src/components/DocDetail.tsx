@@ -481,7 +481,7 @@ export default function DocDetail() {
   const handlePDFTranslate = useCallback(async (targetLang?: string) => {
     if (!document || !settings?.translationEnabled) return
 
-    const lang = targetLang || (document.language === 'en' ? 'zh' : 'en')
+    const lang = targetLang || (document.language === 'zh' ? 'en' : 'zh')
     setPdfTranslating(true)
     setPdfTranslationProgress(t('docDetail.translationProgress'))
 
@@ -511,7 +511,7 @@ export default function DocDetail() {
   const handleMarkdownTranslate = useCallback(async (targetLang?: string) => {
     if (!document || !settings?.translationEnabled) return
 
-    const lang = targetLang || (document.language === 'en' ? 'zh' : 'en')
+    const lang = targetLang || (document.language === 'zh' ? 'en' : 'zh')
     setMarkdownTranslating(true)
 
     try {
