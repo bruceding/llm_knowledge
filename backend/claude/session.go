@@ -695,11 +695,14 @@ func (s *InteractiveSession) readEvents() {
 	}
 	s.streamChs = nil
 	s.mu.Unlock()
-	// Close eventCh exactly once, here, so external Close() callers don't race
-	// with the writes in the scan loop above.
-	close(s.eventCh)
+	// Invoke onResumeFailed BEFORE closing eventCh so the stale session_id
+	// is cleared from DB before the SSE stream signals completion to the
+	// client.  Without this ordering, the frontend can reconnect and read
+	// the same stale chat_session_id from DB before the callback runs,
+	// creating an infinite --resume failure loop.
 	if resumeFailed && cb != nil {
 		log.Printf("[session] --resume failed for session %s (no system.init before exit)", sid)
 		cb()
 	}
+	close(s.eventCh)
 }

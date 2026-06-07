@@ -94,6 +94,15 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   // (or other persistent failure) from spawning Claude processes in a tight loop.
   const reconnectAttemptRef = useRef(0)
   const MAX_RECONNECT_ATTEMPTS = 8
+  // Track consecutive resume failures: incremented when an SSE stream ends
+  // without ever receiving a `session` event (Claude process exited before
+  // init), reset on successful `session` event. After CONSECUTIVE_RESUME_FAIL_LIMIT
+  // failures, force startNewSession(true) to break the infinite --resume loop.
+  const consecutiveResumeFailRef = useRef(0)
+  const CONSECUTIVE_RESUME_FAIL_LIMIT = 2
+  // Track whether the current connection has received a `session` event,
+  // used by processSSEStream to detect resume failures on stream end.
+  const receivedSessionRef = useRef(false)
   // Track the reconnect timer so it can be cancelled on explicit user action
   // (Clear Chat, manual send) or component unmount — prevents stale timers
   // from aborting a healthy connection.
@@ -139,6 +148,9 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       // don't immediately hit the retry cap, and disarm the connection
       // watchdog (we got the session event in time).
       reconnectAttemptRef.current = 0
+      // Resume succeeded — reset the consecutive failure counter.
+      consecutiveResumeFailRef.current = 0
+      receivedSessionRef.current = true
       if (watchdogTimerRef.current !== null) {
         clearTimeout(watchdogTimerRef.current)
         watchdogTimerRef.current = null
@@ -360,6 +372,13 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
           clearWatchdog()
           setConnecting(false)
           abortRef.current = null
+          // If the stream ended without ever receiving a `session` event,
+          // the Claude process likely exited before init (stale --resume).
+          // Increment the failure counter so startNewSession can force
+          // fresh after CONSECUTIVE_RESUME_FAIL_LIMIT consecutive failures.
+          if (!receivedSessionRef.current) {
+            consecutiveResumeFailRef.current++
+          }
           scheduleReconnect()
         }
         return
@@ -401,10 +420,18 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     abortRef.current = controller
     setConnecting(true)
     setError(null)
+    receivedSessionRef.current = false
     armWatchdog(controller)
 
+    // If consecutive resume failures exceed the limit, force fresh to break
+    // the infinite --resume loop regardless of the caller's preference.
+    const shouldForceFresh = fresh || consecutiveResumeFailRef.current >= CONSECUTIVE_RESUME_FAIL_LIMIT
+    if (shouldForceFresh) {
+      consecutiveResumeFailRef.current = 0
+    }
+
     const headers = { ...getAuthHeaders(), 'Accept': 'text/event-stream' } as Record<string, string>
-    const url = fresh
+    const url = shouldForceFresh
       ? `/api/doc-chat/stream?docId=${docId}&fresh=1`
       : `/api/doc-chat/stream?docId=${docId}`
 
@@ -444,6 +471,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     abortRef.current = controller
     setConnecting(true)
     setError(null)
+    receivedSessionRef.current = false
     armWatchdog(controller)
 
     const headers = { ...getAuthHeaders(), 'Accept': 'text/event-stream' } as Record<string, string>
@@ -457,7 +485,10 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
           // a duplicate session.
           if (abortRef.current === controller) {
             clearWatchdog()
-            startNewSession()
+            // 410 Gone means the in-memory session is expired. Force fresh
+            // to clear the stale chat_session_id from DB, otherwise the
+            // backend will --resume the same broken session in a loop.
+            startNewSession(res.status === 410)
           }
           return
         }
@@ -593,6 +624,7 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
     sessionIdRef.current = ''
     pendingResendRef.current = null
     reconnectAttemptRef.current = 0
+    consecutiveResumeFailRef.current = 0
     if (reconnectTimerRef.current !== null) {
       clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null
