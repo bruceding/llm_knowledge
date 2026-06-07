@@ -96,8 +96,9 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
   const MAX_RECONNECT_ATTEMPTS = 8
   // Track consecutive resume failures: incremented when an SSE stream ends
   // without ever receiving a `session` event (Claude process exited before
-  // init), reset on successful `session` event. After CONSECUTIVE_RESUME_FAIL_LIMIT
-  // failures, force startNewSession(true) to break the infinite --resume loop.
+  // init), reset on `done` event (Claude responded successfully). After
+  // CONSECUTIVE_RESUME_FAIL_LIMIT failures, force startNewSession(true)
+  // to break the infinite --resume loop.
   const consecutiveResumeFailRef = useRef(0)
   const CONSECUTIVE_RESUME_FAIL_LIMIT = 2
   // Track whether the current connection has received a `session` event,
@@ -278,6 +279,10 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
         return prev
       })
     } else if (event.type === 'done') {
+      // Claude completed a full response — reset the consecutive resume
+      // failure counter so a future transient drop doesn't trigger an
+      // unnecessary fresh=1 that would lose conversation history.
+      consecutiveResumeFailRef.current = 0
       setMessages(prev => prev.map(m =>
         m.isStreaming ? { ...m, isStreaming: false, isThinking: false, isToolUse: false, toolDesc: undefined } : m
       ))
