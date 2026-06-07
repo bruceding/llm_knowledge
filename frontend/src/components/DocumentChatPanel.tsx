@@ -148,8 +148,9 @@ export default function DocumentChatPanel({ docId, active, onNoteSaved }: Docume
       // don't immediately hit the retry cap, and disarm the connection
       // watchdog (we got the session event in time).
       reconnectAttemptRef.current = 0
-      // Resume succeeded — reset the consecutive failure counter.
-      consecutiveResumeFailRef.current = 0
+      // Don't reset consecutiveResumeFailRef here — Claude may still exit
+      // immediately after the session event (stale --resume or crash).
+      // Only reset it on 'done' when Claude has actually responded.
       receivedSessionRef.current = true
       if (watchdogTimerRef.current !== null) {
         clearTimeout(watchdogTimerRef.current)
