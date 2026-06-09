@@ -388,16 +388,17 @@ export default function ChatView() {
           }
           if (done) {
             if (idleTimer) clearTimeout(idleTimer)
-            sseReadyRef.current = false
-            sseFailedRef.current = true
             if (abortRef.current === controller) abortRef.current = null
             if (isStreamingRef.current) {
+              // Stream ended while still "streaming" — turn was interrupted or backend died
+              sseReadyRef.current = false
+              sseFailedRef.current = true
               isStreamingRef.current = false
               setIsStreaming(false)
-            } else if (!cancelled) {
-              // Stream ended unexpectedly while idle — backend session died
-              setConnectionError(t('chatView.connectionError'))
             }
+            // If !isStreamingRef.current, the 'done' SSE event already fired and
+            // handleSSEEvent cleared streaming state. This is a normal end-of-turn,
+            // NOT a failure — don't set sseFailedRef so the next message can proceed.
             return
           }
           resetIdleTimer()
