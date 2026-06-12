@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+// summarySem controls concurrency of summary generation to avoid
+// resource contention when multiple documents are imported concurrently.
+var summarySem = make(chan struct{}, 1)
+
 const summaryPrompt = `请阅读文件 %s 的内容，并用200-300字概括其核心内容。
 摘要应包含：
 - 文档主题和目的
@@ -24,6 +28,9 @@ const summaryPrompt = `请阅读文件 %s 的内容，并用200-300字概括其�
 // userDir is the user's directory for Claude session isolation
 // rawRelPath is the path relative to userDir (e.g., "raw/papers/title" or "raw/rss/feed/title.md")
 func GenerateSummary(userDir string, rawRelPath string, claudeBin string) (string, error) {
+	summarySem <- struct{}{}
+	defer func() { <-summarySem }()
+
 	// Determine the actual file path relative to userDir
 	var paperRelPath string
 	if strings.HasSuffix(rawRelPath, ".md") {
