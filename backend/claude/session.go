@@ -85,18 +85,21 @@ func (p *SessionPool) cleanupLoop() {
 			return
 		case <-time.After(10 * time.Second):
 		}
+		var toClose []*InteractiveSession
 		p.mu.Lock()
 		for sid, session := range p.sessions {
-			session.mu.Lock()
-			if session.sseCount == 0 && !session.lastDisconnect.IsZero() &&
-				session.lastDisconnect.Add(120*time.Second).Before(time.Now()) {
+			sseCount, lastDisconnect := session.SSEState()
+			if sseCount == 0 && !lastDisconnect.IsZero() &&
+				lastDisconnect.Add(120*time.Second).Before(time.Now()) {
 				log.Printf("[session] Closing session %s after 120s timeout", sid)
-				session.Close()
+				toClose = append(toClose, session)
 				delete(p.sessions, sid)
 			}
-			session.mu.Unlock()
 		}
 		p.mu.Unlock()
+		for _, session := range toClose {
+			session.Close()
+		}
 	}
 }
 
