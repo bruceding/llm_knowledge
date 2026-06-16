@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"llm-knowledge/db"
@@ -353,37 +354,11 @@ func filterPDF2ZhOutput(line string) string {
 
 func sendSSEEvent(c echo.Context, eventType string, data echo.Map) {
 	data["type"] = eventType
-	event := fmt.Sprintf("data: %s\n\n", mustMarshal(data))
-	c.Response().Write([]byte(event))
+	b, _ := json.Marshal(data)
+	fmt.Fprintf(c.Response(), "data: %s\n\n", b)
 	c.Response().Flush()
 }
 
 func sendSSEError(c echo.Context, errMsg string) {
 	sendSSEEvent(c, "error", echo.Map{"error": errMsg})
-}
-
-func mustMarshal(data echo.Map) string {
-	// Simple JSON marshaling for echo.Map
-	result := "{"
-	i := 0
-	for k, v := range data {
-		if i > 0 {
-			result += ","
-		}
-		switch val := v.(type) {
-		case string:
-			result += fmt.Sprintf("\"%s\":\"%s\"", k, strings.ReplaceAll(val, "\"", "\\\""))
-		case bool:
-			result += fmt.Sprintf("\"%s\":%v", k, val)
-		case int:
-			result += fmt.Sprintf("\"%s\":%d", k, val)
-		case float64:
-			result += fmt.Sprintf("\"%s\":%f", k, val)
-		default:
-			result += fmt.Sprintf("\"%s\":\"%v\"", k, val)
-		}
-		i++
-	}
-	result += "}"
-	return result
 }
