@@ -56,7 +56,9 @@ func (h *ImagesHandler) Upload(c echo.Context) error {
 	userDir := GetUserDir(c)
 
 	// Ensure user directory exists
-	fs.InitUserDirs(h.DataDir, userId)
+	if err := fs.InitUserDirs(h.DataDir, userId); err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to initialize user directories"})
+	}
 
 	var req ImageUploadRequest
 	if err := c.Bind(&req); err != nil {

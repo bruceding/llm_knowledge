@@ -222,7 +222,13 @@ func (h *RSSHandler) syncFeedInternal(feed *db.RSSFeed) SyncResult {
 	// Use user-specific directory
 	userDir := config.GetUserDir(h.DataDir, feed.UserID)
 	userIdStr := strconv.FormatUint(uint64(feed.UserID), 10)
-	fs.InitUserDirs(h.DataDir, feed.UserID)
+	if err := fs.InitUserDirs(h.DataDir, feed.UserID); err != nil {
+		return SyncResult{
+			FeedID:   feed.ID,
+			FeedName: feed.Name,
+			Error:    "failed to initialize user directories",
+		}
+	}
 
 	feedDir := filepath.Join(userDir, "raw", "rss", sanitizeFilename(feed.Name))
 	assetsDir := filepath.Join(feedDir, "assets")

@@ -345,7 +345,13 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 
 	// Setup directories
 	userDir := config.GetUserDir(h.DataDir, feed.UserID)
-	fs.InitUserDirs(h.DataDir, feed.UserID)
+	if err := fs.InitUserDirs(h.DataDir, feed.UserID); err != nil {
+		return BlogSyncResult{
+			FeedID:   feed.ID,
+			FeedName: feed.Name,
+			Error:    "failed to initialize user directories",
+		}
+	}
 
 	feedDir := filepath.Join(userDir, "raw", "blog", sanitizeFilename(feed.Name))
 	assetsDir := filepath.Join(feedDir, "assets")

@@ -554,7 +554,10 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 		// Use user-specific directory
 		userDir := config.GetUserDir(h.DataDir, cfg.UserID)
 		userIdStr := strconv.FormatUint(uint64(cfg.UserID), 10)
-		fs.InitUserDirs(h.DataDir, cfg.UserID)
+		if err := fs.InitUserDirs(h.DataDir, cfg.UserID); err != nil {
+			fmt.Printf("[newsletter] failed to init user dirs for user %d: %v\n", cfg.UserID, err)
+			continue
+		}
 
 		feedDir := filepath.Join(userDir, "raw", "newsletter", senderDir)
 		assetsDir := filepath.Join(feedDir, "assets")

@@ -494,7 +494,10 @@ func migrateFilesToUserPartition(dataDir string) {
 
 	// Initialize directory structure for each user
 	for _, user := range users {
-		embedfs.InitUserDirs(dataDir, user.ID)
+		if err := embedfs.InitUserDirs(dataDir, user.ID); err != nil {
+			log.Printf("[migration] Failed to init dirs for user %d: %v", user.ID, err)
+			continue
+		}
 	}
 
 	// Track failures to prevent data loss
