@@ -21,6 +21,8 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
+    setGenError(null)
+    setGenErrorIndex(null)
     try {
       const { sections, paperMdExists } = await fetchPaperSections(docId)
       setSections(sections)
