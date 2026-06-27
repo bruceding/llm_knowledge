@@ -719,6 +719,9 @@ export async function generatePaperSection(docId: number, index: number): Promis
     method: 'POST',
     headers: getHeaders(),
   })
-  if (!res.ok) throw new Error('Failed to generate section explanation')
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Failed to generate section explanation')
+  }
   return res.json()
 }

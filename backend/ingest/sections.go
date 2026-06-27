@@ -128,21 +128,24 @@ const sectionExplainPrompt = `请用 Read 工具读取文件 %s。
 // to explain one chapter of the paper. userDir is the Claude working directory;
 // paperRelPath is paper.md relative to userDir (e.g. "raw/papers/foo/paper.md").
 // Concurrency is bounded by the shared summarySem so it never races with
-// summary/ingest generation. The sem acquire is bounded by ctx so a queued
-// caller (sem held by a background summary/ingest) can't block the HTTP
-// handler forever — it fails with ctx.Err() instead.
+// summary/ingest generation. The sem acquire has its OWN (shorter) timeout
+// budget separate from the Claude call's 180s budget — otherwise a caller
+// queued behind a background summary/ingest would burn the whole 180s waiting
+// and have nothing left for the actual generation.
 func GenerateSectionExplain(userDir, paperRelPath, sectionTitle, claudeBin string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-	defer cancel()
-
+	acquireCtx, acCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer acCancel()
 	select {
 	case summarySem <- struct{}{}:
 		defer func() { <-summarySem }()
-	case <-ctx.Done():
-		return "", fmt.Errorf("timed out waiting for generation slot: %w", ctx.Err())
+	case <-acquireCtx.Done():
+		return "", fmt.Errorf("timed out waiting for generation slot: %w", acquireCtx.Err())
 	}
 
 	client := claude.NewClientWithPath(claudeBin)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
 	prompt := fmt.Sprintf(sectionExplainPrompt, paperRelPath, sectionTitle)
 	out, err := client.SendSimpleWithRead(ctx, prompt, userDir)
 	if err != nil {

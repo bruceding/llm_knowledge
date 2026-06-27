@@ -15,6 +15,8 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [generatingIndex, setGeneratingIndex] = useState<number | null>(null)
+  const [genError, setGenError] = useState<string | null>(null)
+  const [genErrorIndex, setGenErrorIndex] = useState<number | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -34,12 +36,16 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
 
   const handleGenerate = async (index: number) => {
     setGeneratingIndex(index)
-    setError(null)
+    setGenError(null)
+    setGenErrorIndex(null)
     try {
       const updated = await generatePaperSection(docId, index)
       setSections(prev => prev.map(s => (s.index === index ? updated : s)))
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to generate')
+      // Inline per-section error — do NOT setError(), which would early-return
+      // and wipe the whole chapter list + scroll position on one failure.
+      setGenErrorIndex(index)
+      setGenError(e instanceof Error ? e.message : 'Failed to generate')
     } finally {
       setGeneratingIndex(null)
     }
@@ -96,13 +102,18 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
               {s.explanation ? (
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.explanation}</ReactMarkdown>
               ) : (
-                <button
-                  onClick={() => handleGenerate(s.index)}
-                  disabled={generatingIndex !== null}
-                  className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 disabled:opacity-50"
-                >
-                  {generatingIndex === s.index ? t('paperSections.generating') : t('paperSections.generate')}
-                </button>
+                <div>
+                  <button
+                    onClick={() => handleGenerate(s.index)}
+                    disabled={generatingIndex !== null}
+                    className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 disabled:opacity-50"
+                  >
+                    {generatingIndex === s.index ? t('paperSections.generating') : t('paperSections.generate')}
+                  </button>
+                  {genErrorIndex === s.index && genError && (
+                    <div className="mt-2 text-sm text-red-600">{genError}</div>
+                  )}
+                </div>
               )}
             </section>
           ))}
