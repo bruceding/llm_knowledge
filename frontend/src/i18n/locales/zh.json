@@ -184,7 +184,7 @@
     "noPaperMd": "尚未生成论文内容（paper.md）。请先在 PDF 视图旁的操作中提取论文。",
     "askPaper": "对这篇论文提问",
     "sectionizing": "识别章节中…",
-    "noBody": "（无独立正文，内容在子章节）"
+    "noBody": "（无独立正文）"
   },
   "wikiView": {
     "title": "Wiki",

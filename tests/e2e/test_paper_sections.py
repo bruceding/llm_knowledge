@@ -61,7 +61,8 @@ def test_pdf_sections_tab_renders(authenticated_page: Page):
         union = (
             "[data-testid='paper-sections-sectionizing'], "
             "[data-testid='paper-sections-content'], "
-            "[data-testid='paper-sections-empty']"
+            "[data-testid='paper-sections-empty'], "
+            "[data-testid='paper-sections-error']"
         )
         page.wait_for_selector(union, timeout=15000)
         assert page.is_visible(union)

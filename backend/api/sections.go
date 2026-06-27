@@ -20,32 +20,48 @@ type sectionDTO struct {
 	Explanation string `json:"explanation,omitempty"`
 }
 
-// loadOwnedPDF returns the document (ownership-checked) and its paper dir
-// relative to userDir, or emits an error response and returns ok=false.
-func loadOwnedPDF(c echo.Context) (db.Document, string, bool) {
+// loadOwnedPDF returns the paper dir (relative to userDir) of the owned PDF
+// document, or emits an error response and returns ok=false.
+func loadOwnedPDF(c echo.Context) (string, bool) {
 	userId := GetCurrentUserId(c)
 	id := c.Param("id")
 	var doc db.Document
 	if err := db.DB.Where("id = ? AND user_id = ?", id, userId).First(&doc).Error; err != nil {
 		_ = c.JSON(http.StatusNotFound, echo.Map{"error": "document not found"})
-		return db.Document{}, "", false
+		return "", false
 	}
 	if doc.SourceType != "pdf" {
 		_ = c.JSON(http.StatusBadRequest, echo.Map{"error": "only PDF documents have sections"})
-		return db.Document{}, "", false
+		return "", false
 	}
-	return doc, StripUserPrefix(doc.RawPath), true
+	return StripUserPrefix(doc.RawPath), true
+}
+
+// buildSectionDTOs maps sections to DTOs, attaching HasBody and any cached
+// explanation. LoadSectionExplain is only attempted when a body file exists
+// (no body → no cached explanation possible).
+func buildSectionDTOs(sections []ingest.Section, sectionsDir string) []sectionDTO {
+	out := make([]sectionDTO, 0, len(sections))
+	for _, s := range sections {
+		dto := sectionDTO{Index: s.Index, Title: s.Title, Slug: s.Slug, HasBody: ingest.SectionBodyExists(sectionsDir, s.Slug)}
+		if dto.HasBody {
+			if exp, ok := ingest.LoadSectionExplain(sectionsDir, s.Slug); ok {
+				dto.Explanation = exp
+			}
+		}
+		out = append(out, dto)
+	}
+	return out
 }
 
 // ListSections returns the cached section list (after Sectionize has run) with
 // any cached explanations. GET /api/documents/:id/sections
 // Response: { "sections": [...], "paperMdExists": bool, "sectionized": bool }
 func (h *DocHandler) ListSections(c echo.Context) error {
-	doc, rawRelPath, ok := loadOwnedPDF(c)
+	rawRelPath, ok := loadOwnedPDF(c)
 	if !ok {
 		return nil
 	}
-	_ = doc
 	userDir := GetUserDir(c)
 	paperMdPath := filepath.Join(userDir, rawRelPath, "paper.md")
 	if _, err := os.Stat(paperMdPath); err != nil {
@@ -57,25 +73,16 @@ func (h *DocHandler) ListSections(c echo.Context) error {
 		// Not sectionized yet — frontend triggers POST /sectionize.
 		return c.JSON(http.StatusOK, echo.Map{"sections": []sectionDTO{}, "paperMdExists": true, "sectionized": false})
 	}
-	out := make([]sectionDTO, 0, len(sections))
-	for _, s := range sections {
-		dto := sectionDTO{Index: s.Index, Title: s.Title, Slug: s.Slug, HasBody: ingest.SectionBodyExists(sectionsDir, s.Slug)}
-		if exp, ok := ingest.LoadSectionExplain(sectionsDir, s.Slug); ok {
-			dto.Explanation = exp
-		}
-		out = append(out, dto)
-	}
-	return c.JSON(http.StatusOK, echo.Map{"sections": out, "paperMdExists": true, "sectionized": true})
+	return c.JSON(http.StatusOK, echo.Map{"sections": buildSectionDTOs(sections, sectionsDir), "paperMdExists": true, "sectionized": true})
 }
 
 // Sectionize runs one Claude call to identify the paper's chapters and caches
 // the result. POST /api/documents/:id/sections/sectionize
 func (h *DocHandler) Sectionize(c echo.Context) error {
-	doc, rawRelPath, ok := loadOwnedPDF(c)
+	rawRelPath, ok := loadOwnedPDF(c)
 	if !ok {
 		return nil
 	}
-	_ = doc
 	if h.ClaudeBin == "" {
 		return c.JSON(http.StatusServiceUnavailable, echo.Map{"error": "claude binary not configured"})
 	}
@@ -89,26 +96,17 @@ func (h *DocHandler) Sectionize(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to sectionize: " + err.Error()})
 	}
 	sectionsDir := filepath.Join(userDir, rawRelPath, "sections")
-	out := make([]sectionDTO, 0, len(sections))
-	for _, s := range sections {
-		dto := sectionDTO{Index: s.Index, Title: s.Title, Slug: s.Slug, HasBody: ingest.SectionBodyExists(sectionsDir, s.Slug)}
-		if exp, ok := ingest.LoadSectionExplain(sectionsDir, s.Slug); ok {
-			dto.Explanation = exp
-		}
-		out = append(out, dto)
-	}
-	return c.JSON(http.StatusOK, echo.Map{"sections": out, "paperMdExists": true, "sectionized": true})
+	return c.JSON(http.StatusOK, echo.Map{"sections": buildSectionDTOs(sections, sectionsDir), "paperMdExists": true, "sectionized": true})
 }
 
 // GenerateSection generates (or regenerates) the explanation for one section
 // by index, caches it, and returns it. Blocking -p call, no streaming.
 // POST /api/documents/:id/sections/:index/generate
 func (h *DocHandler) GenerateSection(c echo.Context) error {
-	doc, rawRelPath, ok := loadOwnedPDF(c)
+	rawRelPath, ok := loadOwnedPDF(c)
 	if !ok {
 		return nil
 	}
-	_ = doc
 	idx, err := strconv.Atoi(c.Param("index"))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid section index"})
@@ -133,7 +131,7 @@ func (h *DocHandler) GenerateSection(c echo.Context) error {
 	srcRelPath := filepath.ToSlash(filepath.Join(rawRelPath, "sections", section.Slug+".src.md"))
 	srcAbs := filepath.Join(userDir, srcRelPath)
 	if _, err := os.Stat(srcAbs); err != nil {
-		return c.JSON(http.StatusBadRequest, echo.Map{"error": "该章节无独立正文（内容在子章节），请选择子章节生成讲解"})
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "section has no standalone body"})
 	}
 
 	explanation, err := ingest.GenerateSectionExplain(userDir, srcRelPath, section.Title, h.ClaudeBin)

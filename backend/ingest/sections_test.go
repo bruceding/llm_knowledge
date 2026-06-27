@@ -7,17 +7,20 @@ import (
 )
 
 func TestParseSectionJSON(t *testing.T) {
-	// Claude sometimes wraps JSON in ```json fences; parser must tolerate both.
-	fenced := "```json\n[{\"title\":\"Intro\",\"body\":\"x\"}]\n```"
-	bare := "[{\"title\":\"Intro\",\"body\":\"x\"}]"
-
-	for _, in := range []string{fenced, bare} {
+	// Parser must tolerate ```json fences, bare JSON, AND leading/trailing
+	// prose Claude might add despite "only JSON" instructions.
+	cases := []string{
+		"```json\n[{\"title\":\"Intro\",\"body\":\"x\"}]\n```",
+		"[{\"title\":\"Intro\",\"body\":\"x\"}]",
+		"Here is the JSON array:\n```json\n[{\"title\":\"Intro\",\"body\":\"x\"}]\n```\nDone.",
+	}
+	for _, in := range cases {
 		got, err := parseSectionJSON(in)
 		if err != nil {
 			t.Fatalf("parseSectionJSON(%q) error: %v", in, err)
 		}
 		if len(got) != 1 || got[0].Title != "Intro" || got[0].Body != "x" {
-			t.Fatalf("got %+v", got)
+			t.Fatalf("got %+v for %q", got, in)
 		}
 	}
 

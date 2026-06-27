@@ -14,14 +14,15 @@ import (
 
 // Section is one chapter of a paper.
 //
-// Body holds the section's source text (produced by Sectionize, stored in
-// <slug>.src.md). It is populated by Sectionize/LoadSectionIndex for internal
-// use; the API layer maps to sectionDTO and does not expose Body.
+// Body holds the section's source text on the fresh-Sectionize path only; the
+// cache-hit path (LoadSectionIndex) leaves it empty. Callers that need the
+// body must read <slug>.src.md. json:"-" ensures Body can never leak via JSON
+// even if a future handler marshals []Section directly.
 type Section struct {
 	Index int    `json:"index"`
 	Title string `json:"title"`
 	Slug  string `json:"slug"`
-	Body  string `json:"body,omitempty"`
+	Body  string `json:"-"`
 }
 
 // sectionIndexEntry is the on-disk shape of sections/index.json. Body is
@@ -57,7 +58,12 @@ type rawSection struct {
 // rawRelPath is the paper dir relative to userDir (e.g. "raw/papers/foo").
 func Sectionize(userDir, rawRelPath, claudeBin string) ([]Section, error) {
 	sectionsDir := filepath.Join(userDir, rawRelPath, "sections")
-	if cached, ok := LoadSectionIndex(sectionsDir); ok {
+	paperMdPath := filepath.Join(userDir, rawRelPath, "paper.md")
+	// Cache hit only if index.json exists AND paper.md hasn't changed since
+	// it was written — LLMExtract/UploadPDF overwrite paper.md in place, so a
+	// mtime check is the invalidation signal (old SplitSections re-parsed
+	// every call; the cache reintroduced a staleness regression this fixes).
+	if cached, ok := LoadSectionIndex(sectionsDir); ok && !sectionCacheStale(sectionsDir, paperMdPath) {
 		return cached, nil
 	}
 
@@ -95,20 +101,24 @@ func Sectionize(userDir, rawRelPath, claudeBin string) ([]Section, error) {
 	}
 	sections := make([]Section, 0, len(raws))
 	entries := make([]sectionIndexEntry, 0, len(raws))
-	for i, r := range raws {
+	for _, r := range raws {
 		title := strings.TrimSpace(r.Title)
 		if title == "" {
 			continue
 		}
+		// Index MUST equal the dense slice position so the frontend's s.index
+		// maps to sections[idx] in GenerateSection. Using the loop counter
+		// would create gaps whenever an empty-title element is skipped.
+		idx := len(sections)
 		body := strings.TrimSpace(r.Body)
-		slug := sectionSlug(title, i)
+		slug := sectionSlug(title, idx)
 		if body != "" {
 			if err := os.WriteFile(filepath.Join(sectionsDir, slug+".src.md"), []byte(body), 0644); err != nil {
 				return nil, err
 			}
 		}
-		sections = append(sections, Section{Index: i, Title: title, Slug: slug, Body: body})
-		entries = append(entries, sectionIndexEntry{Index: i, Title: title, Slug: slug})
+		sections = append(sections, Section{Index: idx, Title: title, Slug: slug, Body: body})
+		entries = append(entries, sectionIndexEntry{Index: idx, Title: title, Slug: slug})
 	}
 	if err := SaveSectionIndex(sectionsDir, entries); err != nil {
 		return nil, err
@@ -116,19 +126,31 @@ func Sectionize(userDir, rawRelPath, claudeBin string) ([]Section, error) {
 	return sections, nil
 }
 
-// parseSectionJSON parses the JSON array Claude returned, tolerating
-// ```json fences.
+// sectionCacheStale reports whether paper.md is newer than index.json (cache
+// invalidation) or either file is missing.
+func sectionCacheStale(sectionsDir, paperMdPath string) bool {
+	idxInfo, err := os.Stat(filepath.Join(sectionsDir, "index.json"))
+	if err != nil {
+		return true
+	}
+	paperInfo, err := os.Stat(paperMdPath)
+	if err != nil {
+		return true
+	}
+	return paperInfo.ModTime().After(idxInfo.ModTime())
+}
+
+// parseSectionJSON parses the JSON array Claude returned. Tolerates ```json
+// fences AND leading/trailing prose Claude might add despite instructions:
+// extract the text between the first '[' and the last ']'.
 func parseSectionJSON(s string) ([]rawSection, error) {
-	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "```") {
-		if idx := strings.Index(s, "\n"); idx >= 0 {
-			s = s[idx+1:]
-		}
-		s = strings.TrimSuffix(strings.TrimSpace(s), "```")
-		s = strings.TrimSpace(s)
+	start := strings.Index(s, "[")
+	end := strings.LastIndex(s, "]")
+	if start < 0 || end < 0 || end <= start {
+		return nil, fmt.Errorf("no JSON array found in sectionize output")
 	}
 	var raws []rawSection
-	if err := json.Unmarshal([]byte(s), &raws); err != nil {
+	if err := json.Unmarshal([]byte(s[start:end+1]), &raws); err != nil {
 		return nil, err
 	}
 	return raws, nil
@@ -152,7 +174,8 @@ func LoadSectionIndex(sectionsDir string) ([]Section, bool) {
 	return out, true
 }
 
-// SaveSectionIndex writes sections/index.json.
+// SaveSectionIndex writes sections/index.json atomically (temp + rename) so a
+// concurrent ListSections reader can't see a half-written file.
 func SaveSectionIndex(sectionsDir string, entries []sectionIndexEntry) error {
 	if err := os.MkdirAll(sectionsDir, 0755); err != nil {
 		return err
@@ -161,7 +184,20 @@ func SaveSectionIndex(sectionsDir string, entries []sectionIndexEntry) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(sectionsDir, "index.json"), b, 0644)
+	tmp, err := os.CreateTemp(sectionsDir, "index.*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op if rename succeeded
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, filepath.Join(sectionsDir, "index.json"))
 }
 
 // sectionSlug is charset-safe (hash-based) so CJK titles produce valid
@@ -198,7 +234,7 @@ func SaveSectionExplain(sectionsDir, slug, content string) error {
 }
 
 const sectionExplainPrompt = `请用 Read 工具读取文件 %s。
-这是上述学术论文的一个章节，章节标题为「%s」。请用中文讲解这一章节，让读者不读原文也能听懂。
+这是一篇学术论文的一个章节，章节标题为「%s」。请用中文讲解这一章节，让读者不读原文也能听懂。
 
 输出要求（纯 Markdown，不要输出任何额外说明）：
 1. 第一段：用 150-300 字讲清楚这一章在做什么、为什么需要、核心思路。

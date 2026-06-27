@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useTranslation } from 'react-i18next'
@@ -19,8 +19,14 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
   const [generatingIndex, setGeneratingIndex] = useState<number | null>(null)
   const [genError, setGenError] = useState<string | null>(null)
   const [genErrorIndex, setGenErrorIndex] = useState<number | null>(null)
+  // Guards against React StrictMode double-invoking the effect (dev) and
+  // rapid re-mounts firing two POST /sectionize — the second would queue
+  // behind summarySem and false-error after 30s.
+  const sectionizeInflight = useRef(false)
 
   const doSectionize = useCallback(async () => {
+    if (sectionizeInflight.current) return
+    sectionizeInflight.current = true
     setSectionizing(true)
     setError(null)
     try {
@@ -31,6 +37,7 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
       setError(e instanceof Error ? e.message : 'Failed to identify sections')
     } finally {
       setSectionizing(false)
+      sectionizeInflight.current = false
     }
   }, [docId])
 
@@ -85,7 +92,7 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
     )
   }
   if (error) {
-    return <div className="p-6 text-red-600">{error}</div>
+    return <div data-testid="paper-sections-error" className="p-6 text-red-600">{error}</div>
   }
   if (!paperMdExists) {
     return (
