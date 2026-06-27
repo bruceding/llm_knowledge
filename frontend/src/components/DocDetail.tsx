@@ -670,6 +670,7 @@ export default function DocDetail() {
     if (mode === 'sections') {
       return (
         <PaperSectionsView
+          key={document.id}
           docId={document.id}
           summary={document.summary}
           onAskPaper={() => { setPanelHidden(false); setMetadataTab('chat') }}

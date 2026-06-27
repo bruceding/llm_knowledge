@@ -26,6 +26,7 @@ export interface PaperSection {
   index: number
   title: string
   slug: string
+  hasBody?: boolean
   explanation?: string
 }
 
