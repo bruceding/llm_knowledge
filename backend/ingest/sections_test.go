@@ -68,3 +68,22 @@ func TestSplitSectionsNoHeadings(t *testing.T) {
 		t.Fatalf("expected 0 sections for heading-less paper.md, got %d: %+v", len(got), got)
 	}
 }
+
+func TestSectionExplainCacheRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	slug := "sec0-abcd1234"
+
+	if _, ok := LoadSectionExplain(dir, slug); ok {
+		t.Fatal("expected cache miss on missing file")
+	}
+	if err := SaveSectionExplain(dir, slug, "## 关键要点\n- a\n"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := LoadSectionExplain(dir, slug)
+	if !ok {
+		t.Fatal("expected cache hit after save")
+	}
+	if got != "## 关键要点\n- a\n" {
+		t.Errorf("got %q", got)
+	}
+}
