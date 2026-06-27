@@ -49,6 +49,10 @@ function App() {
   const { i18n } = useTranslation()
 
   useEffect(() => {
+    // Skip on public routes / when unauthenticated: /api/settings returns 401,
+    // and authFetch's 401 interceptor hard-redirects to /login, which would
+    // re-mount App and call fetchSettings again — an infinite reload loop.
+    if (!localStorage.getItem('token')) return
     fetchSettings()
       .then((settings) => i18n.changeLanguage(settings.language))
       .catch(() => {}) // Silently fail, use default
