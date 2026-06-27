@@ -67,10 +67,7 @@ func Sectionize(userDir, rawRelPath, claudeBin string) ([]Section, error) {
 		return cached, nil
 	}
 
-	// Bound the sem acquire separately from the (longer) sectionize call so a
-	// caller queued behind a background summary/ingest doesn't burn the whole
-	// call budget waiting.
-	acquireCtx, acCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	acquireCtx, acCancel := context.WithTimeout(context.Background(), 200*time.Second)
 	defer acCancel()
 	select {
 	case summarySem <- struct{}{}:
@@ -287,7 +284,7 @@ const sectionExplainPrompt = `请用 Read 工具读取文件 %s。
 // userDir is the Claude working directory; srcRelPath is <slug>.src.md
 // relative to userDir.
 func GenerateSectionExplain(userDir, srcRelPath, sectionTitle, claudeBin string) (string, error) {
-	acquireCtx, acCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	acquireCtx, acCancel := context.WithTimeout(context.Background(), 200*time.Second)
 	defer acCancel()
 	select {
 	case summarySem <- struct{}{}:
