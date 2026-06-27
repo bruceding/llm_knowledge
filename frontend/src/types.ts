@@ -22,6 +22,13 @@ export interface Document {
   tags: Tag[]
 }
 
+export interface PaperSection {
+  index: number
+  title: string
+  slug: string
+  explanation?: string
+}
+
 // Conversation types
 export interface Conversation {
   id: number

@@ -13,6 +13,7 @@ import PDFViewer from './PDFViewer'
 import PDFTranslationView from './PDFTranslationView'
 import DocumentChatPanel from './DocumentChatPanel'
 import DualPDFViewer from './DualPDFViewer'
+import PaperSectionsView from './PaperSectionsView'
 import { useMobileShell } from './Layout/MobileShellStore'
 import DocChatBottomSheet from './DocChatBottomSheet'
 
@@ -77,7 +78,7 @@ export default function DocDetail() {
   const [bilingualContent, setBilingualContent] = useState('')
 
   // View mode - default set based on sourceType after document loads
-  const [viewMode, setViewMode] = useState<'wiki' | 'translation' | 'bilingual' | 'pdf' | 'dual-pdf' | 'raw' | 'html'>('raw')
+  const [viewMode, setViewMode] = useState<'wiki' | 'translation' | 'bilingual' | 'pdf' | 'dual-pdf' | 'raw' | 'html' | 'sections'>('raw')
 
   // Summary regeneration state
   const [regeneratingSummary, setRegeneratingSummary] = useState(false)
@@ -666,6 +667,15 @@ export default function DocDetail() {
 
   // Shared content renderer (used by both mobile and desktop)
   const renderContent = (mode: typeof viewMode) => {
+    if (mode === 'sections') {
+      return (
+        <PaperSectionsView
+          docId={document.id}
+          summary={document.summary}
+          onAskPaper={() => { setPanelHidden(false); setMetadataTab('chat') }}
+        />
+      )
+    }
     if (mode === 'html' && htmlContent) {
       return (
         <iframe
@@ -841,14 +851,25 @@ export default function DocDetail() {
 
             {/* Raw content button - label depends on sourceType */}
             {isPDF ? (
-              <button
-                onClick={() => setViewMode('pdf')}
-                className={`px-3 py-1.5 rounded-lg text-sm ${
-                  viewMode === 'pdf' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                PDF
-              </button>
+              <>
+                <button
+                  onClick={() => setViewMode('pdf')}
+                  className={`px-3 py-1.5 rounded-lg text-sm ${
+                    viewMode === 'pdf' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  PDF
+                </button>
+                <button
+                  onClick={() => setViewMode('sections')}
+                  data-testid="paper-sections-tab"
+                  className={`px-3 py-1.5 rounded-lg text-sm ${
+                    viewMode === 'sections' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  {t('paperSections.tab')}
+                </button>
+              </>
             ) : (
               <>
                 {htmlContent && document?.sourceType === 'newsletter' && (
