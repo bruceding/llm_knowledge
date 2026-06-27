@@ -46,7 +46,7 @@ func (h *DocHandler) ListSections(c echo.Context) error {
 
 	sections, err := ingest.SplitSections(paperMdPath)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to split sections: " + err.Error()})
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to split sections"})
 	}
 
 	sectionsDir := filepath.Join(userDir, rawRelPath, "sections")
@@ -86,9 +86,15 @@ func (h *DocHandler) GenerateSection(c echo.Context) error {
 	userDir := GetUserDir(c)
 	rawRelPath := StripUserPrefix(doc.RawPath)
 	paperMdPath := filepath.Join(userDir, rawRelPath, "paper.md")
+	// Missing paper.md is a client/404 condition, not a 500 — and we must not
+	// leak the absolute path via SplitSections' os.ReadFile error. Mirror
+	// ListSections' handling.
+	if _, err := os.Stat(paperMdPath); err != nil {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "paper content not generated yet"})
+	}
 	sections, err := ingest.SplitSections(paperMdPath)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to split sections: " + err.Error()})
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to split sections"})
 	}
 	if idx < 0 || idx >= len(sections) {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "section index out of range"})
@@ -99,6 +105,11 @@ func (h *DocHandler) GenerateSection(c echo.Context) error {
 	explanation, err := ingest.GenerateSectionExplain(userDir, paperRelPath, section.Title, h.ClaudeBin)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to generate explanation: " + err.Error()})
+	}
+	// Don't cache or return an empty explanation — it would be omitted by the
+	// DTO's omitempty and the UI would silently re-show the Generate button.
+	if explanation == "" {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "claude returned empty explanation"})
 	}
 
 	sectionsDir := filepath.Join(userDir, rawRelPath, "sections")
