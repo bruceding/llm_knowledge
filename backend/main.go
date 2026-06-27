@@ -243,6 +243,7 @@ func main() {
 	apiGroup.POST("/documents/:id/html-extract", docH.HTMLExtract)
 	apiGroup.POST("/documents/:id/regenerate-summary", docH.RegenerateSummary)
 	apiGroup.GET("/documents/:id/sections", docH.ListSections)
+	apiGroup.POST("/documents/:id/sections/sectionize", docH.Sectionize)
 	apiGroup.POST("/documents/:id/sections/:index/generate", docH.GenerateSection)
 	apiGroup.DELETE("/documents/:id", docH.DeleteDoc)
 

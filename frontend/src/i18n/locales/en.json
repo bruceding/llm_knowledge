@@ -182,7 +182,9 @@
     "generating": "Generating...",
     "noSections": "No sections detected. Try re-extracting the paper with LLM extraction to get heading-level content.",
     "noPaperMd": "Paper content (paper.md) not generated yet. Please extract the paper first.",
-    "askPaper": "Ask about this paper"
+    "askPaper": "Ask about this paper",
+    "sectionizing": "Identifying sections…",
+    "noBody": "(no standalone body — see sub-sections)"
   },
   "wikiView": {
     "title": "Wiki",

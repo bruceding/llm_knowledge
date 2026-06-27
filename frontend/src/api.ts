@@ -708,9 +708,24 @@ export async function deleteBlogFeed(id: number): Promise<void> {
 }
 
 // Paper Sections API (per-chapter explanation for PDF papers)
-export async function fetchPaperSections(docId: number): Promise<{ sections: PaperSection[]; paperMdExists: boolean }> {
+export async function fetchPaperSections(docId: number): Promise<{ sections: PaperSection[]; paperMdExists: boolean; sectionized: boolean }> {
   const res = await authFetch(`${API_BASE}/documents/${docId}/sections`, { headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to fetch sections')
+  return res.json()
+}
+
+// Sectionize runs one Claude call to identify the paper's chapters from
+// (heading-less) pdftotext paper.md and caches the result. Returns the
+// section list. Called automatically on first open of the sections view.
+export async function sectionizePaper(docId: number): Promise<{ sections: PaperSection[]; sectionized: boolean }> {
+  const res = await authFetch(`${API_BASE}/documents/${docId}/sections/sectionize`, {
+    method: 'POST',
+    headers: getHeaders(),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Failed to identify sections')
+  }
   return res.json()
 }
 
