@@ -1,0 +1,121 @@
+import { useState, useEffect, useCallback } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { useTranslation } from 'react-i18next'
+import { fetchPaperSections, generatePaperSection, type PaperSection } from '../api'
+
+// PaperSectionsView: left chapter list + right per-chapter explanation.
+// Explanations are lazy-generated on click (blocking -p on the backend),
+// then cached to disk so re-opening the view is instant. See
+// docs/plans/2026-06-27-paper-section-explain-design.md for the full layout.
+export default function PaperSectionsView({ docId, summary, onAskPaper }: { docId: number; summary: string; onAskPaper: () => void }) {
+  const { t } = useTranslation()
+  const [sections, setSections] = useState<PaperSection[]>([])
+  const [paperMdExists, setPaperMdExists] = useState(true)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [generatingIndex, setGeneratingIndex] = useState<number | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const { sections, paperMdExists } = await fetchPaperSections(docId)
+      setSections(sections)
+      setPaperMdExists(paperMdExists)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load sections')
+    } finally {
+      setLoading(false)
+    }
+  }, [docId])
+
+  useEffect(() => { load() }, [load])
+
+  const handleGenerate = async (index: number) => {
+    setGeneratingIndex(index)
+    setError(null)
+    try {
+      const updated = await generatePaperSection(docId, index)
+      setSections(prev => prev.map(s => (s.index === index ? updated : s)))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to generate')
+    } finally {
+      setGeneratingIndex(null)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
+      </div>
+    )
+  }
+  if (error) {
+    return <div className="p-6 text-red-600">{error}</div>
+  }
+  if (!paperMdExists) {
+    return (
+      <div data-testid="paper-sections-empty" className="p-6 text-gray-500">
+        {t('paperSections.noPaperMd')}
+      </div>
+    )
+  }
+  if (sections.length === 0) {
+    return (
+      <div data-testid="paper-sections-empty" className="p-6 text-gray-500">
+        {t('paperSections.noSections')}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex h-full">
+      <nav className="w-56 shrink-0 border-r border-gray-200 overflow-auto p-2 space-y-1">
+        {sections.map(s => (
+          <button
+            key={s.index}
+            onClick={() => document.getElementById(`section-${s.index}`)?.scrollIntoView({ behavior: 'smooth' })}
+            className={`block w-full text-left px-2 py-1.5 rounded text-sm ${s.explanation ? 'text-blue-700' : 'text-gray-600'} hover:bg-gray-100`}
+          >
+            {s.title}
+          </button>
+        ))}
+      </nav>
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {summary && (
+          <div className="px-6 py-2 bg-gray-50 border-b border-gray-200 text-sm text-gray-600">
+            📄 {summary}
+          </div>
+        )}
+        <div className="flex-1 overflow-auto p-6 max-w-3xl prose prose-slate" data-testid="paper-sections-content">
+          {sections.map(s => (
+            <section key={s.index} id={`section-${s.index}`} className="mb-8">
+              <h2 className="text-xl font-semibold mb-2">{s.title}</h2>
+              {s.explanation ? (
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.explanation}</ReactMarkdown>
+              ) : (
+                <button
+                  onClick={() => handleGenerate(s.index)}
+                  disabled={generatingIndex !== null}
+                  className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 disabled:opacity-50"
+                >
+                  {generatingIndex === s.index ? t('paperSections.generating') : t('paperSections.generate')}
+                </button>
+              )}
+            </section>
+          ))}
+          <div className="mt-8">
+            <button
+              onClick={onAskPaper}
+              className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
+            >
+              💬 {t('paperSections.askPaper')}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
