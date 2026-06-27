@@ -1,4 +1,5 @@
-import type { Document, UpdateDocRequest, SSEEvent, UserSettings, GlobalSettings, Conversation, Message, LoginResponse, RegisterResponse, CaptchaResponse, IMAPConfigInput, IMAPConfigResponse, IMAPTestResult, IMAPFoldersResult, NewsletterSyncStatus } from './types'
+import type { Document, UpdateDocRequest, SSEEvent, UserSettings, GlobalSettings, Conversation, Message, LoginResponse, RegisterResponse, CaptchaResponse, IMAPConfigInput, IMAPConfigResponse, IMAPTestResult, IMAPFoldersResult, NewsletterSyncStatus, PaperSection } from './types'
+export type { PaperSection }
 import { useAuthStore } from './store/authStore'
 
 const API_BASE = '/api'
@@ -704,4 +705,23 @@ export async function syncBlogFeed(id: number): Promise<BlogSyncResult> {
 export async function deleteBlogFeed(id: number): Promise<void> {
   const res = await authFetch(`${API_BASE}/blog/feeds/${id}`, { method: 'DELETE', headers: getHeaders() })
   if (!res.ok) throw new Error('Failed to delete blog feed')
+}
+
+// Paper Sections API (per-chapter explanation for PDF papers)
+export async function fetchPaperSections(docId: number): Promise<{ sections: PaperSection[]; paperMdExists: boolean }> {
+  const res = await authFetch(`${API_BASE}/documents/${docId}/sections`, { headers: getHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch sections')
+  return res.json()
+}
+
+export async function generatePaperSection(docId: number, index: number): Promise<PaperSection> {
+  const res = await authFetch(`${API_BASE}/documents/${docId}/sections/${index}/generate`, {
+    method: 'POST',
+    headers: getHeaders(),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Failed to generate section explanation')
+  }
+  return res.json()
 }

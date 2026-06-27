@@ -242,6 +242,8 @@ func main() {
 	apiGroup.POST("/documents/:id/llm-extract", docH.LLMExtract)
 	apiGroup.POST("/documents/:id/html-extract", docH.HTMLExtract)
 	apiGroup.POST("/documents/:id/regenerate-summary", docH.RegenerateSummary)
+	apiGroup.GET("/documents/:id/sections", docH.ListSections)
+	apiGroup.POST("/documents/:id/sections/:index/generate", docH.GenerateSection)
 	apiGroup.DELETE("/documents/:id", docH.DeleteDoc)
 
 	// Pages API (page image generation for bilingual view) (protected)
