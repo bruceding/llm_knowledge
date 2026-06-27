@@ -176,6 +176,14 @@
     "viewOriginal": "原文",
     "viewTranslation": "译文"
   },
+  "paperSections": {
+    "tab": "章节讲解",
+    "generate": "生成讲解",
+    "generating": "生成中...",
+    "noSections": "未识别到章节。可尝试用「LLM 提取」重新生成带标题层级的论文内容后再来。",
+    "noPaperMd": "尚未生成论文内容（paper.md）。请先在 PDF 视图旁的操作中提取论文。",
+    "askPaper": "对这篇论文提问"
+  },
   "wikiView": {
     "title": "Wiki",
     "loading": "加载中...",
