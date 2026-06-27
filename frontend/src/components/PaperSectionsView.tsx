@@ -79,11 +79,13 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
   const handleGenerate = async (index: number) => {
     setGenError(null)
     setGenErrorIndex(null)
+    setSections(prev => prev.map(s => (s.index === index ? { ...s, generating: true } : s)))
     try {
       await generatePaperSection(docId, index)
-      // Mark generating locally for immediate UI feedback
-      setSections(prev => prev.map(s => (s.index === index ? { ...s, generating: true } : s)))
+      const { sections: fresh } = await fetchPaperSections(docId)
+      setSections(fresh)
     } catch (e) {
+      setSections(prev => prev.map(s => (s.index === index ? { ...s, generating: false } : s)))
       setGenErrorIndex(index)
       setGenError(e instanceof Error ? e.message : 'Failed to generate')
     }
@@ -151,10 +153,10 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
                   {s.hasBody !== false && (
                     <button
                       onClick={() => handleGenerate(s.index)}
-                      disabled={generatingIndex !== null}
+                      disabled={anyGenerating}
                       className="mt-2 px-2 py-1 text-xs text-gray-500 border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50"
                     >
-                      {generatingIndex === s.index ? t('paperSections.generating') : t('paperSections.regenerate')}
+                      {s.generating ? t('paperSections.generating') : t('paperSections.regenerate')}
                     </button>
                   )}
                 </>
