@@ -28,6 +28,7 @@ export interface PaperSection {
   slug: string
   hasBody?: boolean
   explanation?: string
+  generating?: boolean
 }
 
 // Conversation types

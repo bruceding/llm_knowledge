@@ -15,7 +15,6 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
   const [sectionizing, setSectionizing] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [generatingIndex, setGeneratingIndex] = useState<number | null>(null)
   const [genError, setGenError] = useState<string | null>(null)
   const [genErrorIndex, setGenErrorIndex] = useState<number | null>(null)
   // Guards against React StrictMode double-invoking the effect (dev) and
@@ -64,20 +63,29 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
 
   useEffect(() => { load() }, [load])
 
+  // Poll sections when any section is generating (backend async pattern).
+  const anyGenerating = sections.some(s => s.generating)
+  useEffect(() => {
+    if (!anyGenerating) return
+    const timer = setInterval(async () => {
+      try {
+        const { sections: fresh } = await fetchPaperSections(docId)
+        setSections(fresh)
+      } catch { /* ignore polling errors */ }
+    }, 3000)
+    return () => clearInterval(timer)
+  }, [docId, anyGenerating])
+
   const handleGenerate = async (index: number) => {
-    setGeneratingIndex(index)
     setGenError(null)
     setGenErrorIndex(null)
     try {
-      const updated = await generatePaperSection(docId, index)
-      setSections(prev => prev.map(s => (s.index === index ? updated : s)))
+      await generatePaperSection(docId, index)
+      // Mark generating locally for immediate UI feedback
+      setSections(prev => prev.map(s => (s.index === index ? { ...s, generating: true } : s)))
     } catch (e) {
-      // Inline per-section error — do NOT setError(), which would early-return
-      // and wipe the whole chapter list + scroll position on one failure.
       setGenErrorIndex(index)
       setGenError(e instanceof Error ? e.message : 'Failed to generate')
-    } finally {
-      setGeneratingIndex(null)
     }
   }
 
@@ -140,17 +148,19 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
               {s.explanation ? (
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.explanation}</ReactMarkdown>
               ) : s.hasBody === false ? (
-                // Parent section whose content lives in sub-sections — no body
-                // to explain. Don't offer a generate button that would 4xx.
                 <div className="text-sm text-gray-400 italic">{t('paperSections.noBody')}</div>
+              ) : s.generating ? (
+                <div className="flex items-center gap-2 text-sm text-gray-500">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500" />
+                  {t('paperSections.generating')}
+                </div>
               ) : (
                 <div>
                   <button
                     onClick={() => handleGenerate(s.index)}
-                    disabled={generatingIndex !== null}
-                    className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200 disabled:opacity-50"
+                    className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
                   >
-                    {generatingIndex === s.index ? t('paperSections.generating') : t('paperSections.generate')}
+                    {t('paperSections.generate')}
                   </button>
                   {genErrorIndex === s.index && genError && (
                     <div className="mt-2 text-sm text-red-600">{genError}</div>
