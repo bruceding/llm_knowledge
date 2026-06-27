@@ -1,4 +1,5 @@
 import type { Document, UpdateDocRequest, SSEEvent, UserSettings, GlobalSettings, Conversation, Message, LoginResponse, RegisterResponse, CaptchaResponse, IMAPConfigInput, IMAPConfigResponse, IMAPTestResult, IMAPFoldersResult, NewsletterSyncStatus, PaperSection } from './types'
+export type { PaperSection }
 import { useAuthStore } from './store/authStore'
 
 const API_BASE = '/api'
