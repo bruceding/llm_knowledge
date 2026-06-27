@@ -138,7 +138,18 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
             <section key={s.index} id={`section-${s.index}`} className="mb-8">
               <h2 className="text-xl font-semibold mb-2">{s.title}</h2>
               {s.explanation ? (
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.explanation}</ReactMarkdown>
+                <>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.explanation}</ReactMarkdown>
+                  {s.hasBody !== false && (
+                    <button
+                      onClick={() => handleGenerate(s.index)}
+                      disabled={generatingIndex !== null}
+                      className="mt-2 px-2 py-1 text-xs text-gray-500 border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50"
+                    >
+                      {generatingIndex === s.index ? t('paperSections.generating') : t('paperSections.regenerate')}
+                    </button>
+                  )}
+                </>
               ) : s.hasBody === false ? (
                 // Parent section whose content lives in sub-sections — no body
                 // to explain. Don't offer a generate button that would 4xx.

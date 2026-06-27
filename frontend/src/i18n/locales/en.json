@@ -184,7 +184,8 @@
     "noPaperMd": "Paper content (paper.md) not generated yet. Please extract the paper first.",
     "askPaper": "Ask about this paper",
     "sectionizing": "Identifying sections…",
-    "noBody": "(no standalone body)"
+    "noBody": "(no standalone body)",
+    "regenerate": "Regenerate"
   },
   "wikiView": {
     "title": "Wiki",
