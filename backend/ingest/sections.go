@@ -1,12 +1,15 @@
 package ingest
 
 import (
+	"context"
 	"crypto/sha1"
 	"fmt"
+	"llm-knowledge/claude"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Section is one chapter of a paper.md, split by ## / ### headings.
@@ -108,4 +111,36 @@ func SaveSectionExplain(sectionsDir, slug, content string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(sectionsDir, slug+".md"), []byte(content), 0644)
+}
+
+const sectionExplainPrompt = `请用 Read 工具读取文件 %s。
+这是一篇学术论文的一个章节，章节标题为「%s」。
+请在文中定位该标题下的章节内容（通常是 ## 或 ### 标题；忽略形如 "## Page N" 的分页标记），然后用中文讲解这一章节，让读者不读原文也能听懂。
+
+输出要求（纯 Markdown，不要输出任何额外说明）：
+1. 第一段：用 150-300 字讲清楚这一章在做什么、为什么需要、核心思路。
+2. 如果本章涉及算法 / 方法 / 模型：用通俗的话讲清它怎么工作，讲直觉，不要照抄公式。
+3. 如果本章点明了某个待解决的问题或挑战：说明它是什么、作者如何应对。
+4. 最后以 "## 关键要点" 为标题，列 3-5 条一句话要点；不适用项可省略。
+`
+
+// GenerateSectionExplain asks Claude (via -p + Read, same path as GenerateSummary)
+// to explain one chapter of the paper. userDir is the Claude working directory;
+// paperRelPath is paper.md relative to userDir (e.g. "raw/papers/foo/paper.md").
+// Concurrency is bounded by the shared summarySem so it never races with
+// summary/ingest generation.
+func GenerateSectionExplain(userDir, paperRelPath, sectionTitle, claudeBin string) (string, error) {
+	summarySem <- struct{}{}
+	defer func() { <-summarySem }()
+
+	client := claude.NewClientWithPath(claudeBin)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	prompt := fmt.Sprintf(sectionExplainPrompt, paperRelPath, sectionTitle)
+	out, err := client.SendSimpleWithRead(ctx, prompt, userDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate section explain: %w", err)
+	}
+	return out, nil
 }
