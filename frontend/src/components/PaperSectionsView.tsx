@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useTranslation } from 'react-i18next'
-import { fetchPaperSections, generatePaperSection, type PaperSection } from '../api'
+import { fetchPaperSections, sectionizePaper, generatePaperSection, type PaperSection } from '../api'
 
 // PaperSectionsView: left chapter list + right per-chapter explanation.
 // Explanations are lazy-generated on click (blocking -p on the backend),
@@ -12,11 +12,34 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
   const { t } = useTranslation()
   const [sections, setSections] = useState<PaperSection[]>([])
   const [paperMdExists, setPaperMdExists] = useState(true)
+  const [sectionized, setSectionized] = useState(false)
+  const [sectionizing, setSectionizing] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [generatingIndex, setGeneratingIndex] = useState<number | null>(null)
   const [genError, setGenError] = useState<string | null>(null)
   const [genErrorIndex, setGenErrorIndex] = useState<number | null>(null)
+  // Guards against React StrictMode double-invoking the effect (dev) and
+  // rapid re-mounts firing two POST /sectionize — the second would queue
+  // behind summarySem and false-error after 30s.
+  const sectionizeInflight = useRef(false)
+
+  const doSectionize = useCallback(async () => {
+    if (sectionizeInflight.current) return
+    sectionizeInflight.current = true
+    setSectionizing(true)
+    setError(null)
+    try {
+      const { sections } = await sectionizePaper(docId)
+      setSections(sections)
+      setSectionized(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to identify sections')
+    } finally {
+      setSectionizing(false)
+      sectionizeInflight.current = false
+    }
+  }, [docId])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -24,15 +47,23 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
     setGenError(null)
     setGenErrorIndex(null)
     try {
-      const { sections, paperMdExists } = await fetchPaperSections(docId)
+      const { sections, paperMdExists, sectionized } = await fetchPaperSections(docId)
       setSections(sections)
       setPaperMdExists(paperMdExists)
+      setSectionized(sectionized)
+      // paper.md exists but sections not identified yet — paper.md is pdftotext
+      // output with no headings, so one Claude call must sectionize it.
+      if (paperMdExists && !sectionized) {
+        // Fire sectionize; its own `sectionizing` state drives the
+        // "识别章节中…" UI (one Claude call can take a minute+).
+        doSectionize()
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load sections')
     } finally {
       setLoading(false)
     }
-  }, [docId])
+  }, [docId, doSectionize])
 
   useEffect(() => { load() }, [load])
 
@@ -61,12 +92,20 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
     )
   }
   if (error) {
-    return <div className="p-6 text-red-600">{error}</div>
+    return <div data-testid="paper-sections-error" className="p-6 text-red-600">{error}</div>
   }
   if (!paperMdExists) {
     return (
       <div data-testid="paper-sections-empty" className="p-6 text-gray-500">
         {t('paperSections.noPaperMd')}
+      </div>
+    )
+  }
+  if (sectionizing) {
+    return (
+      <div data-testid="paper-sections-sectionizing" className="flex flex-col items-center justify-center h-full gap-3">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
+        <div className="text-sm text-gray-600">{t('paperSections.sectionizing')}</div>
       </div>
     )
   }
@@ -103,6 +142,10 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
               <h2 className="text-xl font-semibold mb-2">{s.title}</h2>
               {s.explanation ? (
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.explanation}</ReactMarkdown>
+              ) : s.hasBody === false ? (
+                // Parent section whose content lives in sub-sections — no body
+                // to explain. Don't offer a generate button that would 4xx.
+                <div className="text-sm text-gray-400 italic">{t('paperSections.noBody')}</div>
               ) : (
                 <div>
                   <button

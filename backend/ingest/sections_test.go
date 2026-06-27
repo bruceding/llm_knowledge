@@ -3,69 +3,50 @@ package ingest
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func TestSplitSections(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "paper.md")
-	// Mirrors LLMExtract output: a "## Page N" page marker plus real headings.
-	content := "---\ntitle: Test\n---\n\n" +
-		"## Page 1\n\nintro text before headings\n\n" +
-		"## Introduction\n\nWe study X.\n\n" +
-		"## Method\n\nThe algo is Y.\n\n" +
-		"### 3.1 Sub-detail\n\nMore on Y.\n\n" +
-		"## Conclusion\n\nDone.\n"
-	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
-		t.Fatal(err)
+func TestParseSectionJSON(t *testing.T) {
+	// Parser must tolerate ```json fences, bare JSON, AND leading/trailing
+	// prose Claude might add despite "only JSON" instructions.
+	cases := []string{
+		"```json\n[{\"title\":\"Intro\",\"body\":\"x\"}]\n```",
+		"[{\"title\":\"Intro\",\"body\":\"x\"}]",
+		"Here is the JSON array:\n```json\n[{\"title\":\"Intro\",\"body\":\"x\"}]\n```\nDone.",
+	}
+	for _, in := range cases {
+		got, err := parseSectionJSON(in)
+		if err != nil {
+			t.Fatalf("parseSectionJSON(%q) error: %v", in, err)
+		}
+		if len(got) != 1 || got[0].Title != "Intro" || got[0].Body != "x" {
+			t.Fatalf("got %+v for %q", got, in)
+		}
 	}
 
-	got, err := SplitSections(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	wantTitles := []string{"Introduction", "Method", "3.1 Sub-detail", "Conclusion"}
-	if len(got) != len(wantTitles) {
-		t.Fatalf("got %d sections, want %d: %+v", len(got), len(wantTitles), got)
-	}
-	for i, want := range wantTitles {
-		if got[i].Title != want {
-			t.Errorf("section %d title: got %q want %q", i, got[i].Title, want)
-		}
-		if got[i].Index != i {
-			t.Errorf("section %d index: got %d want %d", i, got[i].Index, i)
-		}
-		if got[i].Slug == "" {
-			t.Errorf("section %d slug should not be empty", i)
-		}
-	}
-	if got[0].Slug == got[1].Slug {
-		t.Error("slugs should differ across sections")
-	}
-	// Method body ends where the "### 3.1 Sub-detail" sub-section starts.
-	if !strings.Contains(got[1].Body(), "The algo is Y.") {
-		t.Errorf("Method body missing text; got %q", got[1].Body())
-	}
-	if strings.Contains(got[1].Body(), "More on Y.") {
-		t.Errorf("Method body should not include the sub-section body; got %q", got[1].Body())
+	if _, err := parseSectionJSON("not json"); err == nil {
+		t.Fatal("expected error for invalid JSON")
 	}
 }
 
-func TestSplitSectionsNoHeadings(t *testing.T) {
+func TestSectionIndexRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	p := filepath.Join(dir, "paper.md")
-	// Mirrors pdftotext output (UploadPDF): no markdown headings at all.
-	if err := os.WriteFile(p, []byte("just plain text\nno headings here\n--- Page Break ---\nmore text\n"), 0644); err != nil {
+	if _, ok := LoadSectionIndex(dir); ok {
+		t.Fatal("expected miss on missing index.json")
+	}
+	entries := []sectionIndexEntry{
+		{Index: 0, Title: "Introduction", Slug: "sec0-aaaa"},
+		{Index: 1, Title: "Method", Slug: "sec1-bbbb"},
+	}
+	if err := SaveSectionIndex(dir, entries); err != nil {
 		t.Fatal(err)
 	}
-	got, err := SplitSections(p)
-	if err != nil {
-		t.Fatal(err)
+	got, ok := LoadSectionIndex(dir)
+	if !ok {
+		t.Fatal("expected hit after save")
 	}
-	if len(got) != 0 {
-		t.Fatalf("expected 0 sections for heading-less paper.md, got %d: %+v", len(got), got)
+	if len(got) != 2 || got[1].Title != "Method" || got[1].Slug != "sec1-bbbb" || got[1].Body != "" {
+		t.Fatalf("got %+v", got)
 	}
 }
 
@@ -85,5 +66,15 @@ func TestSectionExplainCacheRoundTrip(t *testing.T) {
 	}
 	if got != "## 关键要点\n- a\n" {
 		t.Errorf("got %q", got)
+	}
+	// ensure index.json and explanation file coexist without collision
+	if err := SaveSectionIndex(dir, []sectionIndexEntry{{Index: 0, Title: "T", Slug: slug}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "index.json")); err != nil {
+		t.Fatal("index.json missing")
+	}
+	if _, err := os.Stat(filepath.Join(dir, slug+".md")); err != nil {
+		t.Fatal("explanation file missing")
 	}
 }

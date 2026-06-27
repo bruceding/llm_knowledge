@@ -2,16 +2,33 @@
 
 Companion to [2026-06-27-paper-section-explain-implementation.md](2026-06-27-paper-section-explain-implementation.md). This doc fixes the **interaction and frontend design**; the implementation plan references it.
 
+> **Revision 2026-06-27 (LLM-based sectionization).** The original v1 split
+> paper.md by `##`/`###` headings. Manual verification exposed this never
+> works: `UploadPDF` produces paper.md via `pdftotext -layout` (two-column
+> plain text, **no markdown headings**, plus algorithm pseudocode lines like
+> `4 Initialize unassigned set U ← V` that look like headings). Local
+> regex parsing is both too brittle (two-column merge, false positives) and
+> has nothing to parse. **Sectionization is now one Claude call** that reads
+> paper.md and returns `[{title, body}]`, cached to
+> `sections/index.json` + per-section `<slug>.src.md`. Per-section explain
+> then points Claude at the cached body file (not "locate by title in
+> paper.md") — fixing the duplicate-title known limitation too. Validated
+> end-to-end on doc 72 (`2502.18965v1`): 25 sections identified correctly,
+> pseudocode steps excluded, cache hit on re-open, explain produces clean
+> 讲解. First-open cost: one Claude call (~3min for a 15-page paper), cached
+> after.
+
 ## 1. 目标与范围
 
 **目标**：把论文从"只有 doc-chat 能问"变成"每章自动有讲解"。用户经常在 doc-chat 里挨个问"这章什么意思、那个算法怎么回事"——预生成章节讲解后，读完就懂，再就细节深挖才进 chat。
 
 **v1 做**：
-- 按 `##`/`###` 标题切章节（跳过 `## Page N` 分页标记）
-- 每章懒加载生成"讲解式"摘要（一段讲解 + 末尾「关键要点」），阻塞 `-p` 调用，落盘缓存
-- PDF 文档在 DocDetail 显示「章节讲解」入口
+- **一次 Claude 调用切章节**（`Sectionize`）：读 paper.md（pdftotext 双栏纯文本）→ 返回 `[{title, body}]`，识别章节标题、跳过算法伪代码步骤、清洗双栏杂乱换行，缓存到 `sections/index.json` + `<slug>.src.md`
+- 每章懒加载生成"讲解式"摘要（一段讲解 + 末尾「关键要点」），阻塞 `-p` 调用读 `<slug>.src.md`，落盘缓存
+- PDF 文档在 DocDetail 显示「章节讲解」入口，首次打开自动触发 Sectionize
 - 顶部复用 `doc.summary` 作主旨 banner
 - 底部「对这篇论文提问」→ 切到现有 doc-chat tab
+
 
 **v1 不做**（明确砍掉，留 v2）：
 - ❌ 回原文锚点（paper.md ↔ PDF 页码无映射，用户看的是原始 PDF，硬做脆弱）
