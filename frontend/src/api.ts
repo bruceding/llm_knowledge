@@ -729,7 +729,7 @@ export async function sectionizePaper(docId: number): Promise<{ sections: PaperS
   return res.json()
 }
 
-export async function generatePaperSection(docId: number, index: number): Promise<PaperSection> {
+export async function generatePaperSection(docId: number, index: number): Promise<void> {
   const res = await authFetch(`${API_BASE}/documents/${docId}/sections/${index}/generate`, {
     method: 'POST',
     headers: getHeaders(),
@@ -738,5 +738,4 @@ export async function generatePaperSection(docId: number, index: number): Promis
     const err = await res.json().catch(() => ({}))
     throw new Error(err.error || 'Failed to generate section explanation')
   }
-  return res.json()
 }

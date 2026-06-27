@@ -233,6 +233,35 @@ func SaveSectionExplain(sectionsDir, slug, content string) error {
 	return os.WriteFile(filepath.Join(sectionsDir, slug+".md"), []byte(content), 0644)
 }
 
+// MarkGenerating atomically creates a .generating marker file for the given
+// section. Returns an error if the marker already exists (another generation
+// is in progress).
+func MarkGenerating(sectionsDir, slug string) error {
+	if err := os.MkdirAll(sectionsDir, 0755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(sectionsDir, slug+".generating"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// ClearGenerating removes the .generating marker file.
+func ClearGenerating(sectionsDir, slug string) {
+	os.Remove(filepath.Join(sectionsDir, slug+".generating"))
+}
+
+// IsGenerating reports whether a section is currently being generated and the
+// marker hasn't exceeded the given timeout (stale marker = crashed generation).
+func IsGenerating(sectionsDir, slug string, timeout time.Duration) bool {
+	info, err := os.Stat(filepath.Join(sectionsDir, slug+".generating"))
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) < timeout
+}
+
 const sectionExplainPrompt = `请用 Read 工具读取文件 %s。
 这是一篇学术论文的一个章节，章节标题为「%s」。请用中文深入讲解这一章节，让读者不读原文也能完全理解。
 

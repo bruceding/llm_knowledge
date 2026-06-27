@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"llm-knowledge/db"
 	"llm-knowledge/ingest"
@@ -18,6 +19,7 @@ type sectionDTO struct {
 	Slug        string `json:"slug"`
 	HasBody     bool   `json:"hasBody"`
 	Explanation string `json:"explanation,omitempty"`
+	Generating  bool   `json:"generating,omitempty"`
 }
 
 // loadOwnedPDF returns the paper dir (relative to userDir) of the owned PDF
@@ -37,6 +39,9 @@ func loadOwnedPDF(c echo.Context) (string, bool) {
 	return StripUserPrefix(doc.RawPath), true
 }
 
+// generatingTimeout is how long a .generating marker is considered valid.
+const generatingTimeout = 3 * time.Minute
+
 // buildSectionDTOs maps sections to DTOs, attaching HasBody and any cached
 // explanation. LoadSectionExplain is only attempted when a body file exists
 // (no body → no cached explanation possible).
@@ -47,6 +52,8 @@ func buildSectionDTOs(sections []ingest.Section, sectionsDir string) []sectionDT
 		if dto.HasBody {
 			if exp, ok := ingest.LoadSectionExplain(sectionsDir, s.Slug); ok {
 				dto.Explanation = exp
+			} else if ingest.IsGenerating(sectionsDir, s.Slug, generatingTimeout) {
+				dto.Generating = true
 			}
 		}
 		out = append(out, dto)
@@ -99,8 +106,9 @@ func (h *DocHandler) Sectionize(c echo.Context) error {
 	return c.JSON(http.StatusOK, echo.Map{"sections": buildSectionDTOs(sections, sectionsDir), "paperMdExists": true, "sectionized": true})
 }
 
-// GenerateSection generates (or regenerates) the explanation for one section
-// by index, caches it, and returns it. Blocking -p call, no streaming.
+// GenerateSection kicks off async explanation generation for one section.
+// It writes a .generating marker, starts a goroutine, and returns 202
+// immediately. The frontend polls GET /sections to detect completion.
 // POST /api/documents/:id/sections/:index/generate
 func (h *DocHandler) GenerateSection(c echo.Context) error {
 	rawRelPath, ok := loadOwnedPDF(c)
@@ -125,30 +133,28 @@ func (h *DocHandler) GenerateSection(c echo.Context) error {
 	}
 	section := sections[idx]
 
-	// The section's pre-extracted body lives in <slug>.src.md (written by
-	// Sectionize). Point Claude at it instead of "locate by title in paper.md"
-	// — faster and immune to duplicate-title confusion.
 	srcRelPath := filepath.ToSlash(filepath.Join(rawRelPath, "sections", section.Slug+".src.md"))
 	srcAbs := filepath.Join(userDir, srcRelPath)
 	if _, err := os.Stat(srcAbs); err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "section has no standalone body"})
 	}
 
-	explanation, err := ingest.GenerateSectionExplain(userDir, srcRelPath, section.Title, h.ClaudeBin)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to generate explanation: " + err.Error()})
+	if err := ingest.MarkGenerating(sectionsDir, section.Slug); err != nil {
+		if ingest.IsGenerating(sectionsDir, section.Slug, generatingTimeout) {
+			return c.JSON(http.StatusAccepted, echo.Map{"status": "already generating"})
+		}
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to mark generating"})
 	}
-	if explanation == "" {
-		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "claude returned empty explanation"})
-	}
-	if err := ingest.SaveSectionExplain(sectionsDir, section.Slug, explanation); err != nil {
-		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to cache explanation"})
-	}
-	return c.JSON(http.StatusOK, sectionDTO{
-		Index:       section.Index,
-		Title:       section.Title,
-		Slug:        section.Slug,
-		HasBody:     true,
-		Explanation: explanation,
-	})
+
+	claudeBin := h.ClaudeBin
+	go func() {
+		defer ingest.ClearGenerating(sectionsDir, section.Slug)
+		explanation, err := ingest.GenerateSectionExplain(userDir, srcRelPath, section.Title, claudeBin)
+		if err != nil || explanation == "" {
+			return
+		}
+		_ = ingest.SaveSectionExplain(sectionsDir, section.Slug, explanation)
+	}()
+
+	return c.JSON(http.StatusAccepted, echo.Map{"status": "generating"})
 }
