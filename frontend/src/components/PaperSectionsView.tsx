@@ -12,7 +12,6 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
   const { t } = useTranslation()
   const [sections, setSections] = useState<PaperSection[]>([])
   const [paperMdExists, setPaperMdExists] = useState(true)
-  const [sectionized, setSectionized] = useState(false)
   const [sectionizing, setSectionizing] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -32,7 +31,6 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
     try {
       const { sections } = await sectionizePaper(docId)
       setSections(sections)
-      setSectionized(true)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to identify sections')
     } finally {
@@ -50,9 +48,8 @@ export default function PaperSectionsView({ docId, summary, onAskPaper }: { docI
       const { sections, paperMdExists, sectionized } = await fetchPaperSections(docId)
       setSections(sections)
       setPaperMdExists(paperMdExists)
-      setSectionized(sectionized)
-      // paper.md exists but sections not identified yet — paper.md is pdftotext
-      // output with no headings, so one Claude call must sectionize it.
+      // `sectionized` (from the API response) drives whether to auto-fire
+      // sectionize; no separate state needed — the response is fresh per load.
       if (paperMdExists && !sectionized) {
         // Fire sectionize; its own `sectionizing` state drives the
         // "识别章节中…" UI (one Claude call can take a minute+).
