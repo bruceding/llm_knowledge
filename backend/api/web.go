@@ -860,6 +860,16 @@ func ExtractContent(doc *goquery.Document) string {
 		return mediumContent
 	}
 
+	// HackerNoon-specific extraction (issue #87): the article body lives in
+	// `.story-body`, while Comments / Related Stories / TOPICS / Featured /
+	// About-Author / prev-next sections are SIBLINGS outside it, all wrapped in
+	// <main>. The generic longest-wins loop below would pick <main> (body + all
+	// that noise, ~21KB) over the clean `.story-body` (~8KB), so scope extraction
+	// to `.story-body` when it holds substantial content.
+	if hnContent := extractHackerNoonContent(doc); hnContent != "" {
+		return hnContent
+	}
+
 	// Content selectors ordered by specificity (platform-specific first, then generic)
 	// Key insight: some sites have <article> for footer, <main> for content (e.g. Aliyun docs)
 	// Solution: pick the selector with most text content, not first match
@@ -1059,6 +1069,32 @@ func cleanMediumNoise(doc *goquery.Document) {
 		}
 		s.Remove()
 	})
+}
+
+// extractHackerNoonContent returns clean Markdown from a HackerNoon `.story-body`
+// article container, or "" when the page has none (or the container is too small
+// to be real article content — a stub is safer handled by the generic path).
+// See the call site in ExtractContent for why this short-circuit is needed
+// (issue #87).
+func extractHackerNoonContent(doc *goquery.Document) string {
+	body := doc.Find(".story-body").First()
+	if body.Length() == 0 {
+		return ""
+	}
+
+	var markdown strings.Builder
+	body.Contents().Each(func(i int, s *goquery.Selection) {
+		markdown.WriteString(convertNodeToMarkdown(s))
+	})
+	content := mergeTableRows(cleanExcessiveWhitespace(markdown.String()))
+	content = strings.TrimSpace(content)
+
+	// Guard against a stub `.story-body` (e.g. a teaser card on a non-article
+	// page): fall back to the generic selector path when there's no real body.
+	if len(content) < 200 {
+		return ""
+	}
+	return content
 }
 
 // extractMediumContent returns clean markdown for Medium articles, or "" if the
