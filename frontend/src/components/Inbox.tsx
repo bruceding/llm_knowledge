@@ -1,15 +1,18 @@
 import { useState, useEffect, useRef } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { fetchInbox, updateDocument } from '../api'
+import { fetchInbox, updateDocument, deleteDocument } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
+import { useIsMobile } from '../hooks/useIsMobile'
 import { useMobileShell } from './Layout/MobileShellStore'
 import type { Document } from '../types'
 
 export default function Inbox() {
   const location = useLocation()
+  const navigate = useNavigate()
   const { t, i18n } = useTranslation()
-  const { dialog: confirmDialog } = useConfirm()
+  const { confirm, dialog: confirmDialog } = useConfirm()
+  const isMobile = useIsMobile()
   const setTitle = useMobileShell((s) => s.setTitle)
   const setRightSlot = useMobileShell((s) => s.setRightSlot)
   const [documents, setDocuments] = useState<Document[]>([])
@@ -33,6 +36,61 @@ export default function Inbox() {
     if (activeDocId === null) return
     itemRefs.current.get(activeDocId)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }, [activeDocId])
+
+  // Keyboard navigation & actions (desktop only)
+  useEffect(() => {
+    if (isMobile) return
+    const handleKeyDown = async (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (documents.length === 0) return
+
+      const currentIndex = documents.findIndex((d) => d.id === activeDocId)
+
+      if (e.key === 'j' || e.key === 'ArrowDown') {
+        e.preventDefault()
+        const next = currentIndex < 0 ? 0 : Math.min(currentIndex + 1, documents.length - 1)
+        setActiveDocId(documents[next].id)
+        return
+      }
+      if (e.key === 'k' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        const prev = currentIndex < 0 ? documents.length - 1 : Math.max(currentIndex - 1, 0)
+        setActiveDocId(documents[prev].id)
+        return
+      }
+
+      if (activeDocId === null) return
+      const activeDoc = documents.find((d) => d.id === activeDocId)
+      if (!activeDoc) return
+
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        navigate(`/documents/${activeDocId}`)
+        return
+      }
+      if (e.key === 'd') {
+        e.preventDefault()
+        const confirmed = await confirm({
+          title: t('common.delete'),
+          message: t('docDetail.deleteConfirm'),
+        })
+        if (!confirmed) return
+        deleteDocument(activeDocId).then(() => loadDocuments())
+        return
+      }
+      if (e.key === 'l') {
+        if (activeDoc.status !== 'inbox') return
+        e.preventDefault()
+        updateDocument(activeDocId, { status: 'later' })
+          .then(() => loadDocuments())
+          .catch((err) => setError(err instanceof Error ? err.message : 'Failed to move to later'))
+        return
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [documents, activeDocId, isMobile, t, confirm, navigate])
 
   const loadDocuments = async () => {
     setLoading(true)
