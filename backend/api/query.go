@@ -394,7 +394,11 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 	for {
 		select {
 		case <-pingTicker.C:
-			fmt.Fprint(c.Response(), ": ping\n\n")
+			// Check the write error so a dead connection is detected promptly
+			// (the ping's whole purpose) instead of spinning until ctx cancels.
+			if _, err := fmt.Fprint(c.Response(), ": ping\n\n"); err != nil {
+				return nil
+			}
 			flusher.Flush()
 			continue
 		case evt, ok := <-eventCh:
