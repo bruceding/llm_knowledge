@@ -20,6 +20,7 @@ export default function Inbox() {
   const [error, setError] = useState<string | null>(null)
   const [activeDocId, setActiveDocId] = useState<number | null>(null)
   const itemRefs = useRef<Map<number, HTMLElement>>(new Map())
+  const confirmingRef = useRef(false)
 
   useEffect(() => {
     setTitle(t('sidebar.inbox'))
@@ -41,6 +42,7 @@ export default function Inbox() {
   useEffect(() => {
     if (isMobile) return
     const handleKeyDown = async (e: KeyboardEvent) => {
+      if (confirmingRef.current) return
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
       if (e.metaKey || e.ctrlKey || e.altKey) return
       if (documents.length === 0) return
@@ -71,12 +73,16 @@ export default function Inbox() {
       }
       if (e.key === 'd') {
         e.preventDefault()
+        confirmingRef.current = true
         const confirmed = await confirm({
           title: t('common.delete'),
           message: t('docDetail.deleteConfirm'),
         })
+        confirmingRef.current = false
         if (!confirmed) return
-        deleteDocument(activeDocId).then(() => loadDocuments())
+        deleteDocument(activeDocId)
+          .then(() => loadDocuments())
+          .catch((err) => setError(err instanceof Error ? err.message : 'Failed to delete'))
         return
       }
       if (e.key === 'l') {
