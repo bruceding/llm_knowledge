@@ -1,23 +1,22 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { fetchInbox, deleteDocument, updateDocument } from '../api'
+import { fetchInbox, updateDocument } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
-import { useIsMobile } from '../hooks/useIsMobile'
 import { useMobileShell } from './Layout/MobileShellStore'
 import type { Document } from '../types'
 
 export default function Inbox() {
   const location = useLocation()
   const { t, i18n } = useTranslation()
-  const { confirm, dialog: confirmDialog } = useConfirm()
-  const isMobile = useIsMobile()
+  const { dialog: confirmDialog } = useConfirm()
   const setTitle = useMobileShell((s) => s.setTitle)
   const setRightSlot = useMobileShell((s) => s.setRightSlot)
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [hoveredDocId, setHoveredDocId] = useState<number | null>(null)
+  const [activeDocId, setActiveDocId] = useState<number | null>(null)
+  const itemRefs = useRef<Map<number, HTMLElement>>(new Map())
 
   useEffect(() => {
     setTitle(t('sidebar.inbox'))
@@ -29,23 +28,11 @@ export default function Inbox() {
     loadDocuments()
   }, [location.key])
 
-  // Keyboard shortcut: 'd' to delete hovered document (desktop only)
+  // Scroll the active item into view when selection changes (keyboard nav)
   useEffect(() => {
-    if (isMobile) return
-    const handleKeyDown = async (e: KeyboardEvent) => {
-      if (e.key !== 'd' || hoveredDocId === null) return
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
-      e.preventDefault()
-      const confirmed = await confirm({
-        title: t('common.delete'),
-        message: t('docDetail.deleteConfirm'),
-      })
-      if (!confirmed) return
-      deleteDocument(hoveredDocId).then(() => loadDocuments())
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [hoveredDocId, t, confirm, isMobile])
+    if (activeDocId === null) return
+    itemRefs.current.get(activeDocId)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [activeDocId])
 
   const loadDocuments = async () => {
     setLoading(true)
@@ -194,15 +181,24 @@ export default function Inbox() {
           {documents.map((doc) => (
             <Link
               key={doc.id}
+              ref={(el) => {
+                if (el) itemRefs.current.set(doc.id, el)
+                else itemRefs.current.delete(doc.id)
+              }}
+              data-testid={`inbox-item-${doc.id}`}
+              data-active={doc.id === activeDocId ? 'true' : undefined}
               to={`/documents/${doc.id}`}
-              onMouseEnter={() => setHoveredDocId(doc.id)}
-              onMouseLeave={() => setHoveredDocId(null)}
-              className="block bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md hover:border-blue-300 transition-all cursor-pointer group"
+              onMouseEnter={() => setActiveDocId(doc.id)}
+              className={`block bg-white border rounded-lg p-4 transition-all cursor-pointer group ${
+                doc.id === activeDocId ? 'shadow-md border-blue-300' : 'border-gray-200 hover:shadow-md hover:border-blue-300'
+              }`}
             >
               <div className="flex items-start justify-between mb-2">
                 <div className="flex items-center gap-2">
                   {getSourceIcon(doc.sourceType)}
-                  <h3 className="font-medium text-gray-800 group-hover:text-blue-600 transition-colors line-clamp-1">
+                  <h3 className={`font-medium transition-colors line-clamp-1 ${
+                    doc.id === activeDocId ? 'text-blue-600' : 'text-gray-800 group-hover:text-blue-600'
+                  }`}>
                     {doc.title}
                   </h3>
                 </div>
@@ -273,7 +269,7 @@ export default function Inbox() {
                   )}
                 </div>
                 <svg
-                  className="w-4 h-4 group-hover:text-blue-500 transition-colors"
+                  className={`w-4 h-4 transition-colors ${doc.id === activeDocId ? 'text-blue-500' : 'group-hover:text-blue-500'}`}
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
