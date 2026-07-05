@@ -22,6 +22,12 @@ export default function Inbox() {
   const [activeDocId, setActiveDocId] = useState<number | null>(null)
   const itemRefs = useRef<Map<number, HTMLElement>>(new Map())
   const confirmingRef = useRef(false)
+  // Whether mouse hover may change the selection. Disabled during programmatic
+  // selection (keyboard nav / restore) and re-enabled only on genuine pointer
+  // movement — scrolling the list under a stationary cursor fires mouseenter but
+  // must NOT hijack the selection.
+  const hoverEnabledRef = useRef(true)
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null)
 
   useEffect(() => {
     setTitle(t('sidebar.inbox'))
@@ -33,18 +39,30 @@ export default function Inbox() {
     loadDocuments()
   }, [location.key])
 
+  // Re-enable hover selection only on genuine pointer movement. Scrolling under a
+  // stationary cursor fires mouseenter (and sometimes mousemove with unchanged
+  // coordinates), which must not count as the user hovering.
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const last = lastPointerRef.current
+      if (!last || last.x !== e.clientX || last.y !== e.clientY) {
+        lastPointerRef.current = { x: e.clientX, y: e.clientY }
+        hoverEnabledRef.current = true
+      }
+    }
+    window.addEventListener('mousemove', onMove)
+    return () => window.removeEventListener('mousemove', onMove)
+  }, [])
+
   // Scroll the active item into view when selection changes (keyboard nav)
   useEffect(() => {
     if (activeDocId === null) return
-    const el = itemRefs.current.get(activeDocId)
-    console.log('[inbox] SCROLL effect activeDocId=', activeDocId, 'refFound=', !!el)
-    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    itemRefs.current.get(activeDocId)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }, [activeDocId])
 
   // Restore the cursor after the list (re)loads: select the remembered doc, or —
   // if it's gone (deleted / moved) — the item now occupying its slot. One-shot.
   useEffect(() => {
-    console.log('[inbox] RESTORE effect fired, docs.len=', documents.length, 'ids=', documents.map((d) => d.id))
     if (documents.length === 0) return
     const cursor = consumeInboxCursor()
     if (!cursor) return
@@ -54,8 +72,10 @@ export default function Inbox() {
       : cursor.index != null
         ? documents[Math.min(cursor.index, documents.length - 1)]?.id
         : undefined
-    console.log('[inbox] RESTORE existing=', !!existing, 'index=', cursor.index, '=> targetId=', targetId)
-    if (targetId != null) setActiveDocId(targetId)
+    if (targetId != null) {
+      hoverEnabledRef.current = false
+      setActiveDocId(targetId)
+    }
   }, [documents])
 
   // Keyboard navigation & actions (desktop only)
@@ -72,12 +92,14 @@ export default function Inbox() {
       if (e.key === 'j' || e.key === 'ArrowDown') {
         e.preventDefault()
         const next = currentIndex < 0 ? 0 : Math.min(currentIndex + 1, documents.length - 1)
+        hoverEnabledRef.current = false
         setActiveDocId(documents[next].id)
         return
       }
       if (e.key === 'k' || e.key === 'ArrowUp') {
         e.preventDefault()
         const prev = currentIndex < 0 ? documents.length - 1 : Math.max(currentIndex - 1, 0)
+        hoverEnabledRef.current = false
         setActiveDocId(documents[prev].id)
         return
       }
@@ -275,7 +297,7 @@ export default function Inbox() {
               data-testid={`inbox-item-${doc.id}`}
               data-active={doc.id === activeDocId ? 'true' : undefined}
               to={`/documents/${doc.id}`}
-              onMouseEnter={() => { console.log('[inbox] mouseEnter id=', doc.id); setActiveDocId(doc.id) }}
+              onMouseEnter={() => { if (hoverEnabledRef.current) setActiveDocId(doc.id) }}
               onClick={() => setInboxCursor(doc.id, index)}
               className={`block bg-white border rounded-lg p-4 transition-all cursor-pointer group ${
                 doc.id === activeDocId ? 'shadow-md border-blue-300' : 'border-gray-200 hover:shadow-md hover:border-blue-300'

@@ -14,12 +14,10 @@ let pending: InboxCursor | null = null
 
 export const setInboxCursor = (docId: number, index: number | null) => {
   pending = { docId, index }
-  console.log('[inboxCursor] SET', pending)
 }
 
 export const consumeInboxCursor = (): InboxCursor | null => {
   const cursor = pending
   pending = null
-  console.log('[inboxCursor] CONSUME', cursor)
   return cursor
 }
