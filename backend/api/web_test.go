@@ -1604,6 +1604,84 @@ func TestExtractContentMediumNetflixSnapshot(t *testing.T) {
 	}
 }
 
+// TestExtractContentHackerNoonIssue87 reproduces issue #87: HackerNoon articles
+// captured via the browser extension leak page noise into paper.md. The article
+// body lives in `.story-body`, while Comments / Related Stories / TOPICS /
+// Featured / About-Author / prev-next sections are SIBLINGS outside it, all
+// under <main>. Since PR #84 ExtractContent picks the LONGEST-text selector, so
+// the noisy <main> (which here is deliberately larger than the body) would win
+// without the `.story-body` short-circuit. Mirrors the real page
+// https://hackernoon.com/go-execution-traces-have-become-more-powerful.
+func TestExtractContentHackerNoonIssue87(t *testing.T) {
+	// Related Stories is intentionally bulky so <main> beats `.story-body` on
+	// text length — proving the fix comes from the short-circuit, not longest-wins.
+	relatedCards := ""
+	for i := 0; i < 12; i++ {
+		relatedCards += `<a href="/some-recommended-article">Some Recommended Article Title That Is Fairly Long To Add Bulk And Outweigh The Real Article Body Content Length</a>`
+	}
+
+	mockHTML := `<!DOCTYPE html>
+<html lang="en">
+<head></head>
+<body>
+	<main>
+		<div class=" story-body font-sans flex items-center justify-center ">
+			<p>The runtime/trace package contains a powerful tool for understanding and troubleshooting Go programs.</p>
+			<p>Inside the runtime, execution traces are just a bunch of relatively low-cost events, with structure emerging via connections between them.</p>
+			<h2>Faster execution traces</h2>
+			<p>Go 1.21 restructured how the runtime coordinates tracing, dramatically lowering the cost of collecting a trace.</p>
+			<p>This article is available on The Go Blog under a CC BY 4.0 DEED license.</p>
+		</div>
+		<div class="community-engagement">Community Engagement — 19 Likes, 5 Linkbacks</div>
+		<section class="topics"><h3>TOPICS</h3><a href="/tagged/go">#go</a><a href="/tagged/golang">#golang</a></section>
+		<section class="featured-in"><h3>THIS ARTICLE WAS FEATURED IN</h3><a href="/terminal">Terminal</a><a href="/lite">Lite</a></section>
+		<nav class="prev-next"><a href="/prev">Previous</a><a href="/next">Up Next</a></nav>
+		<section class="about-author"><h3>About Author</h3><p>Author bio here</p><button>Subscribe</button></section>
+		<section class="comments"><h3>Comments</h3><p>A user comment</p></section>
+		<section class="related-stories"><h3>RELATED STORIES</h3>` + relatedCards + `</section>
+	</main>
+</body>
+</html>`
+
+	doc, err := ParseHTML(mockHTML)
+	if err != nil {
+		t.Fatalf("Failed to parse mock HTML: %v", err)
+	}
+
+	content := ExtractContent(doc)
+	t.Logf("Extracted HackerNoon content (%d chars):\n%s", len(content), content)
+
+	wantPresent := []string{
+		"The runtime/trace package contains a powerful tool",
+		"execution traces are just a bunch of relatively low-cost events",
+		"Faster execution traces",
+		"This article is available on The Go Blog under a CC BY 4.0 DEED license.",
+	}
+	for _, s := range wantPresent {
+		if !strings.Contains(content, s) {
+			t.Errorf("expected content to contain %q, not found", s)
+		}
+	}
+
+	wantAbsent := []string{
+		"Community Engagement",
+		"TOPICS",
+		"THIS ARTICLE WAS FEATURED IN",
+		"Previous",
+		"Up Next",
+		"About Author",
+		"Subscribe",
+		"Comments",
+		"RELATED STORIES",
+		"Some Recommended Article Title",
+	}
+	for _, s := range wantAbsent {
+		if strings.Contains(content, s) {
+			t.Errorf("expected content NOT to contain %q, but it was present", s)
+		}
+	}
+}
+
 // TestConvertImageInsideLinkWithDivWrapper covers the Medium pattern
 // <a><div><img/></div></a> — the div used to emit a trailing "\n\n" which
 // then made the parent <a> render as "[![alt](src)\n\n](url)".
