@@ -36,12 +36,15 @@ export default function Inbox() {
   // Scroll the active item into view when selection changes (keyboard nav)
   useEffect(() => {
     if (activeDocId === null) return
-    itemRefs.current.get(activeDocId)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    const el = itemRefs.current.get(activeDocId)
+    console.log('[inbox] SCROLL effect activeDocId=', activeDocId, 'refFound=', !!el)
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }, [activeDocId])
 
   // Restore the cursor after the list (re)loads: select the remembered doc, or —
   // if it's gone (deleted / moved) — the item now occupying its slot. One-shot.
   useEffect(() => {
+    console.log('[inbox] RESTORE effect fired, docs.len=', documents.length, 'ids=', documents.map((d) => d.id))
     if (documents.length === 0) return
     const cursor = consumeInboxCursor()
     if (!cursor) return
@@ -51,6 +54,7 @@ export default function Inbox() {
       : cursor.index != null
         ? documents[Math.min(cursor.index, documents.length - 1)]?.id
         : undefined
+    console.log('[inbox] RESTORE existing=', !!existing, 'index=', cursor.index, '=> targetId=', targetId)
     if (targetId != null) setActiveDocId(targetId)
   }, [documents])
 
@@ -271,7 +275,7 @@ export default function Inbox() {
               data-testid={`inbox-item-${doc.id}`}
               data-active={doc.id === activeDocId ? 'true' : undefined}
               to={`/documents/${doc.id}`}
-              onMouseEnter={() => setActiveDocId(doc.id)}
+              onMouseEnter={() => { console.log('[inbox] mouseEnter id=', doc.id); setActiveDocId(doc.id) }}
               onClick={() => setInboxCursor(doc.id, index)}
               className={`block bg-white border rounded-lg p-4 transition-all cursor-pointer group ${
                 doc.id === activeDocId ? 'shadow-md border-blue-300' : 'border-gray-200 hover:shadow-md hover:border-blue-300'
