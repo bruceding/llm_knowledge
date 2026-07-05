@@ -386,8 +386,21 @@ func (h *QueryHandler) Stream(c echo.Context) error {
 
 	// Stream events using select to detect client disconnect promptly.
 	// StreamProcessor converts raw events into clean SSE events for frontend.
+	// Ping ticker keeps the connection alive during idle gaps between turns;
+	// without it the frontend's 90s idle timeout aborts the SSE and the next
+	// message fails with "failed to connect". Mirrors doc-chat's writePing.
+	pingTicker := time.NewTicker(20 * time.Second)
+	defer pingTicker.Stop()
 	for {
 		select {
+		case <-pingTicker.C:
+			// Check the write error so a dead connection is detected promptly
+			// (the ping's whole purpose) instead of spinning until ctx cancels.
+			if _, err := fmt.Fprint(c.Response(), ": ping\n\n"); err != nil {
+				return nil
+			}
+			flusher.Flush()
+			continue
 		case evt, ok := <-eventCh:
 			if !ok {
 				// Channel closed (session terminated)
