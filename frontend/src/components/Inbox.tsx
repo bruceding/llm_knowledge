@@ -5,6 +5,7 @@ import { fetchInbox, updateDocument, deleteDocument } from '../api'
 import { useConfirm } from '../hooks/useConfirm'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useMobileShell } from './Layout/MobileShellStore'
+import { setInboxCursor, consumeInboxCursor } from '../store/inboxCursor'
 import type { Document } from '../types'
 
 export default function Inbox() {
@@ -38,6 +39,21 @@ export default function Inbox() {
     itemRefs.current.get(activeDocId)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }, [activeDocId])
 
+  // Restore the cursor after the list (re)loads: select the remembered doc, or —
+  // if it's gone (deleted / moved) — the item now occupying its slot. One-shot.
+  useEffect(() => {
+    if (documents.length === 0) return
+    const cursor = consumeInboxCursor()
+    if (!cursor) return
+    const existing = documents.find((d) => d.id === cursor.docId)
+    const targetId = existing
+      ? existing.id
+      : cursor.index != null
+        ? documents[Math.min(cursor.index, documents.length - 1)]?.id
+        : undefined
+    if (targetId != null) setActiveDocId(targetId)
+  }, [documents])
+
   // Keyboard navigation & actions (desktop only)
   useEffect(() => {
     if (isMobile) return
@@ -68,6 +84,7 @@ export default function Inbox() {
 
       if (e.key === 'Enter') {
         e.preventDefault()
+        setInboxCursor(activeDocId, currentIndex)
         navigate(`/documents/${activeDocId}`)
         return
       }
@@ -80,6 +97,7 @@ export default function Inbox() {
         })
         confirmingRef.current = false
         if (!confirmed) return
+        setInboxCursor(activeDocId, currentIndex)
         deleteDocument(activeDocId)
           .then(() => loadDocuments())
           .catch((err) => setError(err instanceof Error ? err.message : 'Failed to delete'))
@@ -88,6 +106,7 @@ export default function Inbox() {
       if (e.key === 'l') {
         if (activeDoc.status !== 'inbox') return
         e.preventDefault()
+        setInboxCursor(activeDocId, currentIndex)
         updateDocument(activeDocId, { status: 'later' })
           .then(() => loadDocuments())
           .catch((err) => setError(err instanceof Error ? err.message : 'Failed to move to later'))
@@ -242,7 +261,7 @@ export default function Inbox() {
         </div>
       ) : (
         <div className="space-y-4">
-          {documents.map((doc) => (
+          {documents.map((doc, index) => (
             <Link
               key={doc.id}
               ref={(el) => {
@@ -253,6 +272,7 @@ export default function Inbox() {
               data-active={doc.id === activeDocId ? 'true' : undefined}
               to={`/documents/${doc.id}`}
               onMouseEnter={() => setActiveDocId(doc.id)}
+              onClick={() => setInboxCursor(doc.id, index)}
               className={`block bg-white border rounded-lg p-4 transition-all cursor-pointer group ${
                 doc.id === activeDocId ? 'shadow-md border-blue-300' : 'border-gray-200 hover:shadow-md hover:border-blue-300'
               }`}
