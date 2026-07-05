@@ -24,10 +24,22 @@ var CONTENT_SELECTORS = [
 
 // Extract cleaned HTML from the page
 function extractContent() {
+  // Pick the candidate with the most text, mirroring the backend's
+  // "longest text wins" strategy (web.go ExtractContent). A naive
+  // first-match grabs the wrong element on SPA sites where a sponsored /
+  // related card is also an <article> ahead of the real body (issue #84:
+  // HackerNoon returned the "SPONSORED" ad card instead of the article).
   var mainEl = null;
+  var bestLen = 0;
   for (var i = 0; i < CONTENT_SELECTORS.length; i++) {
-    mainEl = document.querySelector(CONTENT_SELECTORS[i]);
-    if (mainEl) break;
+    var matches = document.querySelectorAll(CONTENT_SELECTORS[i]);
+    for (var j = 0; j < matches.length; j++) {
+      var len = (matches[j].innerText || '').trim().length;
+      if (len > bestLen) {
+        bestLen = len;
+        mainEl = matches[j];
+      }
+    }
   }
   if (!mainEl) mainEl = document.body;
 
