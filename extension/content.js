@@ -29,12 +29,15 @@ function extractContent() {
   // first-match grabs the wrong element on SPA sites where a sponsored /
   // related card is also an <article> ahead of the real body (issue #84:
   // HackerNoon returned the "SPONSORED" ad card instead of the article).
+  // Measure with textContent, not innerText: innerText forces a layout
+  // reflow on every read, which is costly across many candidates in a large
+  // DOM. textContent is layout-free and matches the backend's goquery .Text().
   var mainEl = null;
   var bestLen = 0;
   for (var i = 0; i < CONTENT_SELECTORS.length; i++) {
     var matches = document.querySelectorAll(CONTENT_SELECTORS[i]);
     for (var j = 0; j < matches.length; j++) {
-      var len = (matches[j].innerText || '').trim().length;
+      var len = (matches[j].textContent || '').trim().length;
       if (len > bestLen) {
         bestLen = len;
         mainEl = matches[j];
