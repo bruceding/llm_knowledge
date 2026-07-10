@@ -1503,6 +1503,247 @@ func TestConvertImageInsideLink(t *testing.T) {
 	}
 }
 
+// TestAbsolutizeLinks covers issue #89 item 5: relative markdown link targets
+// must be resolved to absolute URLs against the source page, while image links,
+// fragments, non-http schemes, and already-absolute URLs are left untouched.
+func TestAbsolutizeLinks(t *testing.T) {
+	const base = "https://openai.com/index/separating-signal-from-noise-coding-evaluations/"
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "root-relative link",
+			content: "See [Research](/news/research/) for details.",
+			want:    "See [Research](https://openai.com/news/research/) for details.",
+		},
+		{
+			name:    "relative link resolved against page dir",
+			content: "[next](../other/)",
+			want:    "[next](https://openai.com/index/other/)",
+		},
+		{
+			name:    "image link left untouched (already localized)",
+			content: "![cover](assets/img_2.png)",
+			want:    "![cover](assets/img_2.png)",
+		},
+		{
+			name:    "absolute link untouched",
+			content: "[home](https://example.com/x)",
+			want:    "[home](https://example.com/x)",
+		},
+		{
+			name:    "fragment untouched",
+			content: "[top](#section)",
+			want:    "[top](#section)",
+		},
+		{
+			name:    "mailto untouched",
+			content: "[mail](mailto:a@b.com)",
+			want:    "[mail](mailto:a@b.com)",
+		},
+		{
+			name:    "mixed link and image on one line",
+			content: "![c](assets/img_1.png) and [Research](/news/research/)",
+			want:    "![c](assets/img_1.png) and [Research](https://openai.com/news/research/)",
+		},
+		{
+			// Regression: image-in-link ([![alt](src)](url)) must not have its
+			// already-localized asset src absolutized (Medium hero image, issue #48).
+			name:    "image wrapped in link left untouched",
+			content: "[![hero](assets/img_1.png)](https://example.com/post)",
+			want:    "[![hero](assets/img_1.png)](https://example.com/post)",
+		},
+		{
+			// Inline image inside link text must not be corrupted either.
+			name:    "inline image within link text",
+			content: "[see ![icon](assets/i.png) here](https://example.com/x)",
+			want:    "[see ![icon](assets/i.png) here](https://example.com/x)",
+		},
+		{
+			// Regression: code inside a fence (arr[i](x) shape) must not be rewritten.
+			name:    "code fence call expression not corrupted",
+			content: "```js\nhandlers[type](event);\n```",
+			want:    "```js\nhandlers[type](event);\n```",
+		},
+		{
+			// Regression: a markdown-link example inside a fence must survive.
+			name:    "markdown link example inside fence not corrupted",
+			content: "```\n[click here](/docs/intro)\n```",
+			want:    "```\n[click here](/docs/intro)\n```",
+		},
+		{
+			// A call expression on a prose line: href is a bare token, not a path.
+			name:    "bare token call on prose line not corrupted",
+			content: "Use funcs[i](arg) to dispatch.",
+			want:    "Use funcs[i](arg) to dispatch.",
+		},
+		{
+			// Real link on a prose line after a preceding fence still gets rewritten.
+			name:    "link after fence still absolutized",
+			content: "```\ncode[x](y)\n```\n\nSee [Docs](/docs/).",
+			want:    "```\ncode[x](y)\n```\n\nSee [Docs](https://openai.com/docs/).",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := absolutizeLinks(tt.content, base); got != tt.want {
+				t.Errorf("absolutizeLinks(%q)\n got: %q\nwant: %q", tt.content, got, tt.want)
+			}
+		})
+	}
+
+	// Empty base URL is a no-op (defensive: never fabricate links).
+	if got := absolutizeLinks("[x](/y)", ""); got != "[x](/y)" {
+		t.Errorf("empty base should be no-op, got %q", got)
+	}
+}
+
+// TestExtractContentOpenAICodeBlock covers issue #89 item 1: OpenAI blog code
+// blocks use a custom <div class="rich-text-code-example"> structure with an
+// <h4>None</h4> language label and per-line rows (<span>N</span> + content div)
+// that the generic <pre>/<code> handlers mangle into "#### None" + a single
+// backtick blob with merged line numbers. The special-case must emit a clean
+// fenced block, dropping the line numbers and the "None" label, and preserve
+// OpenAI's literal "[space]" placeholder (their authored content, not our bug).
+func TestExtractContentOpenAICodeBlock(t *testing.T) {
+	mockHTML := `<html><body><article>
+	<div class="not-prose border-primary-12 rich-text-code-example mb-12 overflow-hidden">
+	  <div class="grid grid-cols-12">
+	    <div class="col-span-full flex flex-col gap-3">
+	      <div class="flex flex-col overflow-hidden rounded-md bg-tertiary-100">
+	        <div class="relative z-1 flex justify-between p-5">
+	          <h4 class="text-primary-100 text-p2 font-bold capitalize">None</h4>
+	          <button type="button" aria-label="Copy code block"><svg viewBox="0 0 18 18"><path d="M0 0"></path></svg></button>
+	        </div>
+	        <div dir="ltr" class="relative flex items-stretch gap-4">
+	          <code class="text-primary-100 text-code-snippet flex-1 font-mono CodeBlock-module__syntaxHighlight">
+	            <pre class="flex flex-col pe-5"><div class="flex flex-row gap-4"><span class="text-primary-44 ms-5 min-w-5 text-end">1</span><div class="flex-1">"[space]| Chapter 1 | 1"</div></div><div class="flex flex-row gap-4"><span class="text-primary-44 ms-5 min-w-5 text-end">2</span><div class="flex-1">"**[space]| Chapter 1 | 1"</div></div><div class="flex flex-row gap-4"><span class="text-primary-44 ms-5 min-w-5 text-end">3</span><div class="flex-1">"[space]| Just title | "</div></div></pre>
+	          </code>
+	        </div>
+	      </div>
+	    </div>
+	  </div>
+	</div>
+	</article></body></html>`
+	doc, err := ParseHTML(mockHTML)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got := ExtractContent(doc)
+
+	// The "None" language label must not leak as a heading.
+	if strings.Contains(got, "None") {
+		t.Errorf("language label 'None' leaked into output:\n%s", got)
+	}
+	// Line-number gutter (1/2/3) must be dropped, not merged into content.
+	if strings.Contains(got, "1\"[space]") || strings.Contains(got, "1 | 1\"2") {
+		t.Errorf("line numbers merged into code:\n%s", got)
+	}
+	// Proper fenced block with one line per row, "[space]" preserved verbatim.
+	want := "```\n\"[space]| Chapter 1 | 1\"\n\"**[space]| Chapter 1 | 1\"\n\"[space]| Just title | \"\n```"
+	if !strings.Contains(got, want) {
+		t.Errorf("code block not converted to a clean fence.\n got: %q\nwant contains: %q", got, want)
+	}
+}
+
+// TestExtractContentOpenAICodeBlockWithLanguage verifies the <h4> label is used
+// as the fence language when it is not the "None" placeholder.
+func TestExtractContentOpenAICodeBlockWithLanguage(t *testing.T) {
+	mockHTML := `<html><body><article>
+	<div class="rich-text-code-example">
+	  <div class="flex flex-col bg-tertiary-100">
+	    <div class="flex justify-between p-5"><h4 class="capitalize">Python</h4></div>
+	    <code class="CodeBlock-module__syntaxHighlight"><pre class="flex flex-col"><div class="flex flex-row"><span class="min-w-5">1</span><div class="flex-1">print("hi")</div></div></pre></code>
+	  </div>
+	</div>
+	</article></body></html>`
+	doc, err := ParseHTML(mockHTML)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got := ExtractContent(doc)
+	if !strings.Contains(got, "```Python\nprint(\"hi\")\n```") {
+		t.Errorf("expected fenced block with language Python, got:\n%s", got)
+	}
+}
+
+// TestCleanOpenAINoise covers issue #89 items 3 & 4: OpenAI's client-rendered
+// audio/share widgets and the trailing "Keep reading" recommendation block must
+// be stripped from the extracted markdown, while real body content is preserved.
+func TestCleanOpenAINoise(t *testing.T) {
+	input := strings.Join([]string{
+		"# Separating signal from noise in coding evaluations",
+		"",
+		"Through a detailed audit, we find widespread task issues.",
+		"",
+		"Listen to article 7:06",
+		"",
+		"Share",
+		"",
+		"Accurately measuring our models' capabilities is important.",
+		"",
+		"## Keep reading",
+		"",
+		"[View all](https://openai.com/news/)",
+		"",
+		"![cover](assets/img_2.png)",
+		"",
+		"[Introducing GeneBench-Pro](https://openai.com/index/introducing-genebench-pro/)",
+	}, "\n")
+
+	got := cleanOpenAINoise(input)
+
+	// Removed noise.
+	for _, gone := range []string{"Listen to article", "## Keep reading", "GeneBench-Pro", "View all"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("expected %q to be stripped, got:\n%s", gone, got)
+		}
+	}
+	// The adjacent share button is gone, but real body content stays.
+	if strings.Contains(got, "\nShare\n") || strings.HasSuffix(got, "\nShare") {
+		t.Errorf("adjacent Share button not stripped, got:\n%s", got)
+	}
+	for _, keep := range []string{
+		"# Separating signal from noise in coding evaluations",
+		"Through a detailed audit",
+		"Accurately measuring our models' capabilities",
+	} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("expected %q to be preserved, got:\n%s", keep, got)
+		}
+	}
+}
+
+// TestCleanOpenAINoiseKeepsUnrelatedShare ensures a bare "Share" line that is
+// NOT preceded by a "Listen to article" line is left untouched (guards against
+// stripping legitimate body content).
+func TestCleanOpenAINoiseKeepsUnrelatedShare(t *testing.T) {
+	input := "Some paragraph.\n\nShare\n\nMore text."
+	if got := cleanOpenAINoise(input); !strings.Contains(got, "Share") {
+		t.Errorf("unrelated Share line should be preserved, got:\n%s", got)
+	}
+}
+
+func TestIsOpenAIURL(t *testing.T) {
+	tests := []struct {
+		url  string
+		want bool
+	}{
+		{"https://openai.com/index/separating-signal-from-noise-coding-evaluations/", true},
+		{"https://www.openai.com/news/", true},
+		{"https://medium.com/some-article", false},
+		{"https://blog.golang.org/x", false},
+		{"not a url", false},
+	}
+	for _, tt := range tests {
+		if got := isOpenAIURL(tt.url); got != tt.want {
+			t.Errorf("isOpenAIURL(%q) = %v, want %v", tt.url, got, tt.want)
+		}
+	}
+}
+
 // TestExtractContentMediumNetflixSnapshot mirrors the real extension snapshot
 // reported in issue #48 update: Netflix TechBlog (custom-domain Medium
 // publication) where the snapshot has NO `data-selectable-paragraph`

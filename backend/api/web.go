@@ -27,6 +27,16 @@ import (
 
 var inlineImageRe = regexp.MustCompile(`!\[([^\]]*)\]\((https?://[^\)]+)\)`)
 
+// markdownLinkRe matches a markdown link or image: an optional leading "!"
+// (image marker), the [text] part, and the (href) part. The href stops at the
+// first ")" or whitespace. Used by absolutizeLinks to rewrite relative link
+// targets to absolute URLs (issue #89 item 5).
+var markdownLinkRe = regexp.MustCompile(`(!?)\[([^\]]*)\]\(([^)\s]+)\)`)
+
+// openAIListenRe matches OpenAI's "Listen to article 7:06" audio-player line,
+// stripped by cleanOpenAINoise (issue #89 item 3).
+var openAIListenRe = regexp.MustCompile(`^Listen to article \d+:\d+$`)
+
 type WebHandler struct {
 	DataDir     string
 	ClaudeBin   string
@@ -78,6 +88,18 @@ func isWeChatURL(urlStr string) bool {
 	}
 	host := strings.ToLower(u.Host)
 	return host == "mp.weixin.qq.com"
+}
+
+// isOpenAIURL reports whether the URL is an openai.com article. Used to gate
+// OpenAI-specific markdown noise stripping (issue #89 items 3 & 4) so no other
+// site is affected.
+func isOpenAIURL(urlStr string) bool {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Host)
+	return host == "openai.com" || strings.HasSuffix(host, ".openai.com")
 }
 
 type browserSiteConfig struct {
@@ -623,6 +645,100 @@ func resolveURL(imgURL, baseURL string) string {
 	}
 
 	return base.ResolveReference(img).String()
+}
+
+// absolutizeLinks rewrites relative markdown link targets — e.g. [Research](/news/research/)
+// — to absolute URLs resolved against the source page URL, so the links stay
+// reachable once the article lives in the wiki (issue #89 item 5).
+//
+// To avoid corrupting code (this pipeline ingests tech articles full of
+// `arr[i](x)`-shaped code), it is deliberately conservative:
+//   - fenced code blocks (``` / ~~~) are skipped entirely
+//   - only hrefs that are clearly link targets — root-relative ("/…") or
+//     dot-relative ("./…", "../…") — are rewritten; bare tokens like an inline
+//     `handlers[type](event)` are left alone
+//   - images (![…]) and image-in-link inner captures (text containing "![") are
+//     skipped so already-localized assets/ paths are never touched
+//
+// Absolute URLs, "#" fragments, and mailto:/tel:/etc. don't start with a
+// relative-path prefix, so the href check leaves them as-is.
+func absolutizeLinks(content, baseURL string) string {
+	if baseURL == "" {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	inFence := false
+	for i, line := range lines {
+		if t := strings.TrimSpace(line); strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		lines[i] = markdownLinkRe.ReplaceAllStringFunc(line, func(m string) string {
+			sub := markdownLinkRe.FindStringSubmatch(m)
+			// sub[1] = optional "!" (image), sub[2] = text, sub[3] = href.
+			// Skip images, and image-in-link inner captures where [^\]]* stopped
+			// at a nested image's "]" (text contains "![").
+			if sub[1] == "!" || strings.Contains(sub[2], "![") {
+				return m
+			}
+			href := sub[3]
+			if !strings.HasPrefix(href, "/") &&
+				!strings.HasPrefix(href, "./") &&
+				!strings.HasPrefix(href, "../") {
+				return m
+			}
+			return fmt.Sprintf("[%s](%s)", sub[2], resolveURL(href, baseURL))
+		})
+	}
+	return strings.Join(lines, "\n")
+}
+
+// cleanOpenAINoise strips OpenAI-article UI noise that leaks into the extracted
+// markdown (issue #89 items 3 & 4). OpenAI renders these widgets client-side and
+// wraps them in utility-only CSS classes, so there is no stable selector to
+// blacklist in the DOM — the reliable signals are the rendered text and document
+// structure. The caller host-gates this to openai.com, so no other site is
+// affected.
+//
+// Removed:
+//   - the audio-player line "Listen to article 7:06" (openAIListenRe)
+//   - a bare "Share" button line immediately following it (skipping blanks)
+//   - the trailing "## Keep reading" recommendation block through end of doc
+func cleanOpenAINoise(content string) string {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	dropAdjacentShare := false
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+
+		// "Keep reading" is always the trailing recommendation section
+		// (heading + related-article cards); drop it and everything after.
+		if line == "## Keep reading" {
+			break
+		}
+
+		if openAIListenRe.MatchString(line) {
+			dropAdjacentShare = true
+			continue
+		}
+
+		if dropAdjacentShare {
+			if line == "" {
+				continue // skip blank lines between "Listen" and "Share"
+			}
+			dropAdjacentShare = false
+			if line == "Share" {
+				continue // drop the adjacent share button
+			}
+			// Any other content — fall through and keep it.
+		}
+
+		out = append(out, raw)
+	}
+	return strings.TrimRight(strings.Join(out, "\n"), "\n")
 }
 
 // downloadInlineImages scans markdown for remote image URLs, downloads them
@@ -1814,6 +1930,19 @@ func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, origi
 	// The title already lives in YAML frontmatter — repeating it in the
 	// body is redundant noise (issue #48).
 	content = stripDuplicateBodyTitle(content, originalTitle)
+
+	// Resolve relative link targets ([text](/path)) to absolute URLs against the
+	// source page, so links stay reachable in the wiki (issue #89 item 5). Runs
+	// after image localization so localized assets/ image paths are left alone.
+	content = absolutizeLinks(content, req.URL)
+
+	// Strip OpenAI-specific UI noise (audio player, share button, "Keep reading"
+	// recommendations). OpenAI renders these client-side with utility-only CSS
+	// classes, so they must be removed by text/structure, not a DOM selector.
+	// Host-gated so no other site enters this branch (issue #89 items 3 & 4).
+	if isOpenAIURL(req.URL) {
+		content = cleanOpenAINoise(content)
+	}
 
 	// Save modified HTML to index.html
 	modifiedHTML, err := doc.Html()

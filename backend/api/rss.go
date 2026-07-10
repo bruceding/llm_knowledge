@@ -910,6 +910,49 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 
 	tag := node.Data
 
+	// OpenAI blog code blocks (issue #89 item 1) use a custom structure that the
+	// generic <pre>/<code> handlers mangle:
+	//   <div class="rich-text-code-example …">
+	//     <h4 …>None</h4>                      (language label; literally "None" when unset)
+	//     <code class="…syntaxHighlight"><pre>
+	//       <div class="flex flex-row …"><span>1</span><div class="flex-1">line</div></div>
+	//       …one such row per line…
+	//     </pre></code>
+	// The <code>'s parent is a <div> (not <pre>), so the generic code handler wraps
+	// it in a SINGLE backtick; the per-line <div> rows (no <br>) collapse together
+	// with the line-number <span>s. Detect the wrapper, drop the line numbers and
+	// the "None" label, emit a proper fenced block, and return early so descendants
+	// are not re-walked. The class is OpenAI-specific, so this is inherently scoped.
+	if s.HasClass("rich-text-code-example") {
+		// Language: the <h4> label, unless it's the literal "None" placeholder.
+		language := ""
+		if h4 := s.Find("h4").First(); h4.Length() > 0 {
+			if t := strings.TrimSpace(h4.Text()); t != "" && !strings.EqualFold(t, "None") {
+				language = t
+			}
+		}
+		// Each line is a row (direct child of <pre>) holding a line-number <span>
+		// and a content <div class="flex-1">. Take the content, drop the numbers.
+		var lines []string
+		pre := s.Find("pre").First()
+		pre.Children().Each(func(i int, row *goquery.Selection) {
+			if content := row.Find(".flex-1").First(); content.Length() > 0 {
+				lines = append(lines, content.Text())
+			} else {
+				lines = append(lines, row.Text())
+			}
+		})
+		code := strings.TrimRight(strings.Join(lines, "\n"), "\r\n")
+		if strings.TrimSpace(code) == "" {
+			// Fallback: no per-line rows — use the raw <pre> text.
+			code = strings.TrimRight(pre.Text(), "\r\n")
+		}
+		if strings.TrimSpace(code) == "" {
+			return ""
+		}
+		return fmt.Sprintf("\n```%s\n%s\n```\n\n", language, code)
+	}
+
 	// Enlighter-rendered code blocks (e.g. JetBrains blog) ship a triple structure:
 	//   .enlighter-toolbar-top  (Plain text / Copy to clipboard / Open in new window / EnlighterJS 3 …)
 	//   .enlighter-raw          (the original raw source — single textarea-like node)
