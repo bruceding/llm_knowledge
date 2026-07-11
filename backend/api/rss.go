@@ -928,7 +928,12 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 		language := ""
 		if h4 := s.Find("h4").First(); h4.Length() > 0 {
 			if t := strings.TrimSpace(h4.Text()); t != "" && !strings.EqualFold(t, "None") {
-				language = t
+				// Take the first whitespace-delimited token and strip backticks:
+				// a stray newline/backtick in the <h4> would otherwise leak into
+				// the opening fence line and break the code block.
+				if f := strings.Fields(t); len(f) > 0 {
+					language = strings.ReplaceAll(f[0], "`", "")
+				}
 			}
 		}
 		// Each line is a row (direct child of <pre>) holding a line-number <span>
@@ -1400,7 +1405,7 @@ func convertNodeToMarkdown(s *goquery.Selection) string {
 	case "li":
 		// Already handled by ul/ol
 		return ""
-	case "div", "section", "article":
+	case "div", "section", "article", "figure":
 		// Inside <a>, treat as inline wrapper — Medium wraps the byline avatar
 		// as <a><div><img/></div></a>; a trailing "\n\n" would split the
 		// parent link "[![alt](src)\n\n](url)" (issue #48).

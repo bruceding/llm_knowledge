@@ -1585,6 +1585,41 @@ func TestAbsolutizeLinks(t *testing.T) {
 			content: "```\ncode[x](y)\n```\n\nSee [Docs](/docs/).",
 			want:    "```\ncode[x](y)\n```\n\nSee [Docs](https://openai.com/docs/).",
 		},
+		{
+			// Regression (issue #89): a ~~~ fence whose body shows a ``` block must
+			// not be closed by that inner ```. Otherwise the code line after it is
+			// treated as prose and its arr[i](/path)-shaped token gets rewritten.
+			name:    "mixed fence markers do not toggle each other",
+			content: "~~~\n```python\nfoo[bar](/path)\n```\n~~~\n\nSee [Docs](/docs/).",
+			want:    "~~~\n```python\nfoo[bar](/path)\n```\n~~~\n\nSee [Docs](https://openai.com/docs/).",
+		},
+		{
+			// C1: a link with a double-quoted title must still be absolutized,
+			// and the title preserved verbatim.
+			name:    "titled link absolutized and title preserved",
+			content: `[Docs](/d/ "the docs")`,
+			want:    `[Docs](https://openai.com/d/ "the docs")`,
+		},
+		{
+			// C1: single-quoted title variant.
+			name:    "titled link single quotes",
+			content: "[Docs](/d/ 'the docs')",
+			want:    "[Docs](https://openai.com/d/ 'the docs')",
+		},
+		{
+			// C2: a call-expression sample inside an inline code span must not be
+			// rewritten, even though its (/path) looks like a root-relative href.
+			name:    "inline code span not corrupted",
+			content: "Call `handlers[type](/path)` to dispatch.",
+			want:    "Call `handlers[type](/path)` to dispatch.",
+		},
+		{
+			// C2: a real link outside inline code on the same line still gets
+			// rewritten while the code span is protected.
+			name:    "link outside inline code still absolutized",
+			content: "See [Docs](/docs/) and `a[b](/c)` sample.",
+			want:    "See [Docs](https://openai.com/docs/) and `a[b](/c)` sample.",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1669,6 +1704,86 @@ func TestExtractContentOpenAICodeBlockWithLanguage(t *testing.T) {
 	}
 }
 
+// C4: the <h4> language label is injected into the opening fence line, so a
+// newline or backtick inside it (or a multi-word label) would break the fence.
+// Only the first whitespace-delimited token, with backticks stripped, must land
+// in the info string.
+func TestExtractContentOpenAICodeBlockDirtyLanguage(t *testing.T) {
+	// h4 text carries a real newline and a stray backtick — both would break the
+	// opening fence line if passed through verbatim.
+	mockHTML := "<html><body><article>\n" +
+		"<div class=\"rich-text-code-example\">\n" +
+		"  <div class=\"flex justify-between p-5\"><h4 class=\"capitalize\">Plain\ntext`</h4></div>\n" +
+		"  <code class=\"syntaxHighlight\"><pre class=\"flex flex-col\"><div class=\"flex flex-row\"><span>1</span><div class=\"flex-1\">echo hi</div></div></pre></code>\n" +
+		"</div>\n" +
+		"</article></body></html>"
+	doc, err := ParseHTML(mockHTML)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got := ExtractContent(doc)
+	// Fence info string is the first token only, no newline/backtick leaks.
+	if !strings.Contains(got, "```Plain\necho hi\n```") {
+		t.Errorf("expected sanitized fence info string, got:\n%q", got)
+	}
+}
+
+// TestPreprocessSVGCharts covers issue #89 item 2: an inline chart <svg> must be
+// serialized to a standalone .svg asset and swapped for an <img> (so ExtractContent
+// renders it as an image, not flattened <text> garbage), while a small icon <svg>
+// is left untouched. Also checks viewBox casing is preserved in the written file.
+func TestPreprocessSVGCharts(t *testing.T) {
+	dir := t.TempDir()
+	mockHTML := `<html><body><article>
+	<figure>
+	  <svg viewBox="0 0 400 300" role="img" aria-label="Share of Dataset Flagged by Issue Type">
+	    <rect x="10" y="10" width="30" height="200" fill="#a03070"></rect>
+	    <text x="20" y="230">Overly strict tests</text>
+	    <text x="20" y="8">14.4%</text>
+	    <text x="60" y="8">17.8%</text>
+	  </svg>
+	</figure>
+	<p>Body paragraph after the chart.</p>
+	<button aria-label="Copy"><svg viewBox="0 0 16 16"><path d="M0 0h4"></path></svg></button>
+	</article></body></html>`
+	doc, err := ParseHTML(mockHTML)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	if n := preprocessSVGCharts(doc, dir); n != 1 {
+		t.Fatalf("want 1 chart extracted (icon skipped), got %d", n)
+	}
+
+	// Written .svg must preserve data and viewBox casing (SVG scaling).
+	b, err := os.ReadFile(filepath.Join(dir, "chart_1.svg"))
+	if err != nil {
+		t.Fatalf("read chart_1.svg: %v", err)
+	}
+	svg := string(b)
+	if !strings.Contains(svg, "viewBox=") {
+		t.Errorf("viewBox lost/lowercased in serialized SVG:\n%s", svg)
+	}
+	for _, must := range []string{"14.4%", "17.8%", "Overly strict tests", `fill="#a03070"`} {
+		if !strings.Contains(svg, must) {
+			t.Errorf("serialized SVG missing %q", must)
+		}
+	}
+
+	// Markdown: chart -> image (own block), icon gone, no flattened garbage.
+	out := ExtractContent(doc)
+	if !strings.Contains(out, "![Share of Dataset Flagged by Issue Type](assets/chart_1.svg)") {
+		t.Errorf("chart not rendered as image link:\n%s", out)
+	}
+	if strings.Contains(out, "14.4%17.8%") || strings.Contains(out, "Overly strict tests14") {
+		t.Errorf("flattened SVG garbage still present:\n%s", out)
+	}
+	// figure block spacing: image separated from following paragraph.
+	if strings.Contains(out, "chart_1.svg)Body paragraph") {
+		t.Errorf("chart image glued to next paragraph (missing block break):\n%s", out)
+	}
+}
+
 // TestCleanOpenAINoise covers issue #89 items 3 & 4: OpenAI's client-rendered
 // audio/share widgets and the trailing "Keep reading" recommendation block must
 // be stripped from the extracted markdown, while real body content is preserved.
@@ -1723,6 +1838,20 @@ func TestCleanOpenAINoiseKeepsUnrelatedShare(t *testing.T) {
 	input := "Some paragraph.\n\nShare\n\nMore text."
 	if got := cleanOpenAINoise(input); !strings.Contains(got, "Share") {
 		t.Errorf("unrelated Share line should be preserved, got:\n%s", got)
+	}
+}
+
+// C3: the trailing "Keep reading" block must be dropped even when the heading's
+// casing drifts (e.g. "## Keep Reading"), so the recommendation noise doesn't
+// leak into the clipped article.
+func TestCleanOpenAINoiseKeepReadingCaseInsensitive(t *testing.T) {
+	input := "Body text.\n\n## Keep Reading\n\n- [Rec A](/a)\n- [Rec B](/b)"
+	got := cleanOpenAINoise(input)
+	if strings.Contains(got, "Keep Reading") || strings.Contains(got, "Rec A") {
+		t.Errorf("case-variant Keep Reading block should be dropped, got:\n%s", got)
+	}
+	if !strings.Contains(got, "Body text.") {
+		t.Errorf("body before the block must be kept, got:\n%s", got)
 	}
 }
 
