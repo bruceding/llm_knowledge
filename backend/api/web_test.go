@@ -1784,6 +1784,34 @@ func TestPreprocessSVGCharts(t *testing.T) {
 	}
 }
 
+// TestPreprocessSVGChartsAltText locks alt-text precedence: the chart's
+// accessible name (aria-label) must win over per-datum <title> hover tooltips,
+// and bracket characters that would break ![alt](src) markdown are stripped.
+func TestPreprocessSVGChartsAltText(t *testing.T) {
+	dir := t.TempDir()
+	mockHTML := `<html><body><article>
+	<svg role="img" aria-label="Revenue by [region] quarter">
+	  <rect x="1"><title>Q1: 14.4%</title></rect>
+	  <rect x="2"><title>Q2: 17.8%</title></rect>
+	  <text x="1" y="9">Q1</text><text x="2" y="9">Q2</text><text x="3" y="9">Q3</text>
+	</svg>
+	</article></body></html>`
+	doc, err := ParseHTML(mockHTML)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if n := preprocessSVGCharts(doc, dir); n != 1 {
+		t.Fatalf("want 1 chart, got %d", n)
+	}
+	out := ExtractContent(doc)
+	if !strings.Contains(out, "![Revenue by region quarter](assets/chart_1.svg)") {
+		t.Errorf("alt should be the aria-label with brackets stripped, got:\n%s", out)
+	}
+	if strings.Contains(out, "Q1: 14.4%](") {
+		t.Errorf("per-datum tooltip leaked into alt:\n%s", out)
+	}
+}
+
 // TestCleanOpenAINoise covers issue #89 items 3 & 4: OpenAI's client-rendered
 // audio/share widgets and the trailing "Keep reading" recommendation block must
 // be stripped from the extracted markdown, while real body content is preserved.
