@@ -27,6 +27,18 @@ import (
 
 var inlineImageRe = regexp.MustCompile(`!\[([^\]]*)\]\((https?://[^\)]+)\)`)
 
+// markdownLinkRe matches a markdown link or image: an optional leading "!"
+// (image marker), the [text] part, the (href) part, and an optional title
+// (a "…" or '…' string after the href, per CommonMark). The href stops at the
+// first ")" or whitespace; the title is captured separately so it can be
+// preserved on rewrite. Used by absolutizeLinks to rewrite relative link
+// targets to absolute URLs (issue #89 item 5).
+var markdownLinkRe = regexp.MustCompile(`(!?)\[([^\]]*)\]\(([^)\s]+)(\s+(?:"[^"]*"|'[^']*'))?\)`)
+
+// openAIListenRe matches OpenAI's "Listen to article 7:06" audio-player line,
+// stripped by cleanOpenAINoise (issue #89 item 3).
+var openAIListenRe = regexp.MustCompile(`^Listen to article \d+:\d+$`)
+
 type WebHandler struct {
 	DataDir     string
 	ClaudeBin   string
@@ -78,6 +90,18 @@ func isWeChatURL(urlStr string) bool {
 	}
 	host := strings.ToLower(u.Host)
 	return host == "mp.weixin.qq.com"
+}
+
+// isOpenAIURL reports whether the URL is an openai.com article. Used to gate
+// OpenAI-specific markdown noise stripping (issue #89 items 3 & 4) so no other
+// site is affected.
+func isOpenAIURL(urlStr string) bool {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Host)
+	return host == "openai.com" || strings.HasSuffix(host, ".openai.com")
 }
 
 type browserSiteConfig struct {
@@ -625,6 +649,125 @@ func resolveURL(imgURL, baseURL string) string {
 	return base.ResolveReference(img).String()
 }
 
+// absolutizeLinks rewrites relative markdown link targets — e.g. [Research](/news/research/)
+// — to absolute URLs resolved against the source page URL, so the links stay
+// reachable once the article lives in the wiki (issue #89 item 5).
+//
+// To avoid corrupting code (this pipeline ingests tech articles full of
+// `arr[i](x)`-shaped code), it is deliberately conservative:
+//   - fenced code blocks (``` / ~~~) are skipped entirely
+//   - inline code spans (`…`) are skipped too, so a `handlers[type](/path)`
+//     sample on a prose line is never rewritten
+//   - only hrefs that are clearly link targets — root-relative ("/…") or
+//     dot-relative ("./…", "../…") — are rewritten; bare tokens like an inline
+//     `handlers[type](event)` are left alone
+//   - images (![…]) and image-in-link inner captures (text containing "![") are
+//     skipped so already-localized assets/ paths are never touched
+//   - an optional link title ([t](href "title")) is preserved verbatim
+//
+// Absolute URLs, "#" fragments, and mailto:/tel:/etc. don't start with a
+// relative-path prefix, so the href check leaves them as-is.
+func absolutizeLinks(content, baseURL string) string {
+	if baseURL == "" {
+		return content
+	}
+	rewrite := func(s string) string {
+		return markdownLinkRe.ReplaceAllStringFunc(s, func(m string) string {
+			sub := markdownLinkRe.FindStringSubmatch(m)
+			// sub[1] = optional "!" (image), sub[2] = text, sub[3] = href,
+			// sub[4] = optional title (with its leading whitespace) or "".
+			// Skip images, and image-in-link inner captures where [^\]]* stopped
+			// at a nested image's "]" (text contains "![").
+			if sub[1] == "!" || strings.Contains(sub[2], "![") {
+				return m
+			}
+			href := sub[3]
+			if !strings.HasPrefix(href, "/") &&
+				!strings.HasPrefix(href, "./") &&
+				!strings.HasPrefix(href, "../") {
+				return m
+			}
+			return fmt.Sprintf("[%s](%s%s)", sub[2], resolveURL(href, baseURL), sub[4])
+		})
+	}
+	lines := strings.Split(content, "\n")
+	// fenceMarker records which marker opened the current fence ("```" or "~~~"),
+	// or "" when outside a fence. A fence only closes on its own marker type, so a
+	// ``` line inside a ~~~ block (or vice versa) is body content, not a close —
+	// otherwise the code after it would be treated as prose and rewritten.
+	fenceMarker := ""
+	for i, line := range lines {
+		if t := strings.TrimSpace(line); strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
+			marker := t[:3]
+			switch {
+			case fenceMarker == "":
+				fenceMarker = marker // open a new fence
+			case marker == fenceMarker:
+				fenceMarker = "" // close only on the matching marker
+			}
+			continue
+		}
+		if fenceMarker != "" {
+			continue
+		}
+		// Split on backticks: even-indexed segments are outside inline code
+		// spans, odd-indexed segments are inside them. Only rewrite the former
+		// so `handlers[type](/path)`-shaped inline code is left intact.
+		segs := strings.Split(line, "`")
+		for j := 0; j < len(segs); j += 2 {
+			segs[j] = rewrite(segs[j])
+		}
+		lines[i] = strings.Join(segs, "`")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// cleanOpenAINoise strips OpenAI-article UI noise that leaks into the extracted
+// markdown (issue #89 items 3 & 4). OpenAI renders these widgets client-side and
+// wraps them in utility-only CSS classes, so there is no stable selector to
+// blacklist in the DOM — the reliable signals are the rendered text and document
+// structure. The caller host-gates this to openai.com, so no other site is
+// affected.
+//
+// Removed:
+//   - the audio-player line "Listen to article 7:06" (openAIListenRe)
+//   - a bare "Share" button line immediately following it (skipping blanks)
+//   - the trailing "## Keep reading" recommendation block through end of doc
+func cleanOpenAINoise(content string) string {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	dropAdjacentShare := false
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+
+		// "Keep reading" is always the trailing recommendation section
+		// (heading + related-article cards); drop it and everything after.
+		// EqualFold tolerates casing drift ("## Keep Reading").
+		if strings.EqualFold(line, "## Keep reading") {
+			break
+		}
+
+		if openAIListenRe.MatchString(line) {
+			dropAdjacentShare = true
+			continue
+		}
+
+		if dropAdjacentShare {
+			if line == "" {
+				continue // skip blank lines between "Listen" and "Share"
+			}
+			dropAdjacentShare = false
+			if line == "Share" {
+				continue // drop the adjacent share button
+			}
+			// Any other content — fall through and keep it.
+		}
+
+		out = append(out, raw)
+	}
+	return strings.TrimRight(strings.Join(out, "\n"), "\n")
+}
+
 // downloadInlineImages scans markdown for remote image URLs, downloads them
 // to the assets directory, and replaces URLs with local relative paths.
 func downloadInlineImages(md string, assetsDir string) (string, int) {
@@ -683,6 +826,107 @@ func downloadImage(imgURL, savePath string, headers map[string]string) error {
 	}
 
 	return os.WriteFile(savePath, data, 0644)
+}
+
+// svgChartMinTextNodes is the number of <text> descendants above which an inline
+// <svg> is treated as a data figure (chart) rather than a decorative icon.
+const svgChartMinTextNodes = 3
+
+// preprocessSVGCharts serializes inline chart <svg> elements to standalone .svg
+// asset files and replaces them with <img> tags, so ExtractContent renders them
+// as images instead of flattening their coordinate-positioned <text> nodes into
+// unreadable concatenated garbage (issue #89 item 2). Only SVGs with several
+// <text> descendants are treated as charts; small icon SVGs are left untouched.
+// Returns the number of charts extracted.
+//
+// Limitation: the serialized file is only faithful if the SVG is self-contained.
+// A chart that pulls gradients/symbols via <use xlink:href="#id"> from elsewhere
+// on the page, or is styled by page-level CSS/<style> outside the element, will
+// render incompletely once isolated. Most JS charting libraries inline
+// everything, so this holds in practice.
+func preprocessSVGCharts(doc *goquery.Document, assetsDir string) int {
+	count := 0
+	doc.Find("svg").Each(func(i int, s *goquery.Selection) {
+		// Skip detached subtrees: when a chart svg nests another svg, the outer
+		// one is replaced first, leaving the inner (still in the snapshot)
+		// parent-less; serializing it would orphan an unreferenced file.
+		if s.Closest("html").Length() == 0 {
+			return
+		}
+		if s.Find("text").Length() < svgChartMinTextNodes {
+			return // icon / decorative, not a data chart
+		}
+		if _, ok := s.Attr("xmlns"); !ok {
+			s.SetAttr("xmlns", "http://www.w3.org/2000/svg")
+		}
+		// Strip script-execution vectors before writing an untrusted page's SVG
+		// to a standalone asset (stored XSS if the .svg is opened as a document).
+		sanitizeSVG(s)
+		markup, err := goquery.OuterHtml(s)
+		if err != nil || strings.TrimSpace(markup) == "" {
+			return
+		}
+		fileName := fmt.Sprintf("chart_%d.svg", count+1)
+		if err := os.WriteFile(filepath.Join(assetsDir, fileName), []byte(markup), 0644); err != nil {
+			return
+		}
+		count++
+
+		// Alt text: prefer the chart's accessible name (aria-label), then a
+		// DIRECT-child <title> — a nested <title> is a per-datum hover tooltip,
+		// not the chart name. Strip characters that would break the emitted
+		// ![alt](src) markdown.
+		alt := ""
+		if label, ok := s.Attr("aria-label"); ok {
+			alt = strings.TrimSpace(label)
+		}
+		if alt == "" {
+			alt = strings.TrimSpace(s.ChildrenFiltered("title").First().Text())
+		}
+		if alt == "" {
+			alt = "chart"
+		}
+		// Drop newlines and markdown brackets, then HTML-escape so the value is
+		// always well-formed inside <img alt="…"> (defense in depth vs XSS).
+		alt = strings.NewReplacer("\n", " ", "[", "", "]", "").Replace(alt)
+		alt = html.EscapeString(alt)
+		s.ReplaceWithHtml(fmt.Sprintf(`<img src="assets/%s" alt="%s"/>`, fileName, alt))
+	})
+	return count
+}
+
+// sanitizeSVG strips script-execution vectors from an inline <svg> before it is
+// written to a standalone .svg asset: <script>/<foreignObject> elements, on*
+// event-handler attributes, and javascript: URLs. Without this, an untrusted
+// source page's chart SVG could execute scripts when the asset is opened as a
+// document (stored XSS). External resource references (remote <image>/<use>) are
+// left as-is — they don't execute script.
+func sanitizeSVG(s *goquery.Selection) {
+	// Remove <script> and <foreignObject> (the latter embeds arbitrary HTML).
+	// Match the tag name case-insensitively at the node level: the HTML parser
+	// preserves SVG camelCase (foreignObject), which cascadia type selectors miss.
+	s.Find("*").Each(func(_ int, el *goquery.Selection) {
+		switch strings.ToLower(goquery.NodeName(el)) {
+		case "script", "foreignobject":
+			el.Remove()
+		}
+	})
+	strip := func(el *goquery.Selection) {
+		var remove []string
+		for _, a := range el.Nodes[0].Attr {
+			key := strings.ToLower(a.Key)
+			val := strings.ToLower(strings.TrimSpace(a.Val))
+			if strings.HasPrefix(key, "on") ||
+				(strings.Contains(key, "href") && strings.HasPrefix(val, "javascript:")) {
+				remove = append(remove, a.Key)
+			}
+		}
+		for _, k := range remove {
+			el.RemoveAttr(k)
+		}
+	}
+	strip(s)
+	s.Find("*").Each(func(_ int, el *goquery.Selection) { strip(el) })
 }
 
 // preprocessLazyImages fills in missing or placeholder <img src> attributes
@@ -1809,11 +2053,31 @@ func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, origi
 		content = ExtractContent(doc)
 	}
 
+	// Serialize chart <svg> elements to .svg asset files and swap in <img>, then
+	// re-extract so paper.md references the chart image instead of the SVG's
+	// flattened, coordinate-positioned text (issue #89 item 2).
+	if preprocessSVGCharts(doc, assetsDir) > 0 {
+		content = ExtractContent(doc)
+	}
+
 	// Strip a duplicate title that some publications (e.g. Medium custom
 	// domains) render at the top of the body as **Title** or "# Title".
 	// The title already lives in YAML frontmatter — repeating it in the
 	// body is redundant noise (issue #48).
 	content = stripDuplicateBodyTitle(content, originalTitle)
+
+	// Resolve relative link targets ([text](/path)) to absolute URLs against the
+	// source page, so links stay reachable in the wiki (issue #89 item 5). Runs
+	// after image localization so localized assets/ image paths are left alone.
+	content = absolutizeLinks(content, req.URL)
+
+	// Strip OpenAI-specific UI noise (audio player, share button, "Keep reading"
+	// recommendations). OpenAI renders these client-side with utility-only CSS
+	// classes, so they must be removed by text/structure, not a DOM selector.
+	// Host-gated so no other site enters this branch (issue #89 items 3 & 4).
+	if isOpenAIURL(req.URL) {
+		content = cleanOpenAINoise(content)
+	}
 
 	// Save modified HTML to index.html
 	modifiedHTML, err := doc.Html()
