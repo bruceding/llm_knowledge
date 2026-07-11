@@ -1812,6 +1812,39 @@ func TestPreprocessSVGChartsAltText(t *testing.T) {
 	}
 }
 
+// TestPreprocessSVGChartsSanitizesScripts verifies script-execution vectors are
+// stripped from the serialized .svg (stored-XSS guard): <script>, on* handlers,
+// <foreignObject>, and javascript: URLs must not survive to disk.
+func TestPreprocessSVGChartsSanitizesScripts(t *testing.T) {
+	dir := t.TempDir()
+	mockHTML := `<html><body><article>
+	<svg viewBox="0 0 10 10" aria-label="c" onload="alert(1)">
+	  <script>alert(document.cookie)</script>
+	  <foreignObject><div onclick="evil()">x</div></foreignObject>
+	  <a xlink:href="javascript:alert(2)"><text>a</text></a>
+	  <rect onmouseover="steal()" x="1"></rect>
+	  <text>1</text><text>2</text><text>3</text>
+	</svg>
+	</article></body></html>`
+	doc, err := ParseHTML(mockHTML)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if n := preprocessSVGCharts(doc, dir); n != 1 {
+		t.Fatalf("want 1 chart, got %d", n)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "chart_1.svg"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	svg := strings.ToLower(string(b))
+	for _, banned := range []string{"<script", "onload", "onclick", "onmouseover", "javascript:", "foreignobject"} {
+		if strings.Contains(svg, banned) {
+			t.Errorf("sanitized SVG still contains %q:\n%s", banned, string(b))
+		}
+	}
+}
+
 // TestCleanOpenAINoise covers issue #89 items 3 & 4: OpenAI's client-rendered
 // audio/share widgets and the trailing "Keep reading" recommendation block must
 // be stripped from the extracted markdown, while real body content is preserved.

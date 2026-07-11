@@ -859,6 +859,9 @@ func preprocessSVGCharts(doc *goquery.Document, assetsDir string) int {
 		if _, ok := s.Attr("xmlns"); !ok {
 			s.SetAttr("xmlns", "http://www.w3.org/2000/svg")
 		}
+		// Strip script-execution vectors before writing an untrusted page's SVG
+		// to a standalone asset (stored XSS if the .svg is opened as a document).
+		sanitizeSVG(s)
 		markup, err := goquery.OuterHtml(s)
 		if err != nil || strings.TrimSpace(markup) == "" {
 			return
@@ -883,10 +886,47 @@ func preprocessSVGCharts(doc *goquery.Document, assetsDir string) int {
 		if alt == "" {
 			alt = "chart"
 		}
-		alt = strings.NewReplacer("\"", "", "\n", " ", "[", "", "]", "").Replace(alt)
+		// Drop newlines and markdown brackets, then HTML-escape so the value is
+		// always well-formed inside <img alt="…"> (defense in depth vs XSS).
+		alt = strings.NewReplacer("\n", " ", "[", "", "]", "").Replace(alt)
+		alt = html.EscapeString(alt)
 		s.ReplaceWithHtml(fmt.Sprintf(`<img src="assets/%s" alt="%s"/>`, fileName, alt))
 	})
 	return count
+}
+
+// sanitizeSVG strips script-execution vectors from an inline <svg> before it is
+// written to a standalone .svg asset: <script>/<foreignObject> elements, on*
+// event-handler attributes, and javascript: URLs. Without this, an untrusted
+// source page's chart SVG could execute scripts when the asset is opened as a
+// document (stored XSS). External resource references (remote <image>/<use>) are
+// left as-is — they don't execute script.
+func sanitizeSVG(s *goquery.Selection) {
+	// Remove <script> and <foreignObject> (the latter embeds arbitrary HTML).
+	// Match the tag name case-insensitively at the node level: the HTML parser
+	// preserves SVG camelCase (foreignObject), which cascadia type selectors miss.
+	s.Find("*").Each(func(_ int, el *goquery.Selection) {
+		switch strings.ToLower(goquery.NodeName(el)) {
+		case "script", "foreignobject":
+			el.Remove()
+		}
+	})
+	strip := func(el *goquery.Selection) {
+		var remove []string
+		for _, a := range el.Nodes[0].Attr {
+			key := strings.ToLower(a.Key)
+			val := strings.ToLower(strings.TrimSpace(a.Val))
+			if strings.HasPrefix(key, "on") ||
+				(strings.Contains(key, "href") && strings.HasPrefix(val, "javascript:")) {
+				remove = append(remove, a.Key)
+			}
+		}
+		for _, k := range remove {
+			el.RemoveAttr(k)
+		}
+	}
+	strip(s)
+	s.Find("*").Each(func(_ int, el *goquery.Selection) { strip(el) })
 }
 
 // preprocessLazyImages fills in missing or placeholder <img src> attributes
