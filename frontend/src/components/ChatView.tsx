@@ -59,6 +59,7 @@ export default function ChatView() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
+  const [isSwitching, setIsSwitching] = useState(false)
   const [currentConversationId, setCurrentConversationId] = useState<number | undefined>(undefined)
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [showHistory, setShowHistory] = useState(false)
@@ -71,6 +72,8 @@ export default function ChatView() {
   const inputRef = useRef<HTMLInputElement>(null)
   const abortRef = useRef<AbortController | null>(null)
   const isStreamingRef = useRef(false)
+  // 会话切换(拉历史 + 查后端状态)进行中: 此时 currentConversationId 还指向旧会话
+  const isSwitchingRef = useRef(false)
   const sseReadyRef = useRef(false)
   const sseFailedRef = useRef(false)
   const [forceRefreshKey, setForceRefreshKey] = useState(0)
@@ -136,6 +139,11 @@ export default function ChatView() {
       setIsStreaming(false)
       setPendingImages([])
 
+      // 加载期间禁止发送: 此刻 currentConversationId 仍是旧会话,这时发出的消息
+      // 会被下面 .then 的 setMessages 覆盖掉,甚至投递进旧会话
+      isSwitchingRef.current = true
+      setIsSwitching(true)
+
       // Stale guard: prevent async results from overriding state after user navigates away
       let stale = false
 
@@ -191,6 +199,8 @@ export default function ChatView() {
         setMessages(loadedMessages)
         // Set conversation ID after messages are loaded to avoid SSE race condition
         setCurrentConversationId(urlConversationId)
+        isSwitchingRef.current = false
+        setIsSwitching(false)
       })
 
       return () => { stale = true }
@@ -198,6 +208,11 @@ export default function ChatView() {
   }, [urlConversationId, currentConversationId, forceRefreshKey])
 
   // Handle SSE events
+  //
+  // 下面每个 setMessages 都写 last?.role 而不是 last.role: prev 可能是空数组
+  // (例如切回一个还没有历史消息的会话时收到 SSE 事件,或切换效果刚把列表清空),
+  // 直接解引用会抛 TypeError 并把整棵 React 树卸载 —— 用户看到整页白屏。
+  // 同样的守卫也用于本文件里 handleSSEEvent 之外的两处(空闲超时回调、handleSend 的 catch)。
   const handleSSEEvent = useCallback((event: SSEEvent) => {
     if (event.type === 'session_expired') {
       isStreamingRef.current = false
@@ -219,7 +234,7 @@ export default function ChatView() {
     if (event.type === 'delta') {
       setMessages((prev) => {
         const last = prev[prev.length - 1]
-        if (last.role === 'assistant' && last.isStreaming) {
+        if (last?.role === 'assistant' && last.isStreaming) {
           return [...prev.slice(0, -1), { ...last, content: last.content + (event.text || ''), isThinking: false }]
         }
         return [...prev, {
@@ -237,7 +252,7 @@ export default function ChatView() {
     if (event.type === 'full') {
       setMessages((prev) => {
         const last = prev[prev.length - 1]
-        if (last.role === 'assistant' && last.isStreaming) {
+        if (last?.role === 'assistant' && last.isStreaming) {
           return [...prev.slice(0, -1), { ...last, content: event.content || '', isThinking: false, toolUse: undefined }]
         }
         return prev
@@ -250,7 +265,7 @@ export default function ChatView() {
       const toolDesc = formatToolName(event.toolName || 'Tool', event.toolInput || '')
       setMessages((prev) => {
         const last = prev[prev.length - 1]
-        if (last.role === 'assistant' && last.isStreaming) {
+        if (last?.role === 'assistant' && last.isStreaming) {
           return [...prev.slice(0, -1), { ...last, toolUse: toolDesc }]
         }
         return prev
@@ -262,7 +277,7 @@ export default function ChatView() {
       const toolDesc = formatToolName(event.toolName || 'Tool', event.toolInput || '')
       setMessages((prev) => {
         const last = prev[prev.length - 1]
-        if (last.role === 'assistant' && last.isStreaming && last.toolUse) {
+        if (last?.role === 'assistant' && last.isStreaming && last.toolUse) {
           return [...prev.slice(0, -1), { ...last, toolUse: toolDesc }]
         }
         return prev
@@ -273,7 +288,7 @@ export default function ChatView() {
     if (event.type === 'tool_end') {
       setMessages((prev) => {
         const last = prev[prev.length - 1]
-        if (last.role === 'assistant' && last.isStreaming) {
+        if (last?.role === 'assistant' && last.isStreaming) {
           return [...prev.slice(0, -1), { ...last, toolUse: undefined }]
         }
         return prev
@@ -297,7 +312,7 @@ export default function ChatView() {
     if (event.type === 'error') {
       setMessages((prev) => {
         const last = prev[prev.length - 1]
-        if (last.role === 'assistant' && last.isStreaming) {
+        if (last?.role === 'assistant' && last.isStreaming) {
           const displayContent = last.content || '[已停止]'
           return [...prev.slice(0, -1), { ...last, content: displayContent, isStreaming: false, isThinking: false }]
         }
@@ -367,7 +382,7 @@ export default function ChatView() {
             if (isStreamingRef.current) {
               setMessages((prev) => {
                 const last = prev[prev.length - 1]
-                if (last.role === 'assistant' && last.isStreaming) {
+                if (last?.role === 'assistant' && last.isStreaming) {
                   return [...prev.slice(0, -1), { ...last, content: last.content || t('chatView.connectionError'), isStreaming: false, isThinking: false, toolUse: undefined }]
                 }
                 return prev
@@ -424,8 +439,11 @@ export default function ChatView() {
 
         return pump()
       })
-      .catch(() => {
-        if (!cancelled) {
+      .catch((err) => {
+        // 切换会话时,切换效果会直接 abort 上一个连接(不经过本效果的 cleanup),
+        // 那时 cancelled 还是 false。这不是故障: 标记为失败会让切换期间发出的
+        // 消息被 handleSend 直接丢弃,并闪一次假的连接错误横幅。
+        if (!cancelled && (err as Error)?.name !== 'AbortError') {
           sseReadyRef.current = false
           sseFailedRef.current = true
           isStreamingRef.current = false
@@ -491,7 +509,7 @@ export default function ChatView() {
 
   // Handle sending a message
   const handleSend = useCallback(async () => {
-    if ((!input.trim() && pendingImages.length === 0) || isStreamingRef.current) return
+    if ((!input.trim() && pendingImages.length === 0) || isStreamingRef.current || isSwitchingRef.current) return
 
     const userContent = input.trim()
     setInput('')
@@ -576,7 +594,7 @@ export default function ChatView() {
     } catch (err) {
       setMessages((prev) => {
         const last = prev[prev.length - 1]
-        if (last.role === 'assistant') {
+        if (last?.role === 'assistant') {
           return [...prev.slice(0, -1), { ...last, content: t('chatView.connectionError'), isStreaming: false, isThinking: false }]
         }
         return prev
@@ -881,7 +899,7 @@ export default function ChatView() {
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               placeholder={t('chatView.placeholder')}
-              disabled={isStreaming}
+              disabled={isStreaming || isSwitching}
               aria-label="message input"
               className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
             />
@@ -905,7 +923,7 @@ export default function ChatView() {
             ) : (
               <button
                 onClick={handleSend}
-                disabled={!input.trim() && pendingImages.length === 0}
+                disabled={isSwitching || (!input.trim() && pendingImages.length === 0)}
                 className="px-4 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1188,7 +1206,7 @@ export default function ChatView() {
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
                 placeholder={t('chatView.placeholder')}
-                disabled={isStreaming}
+                disabled={isStreaming || isSwitching}
                 aria-label="message input"
                 className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
               />
@@ -1212,7 +1230,7 @@ export default function ChatView() {
               ) : (
                 <button
                   onClick={handleSend}
-                  disabled={!input.trim() && pendingImages.length === 0}
+                  disabled={isSwitching || (!input.trim() && pendingImages.length === 0)}
                   className="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed flex items-center gap-2"
                 >
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
