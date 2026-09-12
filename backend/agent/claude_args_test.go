@@ -14,13 +14,17 @@ func TestClaudeSessionArgs_AlwaysContainsDisallowedTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--disallowedTools") {
-		t.Fatalf("expected --disallowedTools in args: %v", args)
+	idx := slices.Index(args, "--disallowedTools")
+	if idx < 0 || idx == len(args)-1 {
+		t.Fatalf("missing --disallowedTools value: %v", args)
 	}
+	value := args[idx+1]
+
+	// Every dangerous tool must appear in the value (csv).
+	toolSet := strings.Split(value, ",")
 	for _, dangerous := range ClaudeDangerousDisallowedTools {
-		if !strings.Contains(joined, dangerous) {
-			t.Errorf("expected dangerous tool %q in --disallowedTools, got: %v", dangerous, args)
+		if !slices.Contains(toolSet, dangerous) {
+			t.Errorf("--disallowedTools missing %q (got %q)", dangerous, value)
 		}
 	}
 }
@@ -31,15 +35,27 @@ func TestClaudeSessionArgs_AllowedToolsRespected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !slices.Contains(args, "Read,Glob,Grep,LS") {
-		t.Fatalf("expected joined allowlist in args: %v", args)
+	idx := slices.Index(args, "--allowedTools")
+	if idx < 0 || idx == len(args)-1 {
+		t.Fatalf("--allowedTools not present: %v", args)
+	}
+	if args[idx+1] != "Read,Glob,Grep,LS" {
+		t.Errorf("--allowedTools value = %q, want %q", args[idx+1], "Read,Glob,Grep,LS")
 	}
 }
 
 func TestClaudeSessionArgs_RejectsAllowedDangerousOverlap(t *testing.T) {
 	p := &ClaudeProtocol{bin: "claude"}
-	if _, err := p.SessionArgs("", []string{"Read", "Bash"}); err == nil {
-		t.Fatal("expected error when allowedTools contains a dangerous tool")
+	for _, dangerous := range ClaudeDangerousDisallowedTools {
+		t.Run(dangerous, func(t *testing.T) {
+			args, err := p.SessionArgs("", []string{"Read", dangerous})
+			if err == nil {
+				t.Errorf("expected error when allowedTools contains %q, got args=%v", dangerous, args)
+			}
+			if args != nil {
+				t.Errorf("expected nil args on error, got %v", args)
+			}
+		})
 	}
 }
 

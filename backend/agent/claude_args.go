@@ -28,6 +28,9 @@ func (p *ClaudeProtocol) Bin() string      { return p.bin }
 //
 // 该列表必须与 scripts/path-validator.py 的 ALWAYS_DENIED_TOOLS 保持一致,
 // 由 backend/claude/security_test.go 的 TestDangerousToolsCrossLanguageSync 守护。
+//
+// WebFetch/WebSearch 故意不列入:它们有用且无法直接读本地文件;WebFetch 的 SSRF
+// 风险另行跟踪(见 backend/claude/security_test.go 的 TestPathValidator_WebFetchSSRF)。
 var ClaudeDangerousDisallowedTools = []string{
 	"Bash",
 	"Task",
