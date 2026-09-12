@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"llm-knowledge/agent"
 	"log"
 	"os/exec"
 	"strings"
@@ -13,11 +14,8 @@ import (
 	"time"
 )
 
-// ImageData represents an image to send to Claude
-type ImageData struct {
-	MediaType  string // e.g., "image/png"
-	Base64Data string // base64 encoded image data (without prefix)
-}
+// ImageData 已上移到 agent 包,保留别名。
+type ImageData = agent.ImageData
 
 // InteractiveSession manages a bidirectional stream-json session with Claude CLI
 type InteractiveSession struct {
