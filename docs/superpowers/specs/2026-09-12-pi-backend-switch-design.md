@@ -17,6 +17,8 @@
 
 现状有三个已知包袱(记录在 `CLAUDE.md`):必须先发 init message 才能拿到 `session_id`;因此需要 `waitForInit` 5s 超时 + `local-<UnixNano>` fallback ID + `onRealSessionID` 别名回调;`stream.go` 里为 Qwen/GLM 经 Claude CLI 代理而写了三套去重逻辑。
 
+**实测后对这三个包袱的结论并不相同**(详见「解析器后端差异」):第一个在 pi 路径下**完全消失**(`get_state` 在 spawn 后、发任何 prompt 之前就能拿到 `sessionId`);后两个**必须保留**——pi 一轮里同一段文本会出现三次(`text_delta` / `text_end.content` / `message_end.message.content`),且 pi 还会给 user 消息发 `message_end`,所以去重与角色过滤对 pi 是必需路径而非 workaround。
+
 [pi](https://github.com/earendil-works/pi) 提供 `--mode rpc`(双向 JSONL)与 `--mode json`(一次性事件流),原生多 provider,可以直接替换上述执行器。
 
 ## 目标
@@ -237,17 +239,42 @@ type Protocol interface {
 
 ### 解析器后端差异
 
+pi 侧一列均以 **2026-09-12 实测为准**(pi 0.85.1 + `qwen-token-plan-cn/qwen3.8-max`,`--mode rpc`,单轮 prompt),非仅文档推导。
+
 | 语义 | `ClaudeProtocol.ParseLine` | `PiProtocol.ParseLine` |
 |---|---|---|
-| session_id | `type=system` + `subtype=init` → `SessionID` | 启动后主动发 `{"type":"get_state"}`,从 `response.data.sessionId` 取 |
-| 文本增量 | `type=stream_event` → `event.content_block_delta.text_delta` | `type=message_update` → `assistantMessageEvent.type=text_delta` |
+| session_id | `type=system` + `subtype=init`,**须等首条用户消息** | **不走 `ParseLine`**:spawn 后同步发 `{"id":...,"type":"get_state"}`,从 `response.data.sessionId` / `.sessionFile` 取(实测 `messageCount=0` 时即得) |
+| 文本增量 | `type=stream_event` → `event.content_block_delta.text_delta` | `type=message_update` → `assistantMessageEvent.type=text_delta` → `delta` |
+| 文本结束 | `content_block_stop` | `assistantMessageEvent.type=text_end` —— **携带完整 `content`,必须忽略**(否则与 delta 重复) |
 | 工具开始 | `content_block_start` + `content_block.type=tool_use` | `assistantMessageEvent.type=toolcall_start`(带 `id`/`toolName`) |
 | 工具入参 | `content_block_delta.input_json_delta.partial_json` | `assistantMessageEvent.type=toolcall_delta` → `delta` |
 | 工具结束 | `content_block_stop` | `assistantMessageEvent.type=toolcall_end`,或 `tool_execution_end` |
-| 完整消息 | `type=assistant` → `message.content[]` | `type=message_end` → `message` |
-| 轮次结束 | `type=result`(`is_error` → error) | `type=agent_end`;`agent_settled` 作为最终静默信号 |
+| 完整消息 | `type=assistant` → `message.content[]` | `type=message_end` → `message`,**且必须 `message.role == "assistant"`** |
+| 轮次结束(→ SSE `done`) | `type=result`(`is_error` → error) | **`type=agent_settled`**,不是 `agent_end` |
 | 错误 | `result` + `is_error=true` | `type=response` + `success=false` → `error`;`extension_error` |
-| 忽略 | `type=system`(除 init) | `type=session`(头行,已用于取 id)、`turn_start`、`queue_update`、`compaction_*`、`auto_retry_*` |
+| 忽略 | `type=system`(除 init) | `agent_start`、`turn_start`、`turn_end`、`message_start`、`thinking_*`、`queue_update`、`compaction_*`、`auto_retry_*`、`summarization_retry_*`、`bash_execution_update`,以及 `prompt` 命令自身的 `response` |
+
+#### 实测确认的三条 pi 专有约束
+
+这三条 Claude 路径都不存在,不写清楚实现期必踩。
+
+**1. RPC 模式启动后不主动输出任何行。** 实测 spawn 后 2s 内 **0 行**。`docs/json.md` 里那个首行 `{"type":"session","version":3,"id":...}` 头行**只属于 `--mode json`,rpc 模式下不存在**。因此 sessionId 只能靠主动发 `get_state` 取,不能等首行。
+
+**2. pi 给 user 消息也发 `message_start`/`message_end`。** 实测 `role=user` 且 `content[0].text` 就是我们发出的 prompt 原文。`ParseLine` 必须按 `message.role == "assistant"` 过滤,否则**用户自己的提问会被当作助手回复推回前端**。
+
+**3. 同一段文本在一轮里出现三次:** `text_delta`(增量) → `text_end.content`(完整) → `message_end.message.content[]`(完整,权威)。因此:
+
+- `PiProtocol` **只对 `text_delta` 产出 `Delta`**
+- `message_end` 映射为「完整消息」,由 `StreamProcessor` 既有的 `streamedDeltas` 去重决定是否下发 `full`
+- 这意味着 **`streamedDeltas` 对 pi 是必需路径,而不是 Qwen 代理的 workaround**。`docs/rpc.md` 原话:*"Treat `message_end.message` as authoritative"*。另两套去重(`sseReconnectContent`、`sentToolIDs`)属于我们自己的 SSE 重连架构,与后端无关,原样保留
+
+#### 其他实测细节
+
+- `thinking_start`/`thinking_delta`/`thinking_end` 一律忽略(与既有 `TestExtractTextDelta_ThinkingIgnored` 行为一致)。实测 Qwen 模型会先发 5 个 `thinking_delta` 再发文本
+- `prompt` 命令的 `response`(`success=true`)**先于所有事件到达**(实测 +3.01s,而首个 `message_update` 在 +4.16s),它只表示「已接受」,**不可当作完成信号**
+- `message_update` 的 `contentIndex` 与 Claude 的 `index` 同构(实测 thinking 占 0、text 占 1),现有 `activeTools map[int]*activeTool` 按 index 键控的结构可直接复用
+- `agent_end` 带 `messages`(实测 2 条:user + assistant)与 `willRetry`;`agent_settled` 在其后到达。`docs/rpc.md` 说明 `agent_end` *"may still be followed by retry, compaction, or queued continuations"*,而 `agent_settled` 才是 *"no automatic retry, compaction retry, or queued continuation remains"* —— 这是 `done` 必须用后者的依据
+- `get_state` 响应会回显我们传入的 `id`,多命令并发时可做关联
 
 **JSONL framing:** 只按 `\n` 切分,容忍并剥除行尾 `\r`。`docs/rpc.md` 明确警告不要用会按 `U+2028`/`U+2029` 切分的通用行读取器——Go 的 `bufio.Scanner`(`ScanLines`)已合规,`newScanner` 的 1MB buffer 保留(pi 的 `tool_execution_update.partialResult` 是累积快照,大输出同样会撑爆行)。
 
@@ -501,7 +528,13 @@ cd backend && go build ./... && go vet ./... && go test ./...
 ### 新增单元测试
 
 - `agent/claude_protocol_test.go` — 现有 `stream_event`/`assistant`/`result`/`system.init` 解析行为迁移后逐条等价(用例从 `stream_test.go` 的 `TestExtract*` 平移)
-- `agent/pi_protocol_test.go` — 表驱动:`session` 头行、`get_state` 响应取 sessionId、`message_update` 四种 `assistantMessageEvent`、`message_end`、`agent_end`、`agent_settled`、`response`+`success:false`、`extension_error`、畸形行跳过、行尾 `\r` 剥除
+- `agent/pi_protocol_test.go` — 表驱动,用例直接取自实测事件序列:`get_state` 响应取 `sessionId`/`sessionFile`、`message_update` 各类 `assistantMessageEvent`、`message_end`、`turn_end`、`agent_end`、`agent_settled`、`response`+`success:false`、`extension_error`、畸形行跳过、行尾 `\r` 剥除。**注意:不得写 `session` 头行用例——rpc 模式不发该头行**(仅 `--mode json` 有)
+- `agent/pi_protocol_constraints_test.go` — 专测上述三条 pi 专有约束:
+  1. 启动后无任何主动输出时,`ParseLine` 不被调用也不报错;sessionId 只能经 `get_state` 取得
+  2. `message_end` 且 `message.role == "user"` → **不产生任何 `Delta` 与 `Content`**(否则用户提问会被回推)
+  3. 完整序列 `text_delta("hello")` → `text_end(content:"hello")` → `message_end(text:["hello"])` 经 `StreamProcessor` 后,**前端只收到一份文本**(验证 `text_end.content` 被忽略且 `streamedDeltas` 去重生效)
+  4. `thinking_delta` 不产生 `Delta`
+  5. `prompt` 的 `response{success:true}` 不产生 SSE `done`;只有 `agent_settled` 产生
 - `agent/pi_args_test.go` — 硬化旗标齐全(`--no-skills`/`--no-prompt-templates`/`--no-context-files`/`-na`/`-e`/`--session-dir`);**断言不含** `--no-extensions`(否则 `pi-web-access` 加载不了)、`--dangerously-skip-permissions`、`--verbose`;工具名映射正确;四档白名单各自正确(两个 chat 档**含** web 工具、两个 ingest 档**不含**);web 工具名取自配置而非硬编码字面量;resume 分支
 - `agent/pi_message_test.go` — `EncodeUserMessage` 纯文本与带图(`images:[{type:"image",data,mimeType}]`,注意与 Claude 的 `content:[{type:image,source:{media_type,data}}]` 不同)、`EncodeInterrupt` 产出 `{"type":"abort"}`
 - `agent/resolver_test.go` — TTL 缓存命中、`Invalidate()` 后立即重读、未知值/空值回退 `claude`
@@ -557,7 +590,7 @@ cd backend && go build ./... && go vet ./... && go test ./...
 **修改**
 
 - `backend/claude/client.go` — `StreamEvent`/`Message`/`ContentBlock`/`ImageData` 改类型别名;`Client` 增 `Proto` 字段并委托;`RawEvent` 保留为 Claude 专有解析中间类型
-- `backend/claude/session.go` — `InteractiveSession` 增 `proto`;`readEvents`/`SendUserMessage`/`SendUserMessageWithImages`/`SendInterrupt`/`buildCmdWithEnv` 委托;`StartSession`/`StartResumedSession` 改用 `agent.Current()`;pi 路径下 `waitForInit` 改为 `get_state` 同步取 id
+- `backend/claude/session.go` — `InteractiveSession` 增 `proto`;`readEvents`/`SendUserMessage`/`SendUserMessageWithImages`/`SendInterrupt`/`buildCmdWithEnv` 委托;`StartSession`/`StartResumedSession` 改用 `agent.Current()`;**pi 路径下 spawn 后同步发 `get_state` 取真实 id,因此跳过 `waitForInit` 5s 超时、`local-<UnixNano>` fallback ID 与 `onSessionID` 别名注册**(实测依据见「解析器后端差异」)
 - `backend/claude/stream.go` — `Extract*` 系列改为消费 `Delta`;`SSEEvent` 与前端契约不变
 - `backend/claude/query_pool.go` — 两个 Start 函数改用 `agent.Current()` 与 `Protocol`
 - `backend/claude/security.go` — 保留 claude 专用;`DangerousDisallowedTools` 不动
