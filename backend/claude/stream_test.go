@@ -63,6 +63,36 @@ func TestStreamProcessor_ClaudeStreaming_Delta(t *testing.T) {
 	}
 }
 
+// Regression: an empty text delta must not set streamedDeltas. BASE guarded this in
+// the ExtractTextDelta path (`if delta != ""`); without the guard a single empty delta
+// suppresses the following assistant `full` event, so a non-streaming model (GLM)
+// renders a blank reply. Unreachable for Claude today (claude_parse.go returns nil for
+// an empty text_delta), but Plan 2 adds a second Delta producer.
+func TestStreamProcessor_EmptyTextDeltaDoesNotSuppressFull(t *testing.T) {
+	sp := NewStreamProcessor()
+
+	empty := StreamEvent{
+		Type:  "stream_event",
+		Delta: &agent.Delta{Kind: agent.DeltaText, Index: 0, Text: ""},
+	}
+	result := sp.Process(empty)
+	if result.Type != "" {
+		t.Errorf("empty text delta should be filtered, got type=%q", result.Type)
+	}
+	if sp.streamedDeltas {
+		t.Error("streamedDeltas should stay false after an empty text delta")
+	}
+
+	// The behaviour that matters: the next assistant event still emits full.
+	result = sp.Process(makeAssistantEvent("hello"))
+	if result.Type != "full" {
+		t.Fatalf("expected full after an empty delta, got %q", result.Type)
+	}
+	if result.Content != "hello" {
+		t.Errorf("expected Content='hello', got %q", result.Content)
+	}
+}
+
 func TestStreamProcessor_ClaudeStreaming_AssistantSkipped(t *testing.T) {
 	sp := NewStreamProcessor()
 

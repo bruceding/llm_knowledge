@@ -168,7 +168,7 @@ func (c *Client) SendSimpleWithRead(ctx context.Context, prompt string, workDir 
 	if workDir != "" {
 		cmd.Dir = workDir
 		// Set ALLOWED_DIR environment for security hooks
-		if env := BuildSecureEnv(workDir); len(env) > 0 {
+		if env := c.protocol().Env(workDir); len(env) > 0 {
 			cmd.Env = env
 		}
 	}

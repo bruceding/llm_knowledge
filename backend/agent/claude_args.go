@@ -73,7 +73,7 @@ func (p *ClaudeProtocol) ResumeArgs(prevSessionID, sysPrompt string, tools []str
 // 调用方在返回切片前后自行拼接 --output-format / --input-format / --print /
 // --resume / --system-prompt。
 //
-// allowedTools 含 DangerousDisallowedTools 中任一项时返回错误:那是编程错误
+// allowedTools 含 ClaudeDangerousDisallowedTools 中任一项时返回错误:那是编程错误
 // (两个冲突旗标会把行为交给 CLI 内部决定),但我们以 error 而非 panic 暴露,
 // 好让 goroutine 里的错误调用不会拖垮整个服务进程。
 func (p *ClaudeProtocol) SecureArgs(allowedTools []string) ([]string, error) {

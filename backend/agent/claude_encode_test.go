@@ -41,6 +41,9 @@ func TestClaudeEncodeUserMessage_ImagesFirstThenText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if !strings.HasSuffix(string(b), "\n") {
+		t.Fatalf("expected trailing newline, got: %q", string(b))
+	}
 
 	var got struct {
 		Type    string `json:"type"`
@@ -61,12 +64,20 @@ func TestClaudeEncodeUserMessage_ImagesFirstThenText(t *testing.T) {
 			t.Errorf("block %d: expected type %q, got %v", i, want, got.Message.Content[i]["type"])
 		}
 	}
-	src, ok := got.Message.Content[0]["source"].(map[string]any)
+	src0, ok := got.Message.Content[0]["source"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected image source object, got %v", got.Message.Content[0]["source"])
 	}
-	if src["type"] != "base64" || src["media_type"] != "image/png" || src["data"] != "AAAA" {
-		t.Errorf("unexpected image source: %v", src)
+	if src0["type"] != "base64" || src0["media_type"] != "image/png" || src0["data"] != "AAAA" {
+		t.Errorf("unexpected first image source: %v", src0)
+	}
+	// 第二张图必须带自己的 source(实现若误用 images[0] 填所有块,这里会红)
+	src1, ok := got.Message.Content[1]["source"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected image source object, got %v", got.Message.Content[1]["source"])
+	}
+	if src1["type"] != "base64" || src1["media_type"] != "image/jpeg" || src1["data"] != "BBBB" {
+		t.Errorf("unexpected second image source: %v", src1)
 	}
 	if got.Message.Content[2]["text"] != "描述这两张图" {
 		t.Errorf("unexpected text block: %v", got.Message.Content[2])

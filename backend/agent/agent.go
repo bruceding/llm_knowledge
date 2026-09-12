@@ -35,7 +35,7 @@ type Delta struct {
 	Kind      DeltaKind
 	Text      string // DeltaText:增量文本
 	Index     int    // 内容块序号:Claude 的 index / pi 的 contentIndex
-	ToolID    string // DeltaToolStart / DeltaToolEnd
+	ToolID    string // DeltaToolStart
 	ToolName  string // DeltaToolStart
 	ToolInput string // DeltaToolInput:入参 JSON 片段
 }
@@ -48,11 +48,24 @@ type ImageData struct {
 
 // StreamEvent 是从 CLI stdout 解析出的单条归一化事件。
 //
+// Type 的取值受限于下列词表:所有 Protocol 实现必须把后端事件映射到它,不得引入
+// 新值 —— 上层(readEvents / routeEvents / StreamProcessor.Process)按字面量分派,
+// 词表外的值会落到 default 分支被静默丢弃。
+//   - "assistant":完整消息,须同时填 Message(且 Message.Role == "assistant")
+//   - "result":轮次结束。readEvents 据此重置 SSE 重连缓冲,Process 据此发 done
+//   - "error":错误,须填 Error。注意它不会触发 readEvents 的重连缓冲重置,
+//     因此后端若在错误后不再发 result,须自行保证轮次收尾
+//   - "system":配 Subtype == "init" + SessionID 用于捕获会话 ID;
+//     其余 system 事件被过滤
+//
+// 流式增量不走 Type,走 Delta(两者相互独立,Process 优先分派 Delta)。
+// pi 的 agent_settled 必须映射为 "result",否则前端收不到 done。
+//
 // 与原 claude.StreamEvent 的唯一差异:Event json.RawMessage 被 Delta *Delta 取代。
 // ResultMessageID / ResultFullContent 不是 wire 字段,而是 query_pool 的 routeEvents
 // 写入的路由元数据(用于把 assistant 回复存回 DB),Protocol 实现不应触碰。
 type StreamEvent struct {
-	Type      string   `json:"type"`                 // 后端语义的事件类型,见各 Protocol 的 ParseLine
+	Type      string   `json:"type"`                 // 归一化事件类型,取值见上方词表
 	Content   string   `json:"content"`              // Text content of the event (extracted)
 	Subtype   string   `json:"subtype"`              // subtype for system messages
 	SessionID string   `json:"session_id,omitempty"` // Session ID from system events
@@ -91,6 +104,10 @@ type Protocol interface {
 	Bin() string
 
 	// 旗标与环境
+	//
+	// 三个 *Args 的 tools 一律由调用方以 Claude 工具名表达,各 Protocol 实现自行
+	// 翻译成本后端的工具名;后端专有的额外工具(例如 pi 的 web 工具)由 Protocol
+	// 自己追加,不由调用方传入。
 	SessionArgs(sysPrompt string, tools []string) ([]string, error)
 	ResumeArgs(prevSessionID, sysPrompt string, tools []string) ([]string, error)
 	OnceArgs(sysPrompt string, tools []string, print bool) ([]string, error)

@@ -110,7 +110,7 @@ func buildCmd(ctx context.Context, claudeBin string, args []string, dataDir stri
 }
 
 // buildCmdWithEnv builds a command with a pre-filtered environment.
-// extraEnv should come from BuildSecureEnv which already filters duplicates.
+// extraEnv 应来自 Protocol.Env,它已过滤重复的 ALLOWED_DIR。
 func buildCmdWithEnv(ctx context.Context, claudeBin string, args []string, dataDir string, extraEnv []string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
 	cmd.Dir = dataDir

@@ -34,7 +34,7 @@ type ToolUseBlock struct {
 
 // StreamProcessor converts raw StreamEvents (from Claude CLI NDJSON output)
 // into clean SSEEvents for the frontend. It handles:
-//   - stream_event → delta/tool_start/tool_input/tool_end (Claude/Qwen streaming)
+//   - Delta → delta/tool_start/tool_input/tool_end(与 Type 无关,优先分派)
 //   - assistant → full (GLM non-streaming) or de-duplicated skip (Qwen mixed)
 //   - result → done (explicit turn-end signal)
 //   - system → filtered out
@@ -177,10 +177,12 @@ func (sp *StreamProcessor) Process(evt StreamEvent) SSEEvent {
 			return SSEEvent{}
 
 		case agent.DeltaText:
+			if evt.Delta.Text == "" {
+				return SSEEvent{}
+			}
 			sp.streamedDeltas = true
 			return SSEEvent{Type: "delta", Delta: evt.Delta.Text}
 		}
-		return SSEEvent{}
 	}
 
 	switch evt.Type {

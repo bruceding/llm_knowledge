@@ -164,16 +164,19 @@ func TestClaudeOnceArgs_SystemPromptAppended(t *testing.T) {
 }
 
 func TestClaudeEnv_ResolvesSymlinks(t *testing.T) {
-	tmp := t.TempDir()
-	link := filepath.Join(filepath.Dir(tmp), "agent-env-link")
-	if err := os.Symlink(tmp, link); err != nil {
+	// 符号链接建在本次运行唯一的目录里(t.TempDir 每次不同),避开固定文件名在
+	// 共享临时目录下残留导致 os.Symlink 返回 EEXIST、进而永久误跳过的路径。
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
-	defer os.Remove(link)
 
 	p := &ClaudeProtocol{bin: "claude"}
+	// 注入一个必须被替换掉的 ALLOWED_DIR,让下方的去重断言真的有判别力。
+	t.Setenv("ALLOWED_DIR", "/bogus/must/be/replaced")
 	env := p.Env(link)
-	resolved, err := filepath.EvalSymlinks(tmp)
+	resolved, err := filepath.EvalSymlinks(target)
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
