@@ -98,7 +98,7 @@ type Protocol interface {
 	// 旗标与环境
 	SessionArgs(sysPrompt string, tools []string) ([]string, error)
 	ResumeArgs(prevSessionID, sysPrompt string, tools []string) ([]string, error)
-	OnceArgs(tools []string, print bool) ([]string, error)
+	OnceArgs(sysPrompt string, tools []string, print bool) ([]string, error)
 	Env(allowedDir string) []string
 
 	// stdin 编码
