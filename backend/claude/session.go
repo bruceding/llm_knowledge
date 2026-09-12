@@ -19,12 +19,17 @@ type ImageData = agent.ImageData
 
 // InteractiveSession manages a bidirectional stream-json session with Claude CLI
 type InteractiveSession struct {
-	SessionID        string
-	OwnerUserID      uint // user who created this session (for authorization)
-	OwnerDocID       uint // document ID this session is for (for authorization)
-	cmd              *exec.Cmd
-	stdin            io.Writer
-	stdoutScanner    *bufio.Scanner
+	SessionID     string
+	OwnerUserID   uint // user who created this session (for authorization)
+	OwnerDocID    uint // document ID this session is for (for authorization)
+	cmd           *exec.Cmd
+	stdin         io.Writer
+	stdoutScanner *bufio.Scanner
+	// proto 是本会话的 CLI 协议实现。
+	// 过渡类型:Task 3 只用到 ParseLine,而 *ClaudeProtocol 要等 Task 4 补齐
+	// EncodeUserMessage/EncodeInterrupt 才满足 agent.Protocol;Task 4 会把这里
+	// 放宽为 agent.Protocol。
+	proto            *agent.ClaudeProtocol
 	eventCh          chan StreamEvent   // main event channel (closed by readEvents)
 	streamChs        []chan StreamEvent // subscriber channels for fan-out
 	streamingContent strings.Builder    // accumulated text for SSE reconnect recovery
@@ -210,6 +215,7 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 		cmd:           cmd,
 		stdin:         stdinPipe,
 		stdoutScanner: newScanner(stdoutPipe),
+		proto:         agent.NewClaudeProtocol(p.claudeBin, GetSettingsPath()),
 		eventCh:       make(chan StreamEvent, 100),
 		ctx:           ctx,
 		cancel:        cancel,
@@ -535,70 +541,34 @@ func (s *InteractiveSession) readEvents() {
 	for s.stdoutScanner.Scan() {
 		line := s.stdoutScanner.Bytes()
 
-		// Parse the raw event
-		var rawEvent struct {
-			Type      string          `json:"type"`
-			Subtype   string          `json:"subtype"`
-			SessionID string          `json:"session_id"`
-			Message   json.RawMessage `json:"message"`
-			Event     json.RawMessage `json:"event"` // stream_event sub-event payload
-			Content   string          `json:"content"`
-			Result    string          `json:"result"`
-			IsError   bool            `json:"is_error"`
-			Error     string          `json:"error"`
-		}
-
-		if err := json.Unmarshal(line, &rawEvent); err != nil {
+		event, ok := s.proto.ParseLine(line)
+		if !ok {
 			continue
 		}
 
-		event := StreamEvent{
-			Type:      rawEvent.Type,
-			Subtype:   rawEvent.Subtype,
-			SessionID: rawEvent.SessionID,
-			Content:   rawEvent.Content,
-			Result:    rawEvent.Result,
-			Error:     rawEvent.Error,
-			Event:     rawEvent.Event,
-		}
-
-		// Extract content from assistant message
-		if rawEvent.Type == "assistant" && rawEvent.Message != nil {
-			var msg Message
-			if err := json.Unmarshal(rawEvent.Message, &msg); err == nil {
-				event.Message = &msg
-				for _, block := range msg.Content {
-					if block.Type == "text" && block.Text != "" {
-						event.Content = block.Text
-						break
-					}
-				}
-			}
-			// Accumulate assistant text for SSE reconnect recovery (skip if deltas already accumulated)
+		// 累积 assistant 文本用于 SSE 重连恢复(若已收到 delta 则跳过)
+		if event.Type == "assistant" && event.Content != "" {
 			s.mu.Lock()
-			if event.Content != "" && !s.hasStreamDeltas {
+			if !s.hasStreamDeltas {
 				s.streamingContent.WriteString(event.Content)
 			}
 			s.mu.Unlock()
 		}
 
-		// Accumulate stream_event text deltas for reconnect recovery
-		if rawEvent.Type == "stream_event" && rawEvent.Event != nil {
-			delta := ExtractTextDelta(rawEvent.Event)
-			if delta != "" {
-				s.mu.Lock()
-				s.hasStreamDeltas = true
-				s.streamingContent.WriteString(delta)
-				s.mu.Unlock()
-			}
+		// 累积文本 delta 用于重连恢复
+		if event.Delta != nil && event.Delta.Kind == agent.DeltaText && event.Delta.Text != "" {
+			s.mu.Lock()
+			s.hasStreamDeltas = true
+			s.streamingContent.WriteString(event.Delta.Text)
+			s.mu.Unlock()
 		}
 
 		// Handle result type
-		if rawEvent.Type == "result" {
-			event.Content = rawEvent.Result
-			if rawEvent.IsError {
+		if event.Type == "result" {
+			event.Content = event.Result
+			if event.ResultIsError {
 				event.Type = "error"
-				event.Error = rawEvent.Result
+				event.Error = event.Result
 			}
 			// Reset streamingContent on turn end
 			s.mu.Lock()
@@ -608,15 +578,15 @@ func (s *InteractiveSession) readEvents() {
 		}
 
 		// Auto-capture session_id from system.init event
-		if rawEvent.Type == "system" && rawEvent.Subtype == "init" && rawEvent.SessionID != "" {
+		if event.Type == "system" && event.Subtype == "init" && event.SessionID != "" {
 			s.mu.Lock()
 			oldID := s.SessionID
-			s.SessionID = rawEvent.SessionID
+			s.SessionID = event.SessionID
 			callback := s.onSessionID
 			s.mu.Unlock()
 			log.Printf("[session] Got session_id from init event: %s (was: %s)", s.SessionID, oldID)
-			if callback != nil && oldID != rawEvent.SessionID {
-				callback(oldID, rawEvent.SessionID)
+			if callback != nil && oldID != event.SessionID {
+				callback(oldID, event.SessionID)
 			}
 			select {
 			case <-s.initDone:
@@ -626,10 +596,10 @@ func (s *InteractiveSession) readEvents() {
 			// Notify SSE subscribers so frontend can update its sessionId.
 			// This synthetic event uses type "session_update" which the SSE
 			// handler forwards directly (not filtered by StreamProcessor).
-			if oldID != rawEvent.SessionID {
+			if oldID != event.SessionID {
 				updateEvt := StreamEvent{
 					Type:      "session_update",
-					SessionID: rawEvent.SessionID,
+					SessionID: event.SessionID,
 				}
 				s.mu.Lock()
 				for _, ch := range s.streamChs {

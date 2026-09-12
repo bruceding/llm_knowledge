@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"llm-knowledge/agent"
 	"llm-knowledge/db"
 	"log"
 	"strings"
@@ -49,12 +50,9 @@ func (qs *QuerySession) routeEvents() {
 		}
 
 		// Accumulate stream_event text deltas for auto-save (covers streaming models)
-		if evt.Type == "stream_event" && evt.Event != nil {
-			delta := ExtractTextDelta(evt.Event)
-			if delta != "" {
-				qs.hasStreamDeltas = true
-				qs.currentContent.WriteString(delta)
-			}
+		if evt.Delta != nil && evt.Delta.Kind == agent.DeltaText && evt.Delta.Text != "" {
+			qs.hasStreamDeltas = true
+			qs.currentContent.WriteString(evt.Delta.Text)
 		}
 
 		// On result/error, add message save info and prepare auto-save data
@@ -510,6 +508,7 @@ func StartSession(ctx context.Context, claudeBin string, userDir string, systemP
 		cmd:           cmd,
 		stdin:         stdinPipe,
 		stdoutScanner: newScanner(stdoutPipe),
+		proto:         agent.NewClaudeProtocol(claudeBin, GetSettingsPath()),
 		eventCh:       make(chan StreamEvent, 100),
 		ctx:           ctx,
 		cancel:        cancel,
@@ -584,6 +583,7 @@ func StartResumedSession(ctx context.Context, claudeBin string, userDir string, 
 		cmd:           cmd,
 		stdin:         stdinPipe,
 		stdoutScanner: newScanner(stdoutPipe),
+		proto:         agent.NewClaudeProtocol(claudeBin, GetSettingsPath()),
 		eventCh:       make(chan StreamEvent, 100),
 		ctx:           ctx,
 		cancel:        cancel,

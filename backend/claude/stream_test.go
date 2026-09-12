@@ -2,7 +2,7 @@ package claude
 
 import (
 	"encoding/json"
-	"fmt"
+	"llm-knowledge/agent"
 	"testing"
 )
 
@@ -364,53 +364,6 @@ func TestStreamProcessor_MultipleToolFromAssistant(t *testing.T) {
 
 // --- Extract function tests ---
 
-func TestExtractTextDelta(t *testing.T) {
-	eventRaw := json.RawMessage(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`)
-	delta := ExtractTextDelta(eventRaw)
-	if delta != "Hello" {
-		t.Errorf("expected 'Hello', got %q", delta)
-	}
-}
-
-func TestExtractTextDelta_ThinkingIgnored(t *testing.T) {
-	eventRaw := json.RawMessage(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","text":"inner thought"}}`)
-	delta := ExtractTextDelta(eventRaw)
-	if delta != "" {
-		t.Errorf("thinking_delta should be ignored, got %q", delta)
-	}
-}
-
-func TestExtractToolUseStart(t *testing.T) {
-	eventRaw := json.RawMessage(`{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"tool-1","name":"Read"}}`)
-	result := ExtractToolUseStart(eventRaw)
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if result.ID != "tool-1" || result.Name != "Read" || result.Index != 2 {
-		t.Errorf("expected tool-1/Read/2, got %s/%s/%d", result.ID, result.Name, result.Index)
-	}
-}
-
-func TestExtractToolUseInputDelta(t *testing.T) {
-	raw := `{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"key\":\"val\""}}`
-	eventRaw := json.RawMessage(raw)
-	delta := ExtractToolUseInputDelta(eventRaw)
-	if delta != `{"key":"val"` {
-		t.Errorf("expected partial JSON, got %q", delta)
-	}
-}
-
-func TestExtractContentBlockStop(t *testing.T) {
-	eventRaw := json.RawMessage(`{"type":"content_block_stop","index":2}`)
-	result := ExtractContentBlockStop(eventRaw)
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if result.Index != 2 {
-		t.Errorf("expected index=2, got %d", result.Index)
-	}
-}
-
 func TestExtractAssistantContentFromMsg(t *testing.T) {
 	msg := &Message{
 		Role: "assistant",
@@ -487,11 +440,10 @@ func TestStreamProcessor_Error(t *testing.T) {
 // --- Helper functions to create test events ---
 
 func makeStreamEventDelta(text string) StreamEvent {
-	raw := json.RawMessage(fmt.Sprintf(
-		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"%s"}}`,
-		jsonEscape(text),
-	))
-	return StreamEvent{Type: "stream_event", Event: raw}
+	return StreamEvent{
+		Type:  "stream_event",
+		Delta: &agent.Delta{Kind: agent.DeltaText, Text: text},
+	}
 }
 
 func makeAssistantEvent(content string) StreamEvent {
@@ -509,33 +461,22 @@ func makeResultEvent(content string) StreamEvent {
 }
 
 func makeToolStartStreamEvent(index int, id string, name string) StreamEvent {
-	raw := json.RawMessage(fmt.Sprintf(
-		`{"type":"content_block_start","index":%d,"content_block":{"type":"tool_use","id":"%s","name":"%s"}}`,
-		index, id, name,
-	))
-	return StreamEvent{Type: "stream_event", Event: raw}
+	return StreamEvent{
+		Type:  "stream_event",
+		Delta: &agent.Delta{Kind: agent.DeltaToolStart, Index: index, ToolID: id, ToolName: name},
+	}
 }
 
 func makeToolInputDeltaStreamEvent(index int, partialJSON string) StreamEvent {
-	// partial_json field must be a properly escaped JSON string within the outer JSON
-	escaped, _ := json.Marshal(partialJSON)
-	raw := json.RawMessage(fmt.Sprintf(
-		`{"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":%s}}`,
-		index, string(escaped),
-	))
-	return StreamEvent{Type: "stream_event", Event: raw}
+	return StreamEvent{
+		Type:  "stream_event",
+		Delta: &agent.Delta{Kind: agent.DeltaToolInput, Index: index, ToolInput: partialJSON},
+	}
 }
 
 func makeContentBlockStopStreamEvent(index int) StreamEvent {
-	raw := json.RawMessage(fmt.Sprintf(
-		`{"type":"content_block_stop","index":%d}`,
-		index,
-	))
-	return StreamEvent{Type: "stream_event", Event: raw}
-}
-
-func jsonEscape(s string) string {
-	b, _ := json.Marshal(s)
-	// json.Marshal wraps in quotes, strip them
-	return string(b[1:len(b)-1])
+	return StreamEvent{
+		Type:  "stream_event",
+		Delta: &agent.Delta{Kind: agent.DeltaToolEnd, Index: index},
+	}
 }
