@@ -355,6 +355,19 @@ pi.on("tool_call", async (event, ctx) => {
 | `sourceCheck` 工具开关 | 关 | 与 `--tools` 白名单保持一致 |
 | `fetchContent.deny` / `.allow` | 按运维需求 | 可选的域名级收紧 |
 
+**该文件读哪里(`pi-web-access/utils.ts:10-26` 的 `getWebSearchConfigDir()`)——必须显式钉死:**
+
+1. `PI_CODING_AGENT_DIR` env → 直接用该目录(**最高优先**)
+2. 否则 `XDG_CONFIG_HOME/pi/web-search.json`(存在则用) → 否则 legacy `~/.pi/web-search.json` → 否则 `$XDG_CONFIG_HOME/pi/`
+3. 否则默认 `~/.pi/agent/web-search.json`
+
+本设计已定下 `PI_CODING_AGENT_DIR` **保持全局共享**(服务端 provider 凭据不按用户拆),而它恰好也是 `web-search.json` 的最高优先覆盖点——两者一致。因此:
+
+- **Go 侧 `Env()` 必须显式传 `PI_CODING_AGENT_DIR`**(而不是依赖默认值),使安全配置位置确定化。否则在 systemd / docker 部署下会落到服务账号的 home 或受 `XDG_CONFIG_HOME` 影响,容易静默读到错文件→安全键全部失效(且 `loadSsrfConfig()` 对缺失文件是返回默认值,不报错)
+- 因为全局共享,**所有用户共用一份 web 安全策略**,无法按用户放宽——这是想要的行为
+- `getWebSearchConfigDir()` 内部有模块级缓存(`cachedWebSearchConfigDir`),每进程只解析一次。我们是每 session 一个新进程,不存在陈旧缓存问题
+- `scripts/web-search.json.sample` 的部署目标路径因此是 `$PI_CODING_AGENT_DIR/web-search.json`
+
 #### 其他要点
 
 - `ALLOWED_DIR` 从 `process.env` 读取,由 Go 侧 `Env()` 注入(与现有 `BuildSecureEnv` 的 realpath 解析行为一致,否则 macOS `/tmp` → `/private/tmp` 会全量误拒)
@@ -535,10 +548,10 @@ cd backend && go build ./... && go vet ./... && go test ./...
 
 - `backend/agent/agent.go` — `Backend`、`Delta`、`StreamEvent`、`ImageData`、`Protocol`
 - `backend/agent/claude.go` — `ClaudeProtocol`(现有旗标/编码/解析逻辑搬移)
-- `backend/agent/pi.go` — `PiProtocol`;`Env()` 除 `ALLOWED_DIR` 外还注入 `PI_WEB_TOOLS`(与 `--tools` 同源)
+- `backend/agent/pi.go` — `PiProtocol`;`Env()` 除 `ALLOWED_DIR` 外还注入 `PI_WEB_TOOLS`(与 `--tools` 同源)与 **`PI_CODING_AGENT_DIR`(显式钉死,使 `web-search.json` 位置确定)**
 - `backend/agent/resolver.go` — `Init` / `Current` / `Invalidate` + TTL 缓存
 - `scripts/pi-path-validator.ts` — 沙箱 extension(路径校验 + `fetch_content` URL 校验)
-- `scripts/web-search.json.sample` — 部署模板,固化 `allowBrowserCookies:false`、`ssrf.allowRanges:[]`、`ssrf.trustEnvProxy:false`、`sourceCheck` 关;由配置一致性测试断言
+- `scripts/web-search.json.sample` — 部署模板(部署到 `$PI_CODING_AGENT_DIR/web-search.json`),固化 `allowBrowserCookies:false`、`ssrf.allowRanges:[]`、`ssrf.trustEnvProxy:false`、`sourceCheck` 关;由配置一致性测试断言
 - `backend/agent/*_test.go` — 见「测试」
 
 **修改**
