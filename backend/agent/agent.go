@@ -42,8 +42,8 @@ type Delta struct {
 
 // ImageData 是一张待发送的图片。字段与原 claude.ImageData 一致。
 type ImageData struct {
-	MediaType  string
-	Base64Data string
+	MediaType  string // e.g., "image/png"
+	Base64Data string // base64 encoded image data (without prefix)
 }
 
 // StreamEvent 是从 CLI stdout 解析出的单条归一化事件。
