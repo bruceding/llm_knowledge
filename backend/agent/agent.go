@@ -63,11 +63,6 @@ type StreamEvent struct {
 	Message   *Message `json:"message,omitempty"`    // Message for type "assistant"
 	Delta     *Delta   `json:"delta,omitempty"`
 
-	// Event 是 Claude 专有的 stream_event 原始载荷。它在本重构中是
-	// **过渡字段**:Task 1-4 期间与 Delta 并存以保证每个任务收尾全绿,
-	// Task 5 将其连同消费方一并删除。新增代码不得读取它。
-	Event json.RawMessage `json:"event,omitempty"`
-
 	ResultIsError bool `json:"resultIsError,omitempty"` // Claude 的 result.is_error;上层据此把事件转成 error
 
 	ResultMessageID   uint   `json:"resultMessageId,omitempty"`   // User message ID for saving assistant reply (set in result)
