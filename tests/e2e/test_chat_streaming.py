@@ -20,7 +20,10 @@ NEW_CONV_BTN_SEL = f"{CHAT_SIDEBAR_SEL} button.bg-blue-500"
 CONV_LIST_ITEM_SEL = f"{CHAT_SIDEBAR_SEL} ul.space-y-1 li button"
 STOP_BTN_SEL = "button.bg-red-500"
 THINKING_SPINNER_SEL = ".animate-spin"
-USER_MSG_SEL = ".bg-blue-500"
+# 用户消息气泡: 行容器带 justify-end(仅 user 行有),气泡是 bg-blue-500 text-white。
+# 不能只用 ".bg-blue-500" —— 侧栏收件箱计数徽章(SidebarContent.tsx)也是这个类,
+# 且在 DOM 里排在聊天区之前,.first 会抓到徽章而不是消息。
+USER_MSG_SEL = "div.justify-end > div.bg-blue-500.text-white"
 
 
 def send_message(page: Page, message: str):
@@ -28,6 +31,8 @@ def send_message(page: Page, message: str):
     ci = page.locator(CHAT_INPUT_SEL).first
     expect(ci).to_be_visible(timeout=5000)
     ci.fill(message)
+    # fill 可能被并发重渲染吞掉(受控输入框),不确认就 press 会变成静默失败
+    expect(ci).to_have_value(message, timeout=5000)
     ci.press("Enter")
 
 
@@ -47,6 +52,23 @@ def navigate_router(page: Page, conv_id: int):
     """Client-side navigation (simulate sidebar click without full page reload)."""
     js = "() => { window.history.pushState({}, '', '/chat/" + str(conv_id) + "'); window.dispatchEvent(new PopStateEvent('popstate', {state: window.history.state})); }"
     page.evaluate(js)
+
+
+def switch_conversation(page: Page, conv_id: int, timeout: int = 20000):
+    """客户端切换会话,并等前端真正落定后再返回。
+
+    navigate_router 只改 URL。ChatView 随后异步拉取该会话的历史与后端状态,
+    回调里会 setMessages(loadedMessages) 并重置 streaming 状态;在这个窗口里发送
+    消息,刚追加的气泡会被覆盖、消息被静默丢弃。SSE 连接是在 currentConversationId
+    更新之后的 effect 里建立的,因此「目标会话的 /api/query/stream 请求已发出」
+    可以作为切换落定的信号。
+    """
+    with page.expect_request(
+        lambda r: f"/api/query/stream?conversationId={conv_id}" in r.url,
+        timeout=timeout,
+    ):
+        navigate_router(page, conv_id)
+    page.wait_for_selector(CHAT_INPUT_SEL, timeout=timeout)
 
 
 def create_conversation_api(page: Page, title: str) -> int:
@@ -144,17 +166,15 @@ class TestChatSwitching:
         """Switching away from a streaming conversation works."""
         page, conv_a, conv_b = setup_conversations
 
-        # Navigate to B (client-side)
-        navigate_router(page, conv_b)
-        page.wait_for_selector(CHAT_INPUT_SEL, timeout=10000)
+        # Navigate to B (client-side) and wait for the switch to land
+        switch_conversation(page, conv_b)
 
         # Start streaming in B
         send_message(page, "Explain ML algorithms")
         wait_streaming_start(page)
 
         # Switch to A while B streaming
-        navigate_router(page, conv_a)
-        page.wait_for_timeout(5000)
+        switch_conversation(page, conv_a)
 
         ci = page.locator(CHAT_INPUT_SEL).first
         # A should have input enabled (not stuck from B's streaming)
@@ -168,23 +188,20 @@ class TestChatSwitching:
         """
         page, conv_a, conv_b = setup_conversations
 
-        # Navigate to B (client-side)
-        navigate_router(page, conv_b)
-        page.wait_for_selector(CHAT_INPUT_SEL, timeout=10000)
+        # Navigate to B (client-side) and wait for the switch to land
+        switch_conversation(page, conv_b)
 
         # Start streaming in B
         send_message(page, "Explain ML algorithms in detail")
         wait_streaming_start(page)
 
         # Switch to A while B streaming
-        navigate_router(page, conv_a)
-        page.wait_for_timeout(5000)
+        switch_conversation(page, conv_a)
         ci = page.locator(CHAT_INPUT_SEL).first
         expect(ci).to_be_enabled(timeout=5000)
 
         # SWITCH BACK to B (the KEY scenario)
-        navigate_router(page, conv_b)
-        page.wait_for_timeout(5000)
+        switch_conversation(page, conv_b)
         ci = page.locator(CHAT_INPUT_SEL).first
 
         # B should restore streaming state (disabled while still streaming)
@@ -203,8 +220,7 @@ class TestChatSwitching:
         page, conv_a, conv_b = setup_conversations
 
         # Navigate to B and complete it
-        navigate_router(page, conv_b)
-        page.wait_for_selector(CHAT_INPUT_SEL, timeout=10000)
+        switch_conversation(page, conv_b)
         send_message(page, "Hello from B")
         wait_streaming_complete(page)
 
