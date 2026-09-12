@@ -35,6 +35,8 @@
 - 不改前端聊天组件、不改 `SSEEvent` 线格式
 - 不采用 pi 的 `steer` / `follow_up` / `compact` / `fork` / `executeBash` 等额外能力
 - 不做 pi 侧 token / cost 统计(`getSessionStats`)
+- 不移植 `path-validator.py` 的 IP/DNS 级 SSRF 校验(改用 `pi-web-access` 自带的更强实现)
+- 不给 `source_check` 工具,不开启 `allowBrowserCookies`,不启用 `fetch_content` 的本地视频能力
 - 不修复 `backend/dependencies` 的孤儿状态(前端至今未消费 `/api/dependencies/status`),仅复用其探测手法
 - 不动 `CLAUDE.md`
 
@@ -256,7 +258,7 @@ type Protocol interface {
 ```
 pi --mode rpc
    --tools <allowlist>
-   --no-extensions --no-skills --no-prompt-templates --no-context-files
+   --no-skills --no-prompt-templates --no-context-files
    -e <repo>/scripts/pi-path-validator.ts
    -na
    --session-dir <userDir>/.pi-sessions
@@ -272,11 +274,11 @@ pi --mode rpc
 
 | 旗标 | 理由 |
 |---|---|
-| `--tools <list>` | 白名单。三档,与现有 Claude 侧逐一对应:文档问答 `read`(现 `BuildSecureArgs([]string{"Read"})`);自由问答 `read,find,grep,ls`(现 `[]string{"Read","Glob","Grep","LS"}`);ingest 的 `Send`/`SendWithTools` 用 `read,write,edit`(现 `[]string{"Read","Write","Edit"}`),`SendSimpleWithRead` 用 `read` |
-| `--no-extensions` | 关掉扩展发现,杜绝第三方扩展引入 `web_search`/`fetch_content` 等工具(SSRF 面) |
+| `--tools <list>` | 白名单。四档:文档问答 `read` + web 工具(现 `BuildSecureArgs([]string{"Read"})`);自由问答 `read,find,grep,ls` + web 工具(现 `[]string{"Read","Glob","Grep","LS"}`);ingest 的 `Send`/`SendWithTools` 用 `read,write,edit`(**不给** web 工具,现 `[]string{"Read","Write","Edit"}`),`SendSimpleWithRead` 用 `read` |
+| **不用** `--no-extensions` | 联网能力来自 `pi-web-access` 包(见下小节),关掉扩展发现会连带关掉它。而用 `-e npm:pi-web-access` 显式加载也不可行:`docs/packages.md:45` 明写该形式 "installs to a temporary directory for the current run only",在「每 session 一个子进程」模型下等于每次开会话都重装。因此改为依赖全局已装的包 + `--tools` 白名单收口 |
 | `--no-skills` / `--no-prompt-templates` | 同上,缩小可被 `/命令` 触发的面 |
 | `--no-context-files` | 阻止 `userDir` 内的 `AGENTS.md`/`CLAUDE.md` 注入系统提示(用户上传内容不得影响指令) |
-| `-e <validator.ts>` | 与 `--no-extensions` 组合即「只加载这一个扩展」,pi 文档明确支持该组合 |
+| `-e <validator.ts>` | 本地路径,不触发安装;与 `--tools` 共同构成「只有白名单内的工具能被调用,且每次调用都过沙箱」 |
 | `-na` / `--no-approve` | 忽略项目本地 settings 与扩展,避免 `userDir` 内的 `.pi/` 被信任 |
 | `--session-dir` | 每用户会话存储隔离,避免跨用户串号 |
 | **不需要** `--dangerously-skip-permissions` | pi 内置工具无权限询问,该危险旗标可整体去掉 |
@@ -286,25 +288,77 @@ pi --mode rpc
 
 `PI_CODING_AGENT_DIR`(auth/models 配置目录)**保持全局共享**,不做每用户隔离——服务端 provider 凭据不应按用户拆分。
 
+### 联网能力:`pi-web-access`
+
+doc chat 需要联网查证。联网能力**不是 pi 内置**(pi 内置工具仅 `read/bash/powershell/edit/write/grep/find/ls`,其 `dist` 里搜不到 `web_search`),而是来自 npm 包 **`pi-web-access`**(当前 v0.29.0),通过 `~/.pi/agent/settings.json` 的 `packages: ["npm:pi-web-access"]` 安装。
+
+它注册 4 个工具,各自可单独开关(`isToolEnabled(initConfig, "webSearch"|"sourceCheck"|"fetchContent"|"getSearchContent")`):
+
+| 工具 | 默认名 | 本设计 |
+|---|---|---|
+| webSearch | `web_search` | ✅ 给 |
+| fetchContent | `fetch_content` | ✅ 给 |
+| getSearchContent | `get_search_content` | ✅ 给——前两者的配套(分页取回已抓内容),不给则大结果无法阅读 |
+| sourceCheck | `source_check` | ❌ 不给——研究场景专用,doc chat 用不上;少一个需校验 URL 的入口 |
+
+**工具名可被 `web-search.json` 的 `toolNames` 改写**,所以不能在各处硬编码字面量。单一事实来源:Go 侧从同一份配置解析出名称,一路用于 `--tools` 白名单,另一路经 env(`PI_WEB_TOOLS=web_search,fetch_content,get_search_content`)传给沙箱 extension。两边同源,避免漂移。
+
+**残留风险(必须写入部署文档):** `--tools` 只能限制工具**调用**,拦不住扩展**加载期**的任意代码。`docs/packages.md:20` 原文警告:*"Pi packages run with full system access. Extensions execute arbitrary code, and skills can instruct the model to perform any action including running executables."* 缓解手段:pin `pi-web-access` 版本、用 `pi config` 关掉其他包扩展、运维侧管控 `~/.pi/agent/settings.json` 的 `packages` 列表。
+
 ### 沙箱 extension:`scripts/pi-path-validator.ts`
 
-与 `path-validator.py` 语义 1:1,改为 pi extension:
+职责比 `path-validator.py` **多一项**:除路径沙箱外,还必须校验 `fetch_content` 的 URL。
 
 ```ts
 pi.on("tool_call", async (event, ctx) => {
   // 1. 白名单外的工具一律 block(等价 ALWAYS_DENIED_TOOLS 兜底)
-  // 2. 从 event.args 按工具名提取路径(read/grep/find/ls → path;write/edit → path)
-  // 3. realpath 解析后校验:必须落在 ALLOWED_DIR 内(用分隔符边界比较,防 /u/1 匹配 /u/10)
-  // 4. 命中敏感路径正则则 block(/etc/shadow、~/.ssh、~/.aws、Keychains 等,含 macOS /private 前缀)
-  // 5. ALLOWED_DIR 未设置 → 全部 block(fail-closed)
+  //    白名单 = 文件工具 ∪ env PI_WEB_TOOLS 传来的 web 工具名
+  // 2. 文件工具(read/grep/find/ls/write/edit):提取路径 → realpath →
+  //    必须落在 ALLOWED_DIR 内(分隔符边界比较,防 /u/1 匹配 /u/10);
+  //    命中敏感路径正则则 block(/etc/shadow、~/.ssh、~/.aws、Keychains 等,含 macOS /private 前缀)
+  // 3. fetch_content:校验 url 与 urls[] 全部元素——仅允许 http:/https:,
+  //    拒绝本地路径(绝对/相对)与 file:/data:/gopher:/ftp: 等一切其他 scheme
+  // 4. ALLOWED_DIR 未设置 → 文件工具全部 block(fail-closed)
   return { block: true, reason: "Access denied: ..." };
 });
 ```
 
-要点:
+#### 为何必须管 `fetch_content` 的 URL
+
+这是本设计**新增的关键控制**,`path-validator.py` 里没有对应物。该工具描述明写 *"Supports YouTube transcripts, GitHub repositories, PDFs, and **local videos**"*,而实现里:
+
+- `video-extract.ts:337` — `readFile(info.absolutePath)`,**任意绝对路径读取**
+- `video-extract.ts:213` — `execFileSync("ffmpeg", [...])`,**带该路径 spawn 进程**
+
+这是一条**绕过 `ALLOWED_DIR` 沙箱**的本地文件读取 + 进程执行向量。`--tools` 白名单拦不住它——白名单只决定工具能不能被调,不校验参数。且 pi-web-access **没有「只关本地视频」的开关**(`isToolEnabled` 是整工具粒度,`video.maxSizeMB` 仅是大小上限),所以只能在我们自己的 hook 里堵。拒绝本地路径后,`timestamp`/`frames` 等视频参数也就够不着本地文件了。
+
+#### SSRF:不移植,改为依赖并配置 pi-web-access 自带的防护
+
+理由**不是**「无联网工具所以不需要」——联网工具确实存在。真实理由是 `pi-web-access/ssrf-protection.ts`(530 行)**比 `path-validator.py` 更严**:
+
+| 能力 | pi-web-access | path-validator.py |
+|---|---|---|
+| 默认策略 | `assertPublicAddress` fail-closed;`loadSsrfConfig()` 无配置时返回 `{allowRanges:[], trustEnvProxy:false}` | fail-closed |
+| 重定向跟随 | ✅ 重定向目标**永不继承** `allowLoopback`(源码注释明确) | ❌ 无 |
+| DNS rebinding | 每次 fetch 前校验 | ❌ 自己承认 "can still be raced" |
+| 域名策略 | `DomainPolicy{allow,deny}`,deny 先判 | ❌ 无 |
+
+再叠一层我们自己的 IP/DNS 校验只会重复且互相遮蔽。因此**分工明确**:我们的 hook 只管「是不是远端 URL」,pi-web-access 管「远端 URL 是不是指向内网」。
+
+#### 部署侧必须固化的 `web-search.json` 键
+
+| 键 | 值 | 理由 |
+|---|---|---|
+| `allowBrowserCookies` | `false` | **必须钉死**。`chrome-cookies.ts:179-181` 会将浏览器 cookie SQLite 库 `copyFileSync` 到临时目录再读(含 `-wal`/`-shm` sidecar),配合 `rookie-cookies-darwin-arm64` 原生依赖解密。默认已关(`chrome-cookies.ts:116`),但多租户服务器上一旦开启,任何用户的 doc chat 都能外泄运维者本人的浏览器 cookie |
+| `ssrf.allowRanges` | `[]` | 虽是默认值,显式写出防误配 |
+| `ssrf.trustEnvProxy` | `false` | 同上 |
+| `sourceCheck` 工具开关 | 关 | 与 `--tools` 白名单保持一致 |
+| `fetchContent.deny` / `.allow` | 按运维需求 | 可选的域名级收紧 |
+
+#### 其他要点
 
 - `ALLOWED_DIR` 从 `process.env` 读取,由 Go 侧 `Env()` 注入(与现有 `BuildSecureEnv` 的 realpath 解析行为一致,否则 macOS `/tmp` → `/private/tmp` 会全量误拒)
-- WebFetch SSRF 校验**不移植**:`--no-extensions` 后 pi 侧不存在任何联网工具,该攻击面自然消失。这一点必须在代码注释与本文档中写明,避免后人误以为是遗漏
+- web 工具名从 `PI_WEB_TOOLS` env 读取,**不硬编码**(可被 `toolNames` 配置改写)
 - 敏感路径正则表与 `path-validator.py` 保持**逐条同步**,由跨语言同步测试守护(见「测试」)
 
 ### Settings 与生效时机
@@ -392,8 +446,9 @@ spawn pi --mode rpc
 - **Node.js 成为硬依赖**:`pi` 是 `#!/usr/bin/env node` 脚本。版本下限取 pi-web 的实测约束:**Node >= 22.19.0**,**pi >= 0.85.1**(pi-web 的 peerDependency 为 `>=0.84.0 <0.85.0 || >=0.85.1`,精确排除 0.85.0)
 - **provider 凭据**:服务器需有 `~/.pi/agent/auth.json` 或对应 API key 环境变量,替代原先的 `claude login` 态
 - **进程模型不变**:仍是每 session 一个子进程,内存特征与现状等价
-- **`start.sh`**:补 `command -v pi` 检查与 `/opt/homebrew/bin` 到 PATH(Apple Silicon 上 npm 全局 bin 在此,而脚本目前只补了 `/usr/local/bin`)
-- **README**:Prerequisites 增加 pi 与 Node 版本要求,并说明二者按 Settings 开关择一生效
+- **`pi-web-access` 成为 pi 路径的必需包**:doc chat 的联网能力来自它,不是 pi 内置。版本应 pin(当前 v0.29.0)。依赖树含 `undici`、`unpdf`、`linkedom`、`turndown`、`defuddle`、`@mozilla/readability`;全局 npm 目录里还有 `playwright-core`/`patchright-core`/`betterwright`(curator 浏览器用)。启动内存与磁盘占用比「纯 pi」重不少
+- **`start.sh`**:补 `command -v pi` 检查与 `/opt/homebrew/bin` 到 PATH(Apple Silicon 上 npm 全局 bin 在此,而脚本目前只补了 `/usr/local/bin`);并检查 `pi-web-access` 是否已装
+- **README**:Prerequisites 增加 pi 与 Node 版本要求、`pi-web-access` 包,以及 `web-search.json` 必须固化的安全键(尤其 `allowBrowserCookies: false`);说明 claude / pi 按 Settings 开关择一生效
 
 ### 管理员权限模型与锁死路径
 
@@ -434,7 +489,7 @@ cd backend && go build ./... && go vet ./... && go test ./...
 
 - `agent/claude_protocol_test.go` — 现有 `stream_event`/`assistant`/`result`/`system.init` 解析行为迁移后逐条等价(用例从 `stream_test.go` 的 `TestExtract*` 平移)
 - `agent/pi_protocol_test.go` — 表驱动:`session` 头行、`get_state` 响应取 sessionId、`message_update` 四种 `assistantMessageEvent`、`message_end`、`agent_end`、`agent_settled`、`response`+`success:false`、`extension_error`、畸形行跳过、行尾 `\r` 剥除
-- `agent/pi_args_test.go` — 硬化旗标齐全(`--no-extensions`/`--no-skills`/`--no-prompt-templates`/`--no-context-files`/`-na`/`-e`/`--session-dir`)、工具名映射正确、**断言不含** `--dangerously-skip-permissions` 与 `--verbose`、resume 分支、ingest 的 `read,write,edit` 白名单
+- `agent/pi_args_test.go` — 硬化旗标齐全(`--no-skills`/`--no-prompt-templates`/`--no-context-files`/`-na`/`-e`/`--session-dir`);**断言不含** `--no-extensions`(否则 `pi-web-access` 加载不了)、`--dangerously-skip-permissions`、`--verbose`;工具名映射正确;四档白名单各自正确(两个 chat 档**含** web 工具、两个 ingest 档**不含**);web 工具名取自配置而非硬编码字面量;resume 分支
 - `agent/pi_message_test.go` — `EncodeUserMessage` 纯文本与带图(`images:[{type:"image",data,mimeType}]`,注意与 Claude 的 `content:[{type:image,source:{media_type,data}}]` 不同)、`EncodeInterrupt` 产出 `{"type":"abort"}`
 - `agent/resolver_test.go` — TTL 缓存命中、`Invalidate()` 后立即重读、未知值/空值回退 `claude`
 - `agent/probe_test.go` — `Probe` 对不存在的二进制返回错误(参照既有 `TestSendSimple_NonExistentBinary`)
@@ -443,7 +498,13 @@ cd backend && go build ./... && go vet ./... && go test ./...
 
 `security_test.go` 已有 `TestDangerousToolsCrossLanguageSync`,校验 Go 的 `DangerousDisallowedTools` 与 Python 的 `ALWAYS_DENIED_TOOLS` 一致。加入 TS extension 后变为**三种语言**,该测试需扩展为同时解析 `scripts/pi-path-validator.ts` 的拒绝集合与敏感路径正则表,任一漂移即失败。
 
-同文件既有 `TestPathValidator_WebFetchSSRF` 以 shell 方式驱动 Python 校验器;为 TS extension 补一组等价的**路径边界**用例(不含 SSRF,理由见沙箱小节):允许 `ALLOWED_DIR` 内、拒绝目录外、拒绝 `/data/users/1` 前缀碰撞 `/data/users/10`、拒绝敏感路径、`ALLOWED_DIR` 未设置时全拒。
+同文件既有 `TestPathValidator_WebFetchSSRF` 以 shell 方式驱动 Python 校验器;为 TS extension 补两组用例:
+
+**路径边界**(与 Python 版等价):允许 `ALLOWED_DIR` 内、拒绝目录外、拒绝 `/data/users/1` 前缀碰撞 `/data/users/10`、拒绝敏感路径、`ALLOWED_DIR` 未设置时全拒。
+
+**`fetch_content` URL 校验**(Python 版无对应物,为新增向量新增):接受 `http:`/`https:`;拒绝绝对本地路径(`/etc/passwd`)、相对路径(`../../x.mp4`)、`file:`、`data:`、`gopher:`、`ftp:`;`urls[]` 中**任一**元素非法即整体 block;空 `url` 与空 `urls` 的处理与 Python 版 `validate_webfetch_url` 一致(拒绝)。
+
+注意:**不**为 TS extension 写 IP/DNS 级 SSRF 用例——那是 `pi-web-access/ssrf-protection.ts` 的职责(理由见沙箱小节)。但要加一条**配置一致性测试**:断言部署用的 `web-search.json` 样例里 `allowBrowserCookies` 为 `false`、`ssrf.allowRanges` 为空、`sourceCheck` 已关,防止运维模板静默漂移。
 
 ### API 测试
 
@@ -455,6 +516,7 @@ cd backend && go build ./... && go vet ./... && go test ./...
 ### 集成 / e2e
 
 - Go 集成测试:spawn 真实 `pi --mode rpc`,发 prompt 要求读取 `ALLOWED_DIR` 外文件,断言工具调用被 block;`pi` 不在 PATH 时 `t.Skip`
+- **本地文件向量集成测试**(本次新增控制的核心验证;`pi-web-access` 未装时 `t.Skip`):发 prompt 诱导 `fetch_content` 取 `ALLOWED_DIR` 外的本地路径(绝对路径视频 / `/etc/passwd`),断言被 hook block,且 `video-extract.ts` 的 `readFile(absolutePath)` 与 `execFileSync("ffmpeg", ...)` 未被触达
 - 既有 Playwright e2e 作为端到端回归:`tests/e2e/test_chat_streaming.py`、`test_document_chat_panel.py`、`test_mobile_doc_translate.py`
 - 手工验收(两种后端各跑一遍):文档问答多轮 + SSE 断线重连、自由问答带图片、中途 interrupt、ingest 摘要与分节
 - **resume 往返验收**(两种后端各跑一遍,验证本节声称的 DB 复用):第一轮对话后查 DB 确认 `chat_session_id` / `session_id` 已写入**该后端自己的** ID 格式;重启进程或等会话被 30s 清理后再次提问,确认走 `--resume` / `--session` 且上下文续接成功(而非静默开新会话)
@@ -463,7 +525,7 @@ cd backend && go build ./... && go vet ./... && go test ./...
 
 1. `LLMBackend=claude` 时,`go test ./...` 全绿且行为与改造前逐条等价
 2. `LLMBackend=pi` 时,上述手工验收全部通过
-3. pi 路径下沙箱强度不低于 Python 版(fail-closed + 边界 + 敏感路径三项用例全过)
+3. pi 路径下沙箱强度不低于 Python 版(fail-closed + 边界 + 敏感路径三项用例全过),**且 `fetch_content` 的本地文件向量被堵住**(URL 校验用例 + 集成测试全过)
 4. 前端聊天代码 diff 为空
 5. Settings 切换到不可用的 pi 时被 400 拦住
 
@@ -473,9 +535,10 @@ cd backend && go build ./... && go vet ./... && go test ./...
 
 - `backend/agent/agent.go` — `Backend`、`Delta`、`StreamEvent`、`ImageData`、`Protocol`
 - `backend/agent/claude.go` — `ClaudeProtocol`(现有旗标/编码/解析逻辑搬移)
-- `backend/agent/pi.go` — `PiProtocol`
+- `backend/agent/pi.go` — `PiProtocol`;`Env()` 除 `ALLOWED_DIR` 外还注入 `PI_WEB_TOOLS`(与 `--tools` 同源)
 - `backend/agent/resolver.go` — `Init` / `Current` / `Invalidate` + TTL 缓存
-- `scripts/pi-path-validator.ts` — 沙箱 extension
+- `scripts/pi-path-validator.ts` — 沙箱 extension(路径校验 + `fetch_content` URL 校验)
+- `scripts/web-search.json.sample` — 部署模板,固化 `allowBrowserCookies:false`、`ssrf.allowRanges:[]`、`ssrf.trustEnvProxy:false`、`sourceCheck` 关;由配置一致性测试断言
 - `backend/agent/*_test.go` — 见「测试」
 
 **修改**
@@ -485,7 +548,7 @@ cd backend && go build ./... && go vet ./... && go test ./...
 - `backend/claude/stream.go` — `Extract*` 系列改为消费 `Delta`;`SSEEvent` 与前端契约不变
 - `backend/claude/query_pool.go` — 两个 Start 函数改用 `agent.Current()` 与 `Protocol`
 - `backend/claude/security.go` — 保留 claude 专用;`DangerousDisallowedTools` 不动
-- `backend/config/config.go` — 新增 `PiBin`
+- `backend/config/config.go` — 新增 `PiBin`;新增 web 工具名解析(读 `web-search.json` 的 `toolNames`,缺省用默认名),作为 `--tools` 与 `PI_WEB_TOOLS` 的单一事实来源
 - `backend/db/models.go` — `GlobalSettings` 新增 `LLMBackend`;`Document.ChatSessionID`(:22) 与 `Conversation.SessionID`(:48) 的注释改为后端中立(仅注释,不动字段名与 JSON tag)
 - `backend/api/admin_settings.go` — 响应/输入/校验/探测/`Invalidate()`
 - `backend/main.go` — 调 `agent.Init(cfg.ClaudeBin, cfg.PiBin)`;移除 11 处 `ClaudeBin` 注入
