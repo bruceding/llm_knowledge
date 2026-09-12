@@ -28,7 +28,7 @@ func TestParseLine_TextDelta(t *testing.T) {
 
 func TestParseLine_ThinkingDeltaIgnored(t *testing.T) {
 	p := &ClaudeProtocol{}
-	evt, ok := p.ParseLine(wrap(t, `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}`))
+	evt, ok := p.ParseLine(wrap(t, `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm","text":"inner thought"}}`))
 	if !ok {
 		t.Fatal("expected ok (line is parseable, just carries no delta)")
 	}
