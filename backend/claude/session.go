@@ -3,7 +3,6 @@ package claude
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"llm-knowledge/agent"
@@ -19,17 +18,13 @@ type ImageData = agent.ImageData
 
 // InteractiveSession manages a bidirectional stream-json session with Claude CLI
 type InteractiveSession struct {
-	SessionID     string
-	OwnerUserID   uint // user who created this session (for authorization)
-	OwnerDocID    uint // document ID this session is for (for authorization)
-	cmd           *exec.Cmd
-	stdin         io.Writer
-	stdoutScanner *bufio.Scanner
-	// proto 是本会话的 CLI 协议实现。
-	// 过渡类型:Task 3 只用到 ParseLine,而 *ClaudeProtocol 要等 Task 4 补齐
-	// EncodeUserMessage/EncodeInterrupt 才满足 agent.Protocol;Task 4 会把这里
-	// 放宽为 agent.Protocol。
-	proto            *agent.ClaudeProtocol
+	SessionID        string
+	OwnerUserID      uint // user who created this session (for authorization)
+	OwnerDocID       uint // document ID this session is for (for authorization)
+	cmd              *exec.Cmd
+	stdin            io.Writer
+	stdoutScanner    *bufio.Scanner
+	proto            agent.Protocol     // 本会话的 CLI 协议实现
 	eventCh          chan StreamEvent   // main event channel (closed by readEvents)
 	streamChs        []chan StreamEvent // subscriber channels for fan-out
 	streamingContent strings.Builder    // accumulated text for SSE reconnect recovery
@@ -177,28 +172,25 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 	}
 	workDir := userDir
 
-	secureArgs, err := BuildSecureArgs([]string{"Read"})
-	if err != nil {
-		return nil, fmt.Errorf("build secure args: %w", err)
-	}
-	args := []string{
-		"--output-format", "stream-json",
-		"--input-format", "stream-json",
-		"--verbose",
-	}
-	args = append(args, secureArgs...)
-
-	resuming := prevSessionID != "" && !strings.HasPrefix(prevSessionID, "local-")
-	if resuming {
-		args = append(args, "--resume", prevSessionID)
-	}
+	proto := agent.NewClaudeProtocol(p.claudeBin, GetSettingsPath())
 
 	// Add system prompt with document context
 	systemPrompt := fmt.Sprintf("用户正在询问文档相关问题。%s 请使用 Read 工具读取相关文件回答。如果文件内容不足以回答，可以使用你自己的知识补充。", docInfo)
-	args = append(args, "--system-prompt", systemPrompt)
+
+	resuming := prevSessionID != "" && !strings.HasPrefix(prevSessionID, "local-")
+	var args []string
+	var err error
+	if resuming {
+		args, err = proto.ResumeArgs(prevSessionID, systemPrompt, []string{"Read"})
+	} else {
+		args, err = proto.SessionArgs(systemPrompt, []string{"Read"})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("build session args: %w", err)
+	}
 
 	// Build environment with ALLOWED_DIR
-	env := BuildSecureEnv(workDir)
+	env := proto.Env(workDir)
 
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := buildCmdWithEnv(ctx, p.claudeBin, args, workDir, env)
@@ -215,7 +207,7 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 		cmd:           cmd,
 		stdin:         stdinPipe,
 		stdoutScanner: newScanner(stdoutPipe),
-		proto:         agent.NewClaudeProtocol(p.claudeBin, GetSettingsPath()),
+		proto:         proto,
 		eventCh:       make(chan StreamEvent, 100),
 		ctx:           ctx,
 		cancel:        cancel,
@@ -312,116 +304,42 @@ func (p *SessionPool) HasSession(sessionId string) bool {
 	return exists
 }
 
-// SendUserMessage writes a message to stdin using json.Marshal for robust encoding.
+// SendUserMessage writes a message to stdin, encoded by the session's Protocol.
 func (s *InteractiveSession) SendUserMessage(content string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	msg := map[string]interface{}{
-		"type": "user",
-		"message": map[string]interface{}{
-			"role":    "user",
-			"content": content,
-		},
-	}
-
-	jsonData, err := json.Marshal(msg)
-	if err != nil {
-		log.Printf("[session] Failed to marshal message: %v", err)
-		return err
-	}
-	jsonData = append(jsonData, '\n')
-
-	_, err = s.stdin.Write(jsonData)
-	if err != nil {
-		log.Printf("[session] Failed to send message: %v", err)
-		return err
-	}
-
-	log.Printf("[session] Sent user message to session %s", s.SessionID)
-	return nil
+	return s.sendEncoded(func() ([]byte, error) {
+		return s.proto.EncodeUserMessage(content, nil)
+	}, "message")
 }
 
 // SendUserMessageWithImages sends a message with images to stdin
 // Format: {"type":"user","message":{"role":"user","content":[...]}}
 func (s *InteractiveSession) SendUserMessageWithImages(content string, images []ImageData) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Build content array
-	msgContent := []map[string]interface{}{}
-
-	// Add images first
-	for _, img := range images {
-		msgContent = append(msgContent, map[string]interface{}{
-			"type": "image",
-			"source": map[string]interface{}{
-				"type":       "base64",
-				"media_type": img.MediaType,
-				"data":       img.Base64Data,
-			},
-		})
-	}
-
-	// Add text
-	if content != "" {
-		msgContent = append(msgContent, map[string]interface{}{
-			"type": "text",
-			"text": content,
-		})
-	}
-
-	msg := map[string]interface{}{
-		"type": "user",
-		"message": map[string]interface{}{
-			"role":    "user",
-			"content": msgContent,
-		},
-	}
-
-	jsonData, err := json.Marshal(msg)
-	if err != nil {
-		log.Printf("[session] Failed to marshal message: %v", err)
-		return err
-	}
-
-	_, err = s.stdin.Write(jsonData)
-	if err != nil {
-		log.Printf("[session] Failed to send message: %v", err)
-		return err
-	}
-	s.stdin.Write([]byte("\n"))
-
-	log.Printf("[session] Sent user message with %d images to session %s", len(images), s.SessionID)
-	return nil
+	return s.sendEncoded(func() ([]byte, error) {
+		return s.proto.EncodeUserMessage(content, images)
+	}, fmt.Sprintf("%d image(s)", len(images)))
 }
 
-// SendInterrupt sends a control_request interrupt using json.Marshal.
+// SendInterrupt sends a control_request interrupt, encoded by the session's Protocol.
 func (s *InteractiveSession) SendInterrupt() error {
+	return s.sendEncoded(s.proto.EncodeInterrupt, "interrupt")
+}
+
+// sendEncoded 在持有 s.mu 的情况下把已编码的行写入 stdin。
+// what 仅用于日志。
+func (s *InteractiveSession) sendEncoded(encode func() ([]byte, error), what string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	msg := map[string]interface{}{
-		"type":       "control_request",
-		"request_id": fmt.Sprintf("%d", time.Now().UnixNano()),
-		"request": map[string]interface{}{
-			"subtype": "interrupt",
-		},
-	}
-
-	jsonData, err := json.Marshal(msg)
+	data, err := encode()
 	if err != nil {
+		log.Printf("[session] Failed to encode %s: %v", what, err)
 		return err
 	}
-	jsonData = append(jsonData, '\n')
-
-	_, err = s.stdin.Write(jsonData)
-	if err != nil {
-		log.Printf("[session] Failed to send interrupt: %v", err)
+	if _, err := s.stdin.Write(data); err != nil {
+		log.Printf("[session] Failed to send %s: %v", what, err)
 		return err
 	}
-
-	log.Printf("[session] Sent interrupt to session %s", s.SessionID)
+	log.Printf("[session] Sent %s to session %s", what, s.SessionID)
 	return nil
 }
 

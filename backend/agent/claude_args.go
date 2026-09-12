@@ -144,3 +144,5 @@ func (p *ClaudeProtocol) OnceArgs(sysPrompt string, tools []string, print bool) 
 // Probe 探测 CLI 是否可用。Claude 后端保持既有行为(不做探测),
 // 因此返回 nil。Plan 2 的 PiProtocol 会实现为 LookPath + `pi --version`。
 func (p *ClaudeProtocol) Probe(ctx context.Context) error { return nil }
+
+var _ Protocol = (*ClaudeProtocol)(nil)
