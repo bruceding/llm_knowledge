@@ -9,6 +9,8 @@ Tests the core chat behaviors including:
 - Stop button + resume conversation
 """
 
+import json
+
 import pytest
 from playwright.sync_api import Page, expect
 
@@ -237,6 +239,52 @@ class TestChatSwitching:
 
         ci = page.locator(CHAT_INPUT_SEL).first
         expect(ci).to_be_enabled(timeout=5000)
+
+    def test_send_blocked_while_switch_in_flight(self, setup_conversations):
+        """切换会话的加载窗口内必须禁止发送。
+
+        窗口内发送的后果(修复前实测): 切换效果 abort 旧 SSE 时不经过 SSE 效果自己的
+        cleanup(cancelled 仍为 false),catch 会把 sseFailedRef 置真,handleSend 的轮询
+        立刻抛错 —— POST /api/query/message 根本不会发出;catch 写的错误气泡随后又被
+        .then 里的 setMessages(loadedMessages) 抹掉,用户只看到消息无声消失。而一旦
+        session_ready 先到,handleSend 用的还是它开头捕获的旧 convId,消息会投进刚
+        离开的那个会话。
+
+        这里把 /api/conversations/<id>/messages 扣住不放行,把原本 ~100ms 的窗口拉成
+        确定性可观测,再断言: 窗口内输入框不可用 -> 放行后自动恢复 -> 落定后发送投递
+        到目标会话(而不是旧会话)。
+        """
+        page, conv_a, conv_b = setup_conversations
+
+        ci = page.locator(CHAT_INPUT_SEL).first
+        # mock 掉发送接口: 只验证投递目标,不真的跑一轮 Claude
+        page.route("**/api/query/message", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body='{"status":"ok","messageId":0,"sessionId":"e2e-mock"}'))
+
+        held = []
+        page.route("**/api/conversations/*/messages", lambda route: held.append(route))
+
+        # 切到 B,但不让它的历史加载完成
+        navigate_router(page, conv_b)
+        expect(ci).to_be_disabled(timeout=3000)
+
+        # 放行加载; 切换落定后输入框必须自动恢复可用
+        for route in held:
+            route.continue_()
+        held.clear()
+        page.unroute("**/api/conversations/*/messages")
+        expect(ci).to_be_enabled(timeout=10000)
+
+        # 落定后发送: 必须投递到 B
+        with page.expect_request(
+            lambda r: "/api/query/message" in r.url, timeout=30000
+        ) as req:
+            send_message(page, "落定后再发送")
+        body = json.loads(req.value.post_data or "{}")
+        assert body.get("conversationId") == conv_b, (
+            f"消息投递到了会话 {body.get('conversationId')},期望目标会话 {conv_b}"
+        )
 
 
 class TestStopAndResume:
