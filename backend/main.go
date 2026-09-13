@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"io/fs"
+	"llm-knowledge/agent"
 	"llm-knowledge/api"
 	"llm-knowledge/browser"
 	"llm-knowledge/claude"
@@ -87,6 +88,25 @@ func main() {
 	if err := claude.InitSecurityConfig(scriptsDir); err != nil {
 		log.Printf("[main] Warning: failed to initialize security config: %v", err)
 	}
+
+	// 初始化 agent 后端解析器:此后所有 spawn 点都经 agent.Current() 取 Protocol,
+	// 而不再各自硬编码构造 ClaudeProtocol。
+	//
+	// **必须在任何会话建立之前调用**:未 Init 时 agent.Current() 会返回明确错误,
+	// StartSession / StartResumedSession 随之失败,整个聊天链路会以
+	// 500 "failed to create session" 挂掉(已实测过这个失败形态)。
+	//
+	// ClaudeSettingsPath 传的是**函数**而不是 claude.GetSettingsPath() 的当前值,
+	// 所以本行与上面 InitSecurityConfig 的先后顺序无关。若传值,则顺序错误时
+	// 路径会被固定成空串 → ClaudeProtocol 不加 --settings → path-validator.py 的
+	// hook 整个不生效 → 服务照常启动、无任何报错,是一条静默 fail-open。
+	// 详见 agent.ResolverOptions.ClaudeSettingsPath 的注释。
+	agent.Init(agent.ResolverOptions{
+		ClaudeBin:          cfg.ClaudeBin,
+		PiBin:              cfg.PiBin,
+		ScriptsDir:         scriptsDir,
+		ClaudeSettingsPath: claude.GetSettingsPath,
+	})
 
 	// Check and install pdf2zh asynchronously
 	pdf2zh.CheckAndInstall(cfg.PDF2ZhVenvDir)
@@ -439,7 +459,6 @@ func main() {
 	// Close all Claude session pools to kill child processes
 	querySessionPool.Close()
 	sessionPool.Close()
-
 
 	// Clean up security settings temp file
 	claude.CleanupSecuritySettings()
