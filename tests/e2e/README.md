@@ -74,9 +74,10 @@ The flow above logs in as **whoever's password you have**, and `conftest.py` sto
 
 ```bash
 python3 tests/e2e/make_auth_state.py     # writes .auth/state-admin.json + state-nonadmin.json
+                                        # and refreshes .auth/state.json when it is missing/expired
 ```
 
-It picks the newest non-expired session per role (`role='admin'` / `role='user'`) and writes a storage-state file for each. Differences from the programmatic login above:
+It picks the newest non-expired session per role (`role='admin'` / `role='user'`) and writes a storage-state file for each. The shared `state.json` that every `authenticated_page` / `mobile_page` fixture loads comes from the `role='user'` session too — which is what makes the DOM-only suites runnable unattended: when that file's token expires, `conftest.py` otherwise deletes it and waits for a human to type credentials **and a captcha**. A `state.json` whose token is still valid is left alone (`KEEP`), so re-running never silently switches which account the suite acts as. Differences from the programmatic login above:
 
 | | programmatic login | `make_auth_state.py` |
 |---|---|---|
