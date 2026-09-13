@@ -3,9 +3,9 @@ package claude
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
+	"llm-knowledge/agent"
 	"log"
 	"os/exec"
 	"strings"
@@ -13,11 +13,8 @@ import (
 	"time"
 )
 
-// ImageData represents an image to send to Claude
-type ImageData struct {
-	MediaType  string // e.g., "image/png"
-	Base64Data string // base64 encoded image data (without prefix)
-}
+// ImageData 已上移到 agent 包,保留别名。
+type ImageData = agent.ImageData
 
 // InteractiveSession manages a bidirectional stream-json session with Claude CLI
 type InteractiveSession struct {
@@ -27,6 +24,7 @@ type InteractiveSession struct {
 	cmd              *exec.Cmd
 	stdin            io.Writer
 	stdoutScanner    *bufio.Scanner
+	proto            agent.Protocol     // 本会话的 CLI 协议实现
 	eventCh          chan StreamEvent   // main event channel (closed by readEvents)
 	streamChs        []chan StreamEvent // subscriber channels for fan-out
 	streamingContent strings.Builder    // accumulated text for SSE reconnect recovery
@@ -112,7 +110,7 @@ func buildCmd(ctx context.Context, claudeBin string, args []string, dataDir stri
 }
 
 // buildCmdWithEnv builds a command with a pre-filtered environment.
-// extraEnv should come from BuildSecureEnv which already filters duplicates.
+// extraEnv 应来自 Protocol.Env,它已过滤重复的 ALLOWED_DIR。
 func buildCmdWithEnv(ctx context.Context, claudeBin string, args []string, dataDir string, extraEnv []string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
 	cmd.Dir = dataDir
@@ -174,28 +172,25 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 	}
 	workDir := userDir
 
-	secureArgs, err := BuildSecureArgs([]string{"Read"})
-	if err != nil {
-		return nil, fmt.Errorf("build secure args: %w", err)
-	}
-	args := []string{
-		"--output-format", "stream-json",
-		"--input-format", "stream-json",
-		"--verbose",
-	}
-	args = append(args, secureArgs...)
-
-	resuming := prevSessionID != "" && !strings.HasPrefix(prevSessionID, "local-")
-	if resuming {
-		args = append(args, "--resume", prevSessionID)
-	}
+	proto := agent.NewClaudeProtocol(p.claudeBin, GetSettingsPath())
 
 	// Add system prompt with document context
 	systemPrompt := fmt.Sprintf("用户正在询问文档相关问题。%s 请使用 Read 工具读取相关文件回答。如果文件内容不足以回答，可以使用你自己的知识补充。", docInfo)
-	args = append(args, "--system-prompt", systemPrompt)
+
+	resuming := prevSessionID != "" && !strings.HasPrefix(prevSessionID, "local-")
+	var args []string
+	var err error
+	if resuming {
+		args, err = proto.ResumeArgs(prevSessionID, systemPrompt, []string{"Read"})
+	} else {
+		args, err = proto.SessionArgs(systemPrompt, []string{"Read"})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("build session args: %w", err)
+	}
 
 	// Build environment with ALLOWED_DIR
-	env := BuildSecureEnv(workDir)
+	env := proto.Env(workDir)
 
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := buildCmdWithEnv(ctx, p.claudeBin, args, workDir, env)
@@ -212,6 +207,7 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 		cmd:           cmd,
 		stdin:         stdinPipe,
 		stdoutScanner: newScanner(stdoutPipe),
+		proto:         proto,
 		eventCh:       make(chan StreamEvent, 100),
 		ctx:           ctx,
 		cancel:        cancel,
@@ -308,116 +304,42 @@ func (p *SessionPool) HasSession(sessionId string) bool {
 	return exists
 }
 
-// SendUserMessage writes a message to stdin using json.Marshal for robust encoding.
+// SendUserMessage writes a message to stdin, encoded by the session's Protocol.
 func (s *InteractiveSession) SendUserMessage(content string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	msg := map[string]interface{}{
-		"type": "user",
-		"message": map[string]interface{}{
-			"role":    "user",
-			"content": content,
-		},
-	}
-
-	jsonData, err := json.Marshal(msg)
-	if err != nil {
-		log.Printf("[session] Failed to marshal message: %v", err)
-		return err
-	}
-	jsonData = append(jsonData, '\n')
-
-	_, err = s.stdin.Write(jsonData)
-	if err != nil {
-		log.Printf("[session] Failed to send message: %v", err)
-		return err
-	}
-
-	log.Printf("[session] Sent user message to session %s", s.SessionID)
-	return nil
+	return s.sendEncoded(func() ([]byte, error) {
+		return s.proto.EncodeUserMessage(content, nil)
+	}, "message")
 }
 
 // SendUserMessageWithImages sends a message with images to stdin
 // Format: {"type":"user","message":{"role":"user","content":[...]}}
 func (s *InteractiveSession) SendUserMessageWithImages(content string, images []ImageData) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Build content array
-	msgContent := []map[string]interface{}{}
-
-	// Add images first
-	for _, img := range images {
-		msgContent = append(msgContent, map[string]interface{}{
-			"type": "image",
-			"source": map[string]interface{}{
-				"type":       "base64",
-				"media_type": img.MediaType,
-				"data":       img.Base64Data,
-			},
-		})
-	}
-
-	// Add text
-	if content != "" {
-		msgContent = append(msgContent, map[string]interface{}{
-			"type": "text",
-			"text": content,
-		})
-	}
-
-	msg := map[string]interface{}{
-		"type": "user",
-		"message": map[string]interface{}{
-			"role":    "user",
-			"content": msgContent,
-		},
-	}
-
-	jsonData, err := json.Marshal(msg)
-	if err != nil {
-		log.Printf("[session] Failed to marshal message: %v", err)
-		return err
-	}
-
-	_, err = s.stdin.Write(jsonData)
-	if err != nil {
-		log.Printf("[session] Failed to send message: %v", err)
-		return err
-	}
-	s.stdin.Write([]byte("\n"))
-
-	log.Printf("[session] Sent user message with %d images to session %s", len(images), s.SessionID)
-	return nil
+	return s.sendEncoded(func() ([]byte, error) {
+		return s.proto.EncodeUserMessage(content, images)
+	}, fmt.Sprintf("%d image(s)", len(images)))
 }
 
-// SendInterrupt sends a control_request interrupt using json.Marshal.
+// SendInterrupt sends a control_request interrupt, encoded by the session's Protocol.
 func (s *InteractiveSession) SendInterrupt() error {
+	return s.sendEncoded(s.proto.EncodeInterrupt, "interrupt")
+}
+
+// sendEncoded 在持有 s.mu 的情况下把已编码的行写入 stdin。
+// what 仅用于日志。
+func (s *InteractiveSession) sendEncoded(encode func() ([]byte, error), what string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	msg := map[string]interface{}{
-		"type":       "control_request",
-		"request_id": fmt.Sprintf("%d", time.Now().UnixNano()),
-		"request": map[string]interface{}{
-			"subtype": "interrupt",
-		},
-	}
-
-	jsonData, err := json.Marshal(msg)
+	data, err := encode()
 	if err != nil {
+		log.Printf("[session] Failed to encode %s: %v", what, err)
 		return err
 	}
-	jsonData = append(jsonData, '\n')
-
-	_, err = s.stdin.Write(jsonData)
-	if err != nil {
-		log.Printf("[session] Failed to send interrupt: %v", err)
+	if _, err := s.stdin.Write(data); err != nil {
+		log.Printf("[session] Failed to send %s: %v", what, err)
 		return err
 	}
-
-	log.Printf("[session] Sent interrupt to session %s", s.SessionID)
+	log.Printf("[session] Sent %s to session %s", what, s.SessionID)
 	return nil
 }
 
@@ -537,70 +459,34 @@ func (s *InteractiveSession) readEvents() {
 	for s.stdoutScanner.Scan() {
 		line := s.stdoutScanner.Bytes()
 
-		// Parse the raw event
-		var rawEvent struct {
-			Type      string          `json:"type"`
-			Subtype   string          `json:"subtype"`
-			SessionID string          `json:"session_id"`
-			Message   json.RawMessage `json:"message"`
-			Event     json.RawMessage `json:"event"` // stream_event sub-event payload
-			Content   string          `json:"content"`
-			Result    string          `json:"result"`
-			IsError   bool            `json:"is_error"`
-			Error     string          `json:"error"`
-		}
-
-		if err := json.Unmarshal(line, &rawEvent); err != nil {
+		event, ok := s.proto.ParseLine(line)
+		if !ok {
 			continue
 		}
 
-		event := StreamEvent{
-			Type:      rawEvent.Type,
-			Subtype:   rawEvent.Subtype,
-			SessionID: rawEvent.SessionID,
-			Content:   rawEvent.Content,
-			Result:    rawEvent.Result,
-			Error:     rawEvent.Error,
-			Event:     rawEvent.Event,
-		}
-
-		// Extract content from assistant message
-		if rawEvent.Type == "assistant" && rawEvent.Message != nil {
-			var msg Message
-			if err := json.Unmarshal(rawEvent.Message, &msg); err == nil {
-				event.Message = &msg
-				for _, block := range msg.Content {
-					if block.Type == "text" && block.Text != "" {
-						event.Content = block.Text
-						break
-					}
-				}
-			}
-			// Accumulate assistant text for SSE reconnect recovery (skip if deltas already accumulated)
+		// 累积 assistant 文本用于 SSE 重连恢复(若已收到 delta 则跳过)
+		if event.Type == "assistant" && event.Content != "" {
 			s.mu.Lock()
-			if event.Content != "" && !s.hasStreamDeltas {
+			if !s.hasStreamDeltas {
 				s.streamingContent.WriteString(event.Content)
 			}
 			s.mu.Unlock()
 		}
 
-		// Accumulate stream_event text deltas for reconnect recovery
-		if rawEvent.Type == "stream_event" && rawEvent.Event != nil {
-			delta := ExtractTextDelta(rawEvent.Event)
-			if delta != "" {
-				s.mu.Lock()
-				s.hasStreamDeltas = true
-				s.streamingContent.WriteString(delta)
-				s.mu.Unlock()
-			}
+		// 累积文本 delta 用于重连恢复
+		if event.Delta != nil && event.Delta.Kind == agent.DeltaText && event.Delta.Text != "" {
+			s.mu.Lock()
+			s.hasStreamDeltas = true
+			s.streamingContent.WriteString(event.Delta.Text)
+			s.mu.Unlock()
 		}
 
 		// Handle result type
-		if rawEvent.Type == "result" {
-			event.Content = rawEvent.Result
-			if rawEvent.IsError {
+		if event.Type == "result" {
+			event.Content = event.Result
+			if event.ResultIsError {
 				event.Type = "error"
-				event.Error = rawEvent.Result
+				event.Error = event.Result
 			}
 			// Reset streamingContent on turn end
 			s.mu.Lock()
@@ -610,15 +496,15 @@ func (s *InteractiveSession) readEvents() {
 		}
 
 		// Auto-capture session_id from system.init event
-		if rawEvent.Type == "system" && rawEvent.Subtype == "init" && rawEvent.SessionID != "" {
+		if event.Type == "system" && event.Subtype == "init" && event.SessionID != "" {
 			s.mu.Lock()
 			oldID := s.SessionID
-			s.SessionID = rawEvent.SessionID
+			s.SessionID = event.SessionID
 			callback := s.onSessionID
 			s.mu.Unlock()
 			log.Printf("[session] Got session_id from init event: %s (was: %s)", s.SessionID, oldID)
-			if callback != nil && oldID != rawEvent.SessionID {
-				callback(oldID, rawEvent.SessionID)
+			if callback != nil && oldID != event.SessionID {
+				callback(oldID, event.SessionID)
 			}
 			select {
 			case <-s.initDone:
@@ -628,10 +514,10 @@ func (s *InteractiveSession) readEvents() {
 			// Notify SSE subscribers so frontend can update its sessionId.
 			// This synthetic event uses type "session_update" which the SSE
 			// handler forwards directly (not filtered by StreamProcessor).
-			if oldID != rawEvent.SessionID {
+			if oldID != event.SessionID {
 				updateEvt := StreamEvent{
 					Type:      "session_update",
-					SessionID: rawEvent.SessionID,
+					SessionID: event.SessionID,
 				}
 				s.mu.Lock()
 				for _, ch := range s.streamChs {

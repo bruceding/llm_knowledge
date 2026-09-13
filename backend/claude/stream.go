@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"llm-knowledge/agent"
 	"strings"
 )
 
@@ -31,21 +32,9 @@ type ToolUseBlock struct {
 	Input json.RawMessage `json:"input"`
 }
 
-// ToolUseStart represents the start of a tool use block.
-type ToolUseStart struct {
-	ID    string
-	Name  string
-	Index int
-}
-
-// ContentBlockStop represents a content_block_stop event.
-type ContentBlockStop struct {
-	Index int
-}
-
 // StreamProcessor converts raw StreamEvents (from Claude CLI NDJSON output)
 // into clean SSEEvents for the frontend. It handles:
-//   - stream_event → delta/tool_start/tool_input/tool_end (Claude/Qwen streaming)
+//   - Delta → delta/tool_start/tool_input/tool_end(与 Type 无关,优先分派)
 //   - assistant → full (GLM non-streaming) or de-duplicated skip (Qwen mixed)
 //   - result → done (explicit turn-end signal)
 //   - system → filtered out
@@ -151,55 +140,52 @@ func (sp *StreamProcessor) FlushPending() SSEEvent {
 // Process converts a raw StreamEvent into a clean SSEEvent.
 // Returns empty SSEEvent for filtered/skipped events (system, duplicate assistant).
 func (sp *StreamProcessor) Process(evt StreamEvent) SSEEvent {
-	switch evt.Type {
-	case "stream_event":
-		if toolStart := ExtractToolUseStart(evt.Event); toolStart != nil {
-			sp.activeTools[toolStart.Index] = &activeTool{
-				id:   toolStart.ID,
-				name: toolStart.Name,
+	// Delta 与 Type 是正交的两个维度(pi 后端的 Type 取值与 Claude 不同),
+	// 所以归一化增量的处理放在 switch evt.Type 之前。
+	if evt.Delta != nil {
+		switch evt.Delta.Kind {
+		case agent.DeltaToolStart:
+			sp.activeTools[evt.Delta.Index] = &activeTool{
+				id:   evt.Delta.ToolID,
+				name: evt.Delta.ToolName,
 			}
-			sp.sentToolIDs[toolStart.ID] = true
+			sp.sentToolIDs[evt.Delta.ToolID] = true
 			return SSEEvent{
 				Type:     "tool_start",
-				ToolID:   toolStart.ID,
-				ToolName: toolStart.Name,
+				ToolID:   evt.Delta.ToolID,
+				ToolName: evt.Delta.ToolName,
 			}
-		}
 
-		if inputDelta := ExtractToolUseInputDelta(evt.Event); inputDelta != "" {
-			var event struct {
-				Index int `json:"index"`
-			}
-			if err := json.Unmarshal(evt.Event, &event); err == nil {
-				if tool, ok := sp.activeTools[event.Index]; ok {
-					tool.input += inputDelta
-					return SSEEvent{
-						Type:      "tool_input",
-						ToolID:    tool.id,
-						ToolName:  tool.name,
-						ToolInput: tool.input,
-					}
+		case agent.DeltaToolInput:
+			if tool, ok := sp.activeTools[evt.Delta.Index]; ok {
+				tool.input += evt.Delta.ToolInput
+				return SSEEvent{
+					Type:      "tool_input",
+					ToolID:    tool.id,
+					ToolName:  tool.name,
+					ToolInput: tool.input,
 				}
 			}
 			return SSEEvent{}
-		}
 
-		if stopEvent := ExtractContentBlockStop(evt.Event); stopEvent != nil {
-			if tool, ok := sp.activeTools[stopEvent.Index]; ok {
+		case agent.DeltaToolEnd:
+			if tool, ok := sp.activeTools[evt.Delta.Index]; ok {
 				toolID := tool.id
-				delete(sp.activeTools, stopEvent.Index)
+				delete(sp.activeTools, evt.Delta.Index)
 				return SSEEvent{Type: "tool_end", ToolID: toolID}
 			}
 			return SSEEvent{}
-		}
 
-		delta := ExtractTextDelta(evt.Event)
-		if delta != "" {
+		case agent.DeltaText:
+			if evt.Delta.Text == "" {
+				return SSEEvent{}
+			}
 			sp.streamedDeltas = true
-			return SSEEvent{Type: "delta", Delta: delta}
+			return SSEEvent{Type: "delta", Delta: evt.Delta.Text}
 		}
-		return SSEEvent{}
+	}
 
+	switch evt.Type {
 	case "assistant":
 		// Pending tool events from previous call
 		if len(sp.pendingToolEvents) > 0 && sp.pendingToolIndex < len(sp.pendingToolEvents) {
@@ -230,9 +216,8 @@ func (sp *StreamProcessor) Process(evt StreamEvent) SSEEvent {
 		}
 
 		// First time processing this assistant message
-		toolBlocks := ExtractToolUseFromAssistant(evt.Event)
 		if evt.Message != nil {
-			toolBlocks = ExtractToolUseFromAssistantMsg(evt.Message)
+			toolBlocks := ExtractToolUseFromAssistantMsg(evt.Message)
 			content := ExtractAssistantContentFromMsg(evt.Message)
 			if len(toolBlocks) > 0 {
 				var newBlocks []ToolUseBlock
@@ -267,14 +252,10 @@ func (sp *StreamProcessor) Process(evt StreamEvent) SSEEvent {
 			return SSEEvent{}
 		}
 
-		// assistant with raw Event field (no parsed Message)
-		content := ExtractAssistantContent(evt.Event)
-		if content != "" && !sp.streamedDeltas {
-			return SSEEvent{Type: "full", Content: content}
-		}
-		if ev := sp.checkSSEReconnectExtension(content); ev.Type != "" {
-			return ev
-		}
+		// evt.Message 为 nil 时无内容可下发。
+		// (原先此处会回退去挖 raw Event,但生产代码只在 stream_event 行填充 Event,
+		// assistant 行必然已解析出 Message;测试也只覆盖 *FromMsg 变体。属死路径,
+		// 随 StreamEvent.Event 字段一并移除。)
 		return SSEEvent{}
 
 	case "result":
@@ -295,125 +276,7 @@ func (sp *StreamProcessor) Process(evt StreamEvent) SSEEvent {
 	}
 }
 
-// --- Extract functions for stream_event sub-events (from Event json.RawMessage) ---
-
-// ExtractTextDelta extracts text delta from a stream_event payload.
-// Only extracts text_delta; thinking_delta is explicitly ignored.
-func ExtractTextDelta(eventRaw json.RawMessage) string {
-	if eventRaw == nil {
-		return ""
-	}
-	var event struct {
-		Type  string `json:"type"`
-		Index int    `json:"index"`
-		Delta struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"delta"`
-	}
-	if err := json.Unmarshal(eventRaw, &event); err != nil {
-		return ""
-	}
-	if event.Type == "content_block_delta" && event.Delta.Type == "text_delta" {
-		return event.Delta.Text
-	}
-	return ""
-}
-
-// ExtractToolUseStart extracts tool use start info from content_block_start event.
-func ExtractToolUseStart(eventRaw json.RawMessage) *ToolUseStart {
-	if eventRaw == nil {
-		return nil
-	}
-	var event struct {
-		Type  string `json:"type"`
-		Index int    `json:"index"`
-		ContentBlock struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"content_block"`
-	}
-	if err := json.Unmarshal(eventRaw, &event); err != nil {
-		return nil
-	}
-	if event.Type == "content_block_start" && event.ContentBlock.Type == "tool_use" {
-		if event.ContentBlock.ID == "" || event.ContentBlock.Name == "" {
-			return nil
-		}
-		return &ToolUseStart{
-			ID:    event.ContentBlock.ID,
-			Name:  event.ContentBlock.Name,
-			Index: event.Index,
-		}
-	}
-	return nil
-}
-
-// ExtractToolUseInputDelta extracts partial JSON input from input_json_delta event.
-func ExtractToolUseInputDelta(eventRaw json.RawMessage) string {
-	if eventRaw == nil {
-		return ""
-	}
-	var event struct {
-		Type  string `json:"type"`
-		Index int    `json:"index"`
-		Delta struct {
-			Type        string `json:"type"`
-			PartialJSON string `json:"partial_json"`
-		} `json:"delta"`
-	}
-	if err := json.Unmarshal(eventRaw, &event); err != nil {
-		return ""
-	}
-	if event.Type == "content_block_delta" && event.Delta.Type == "input_json_delta" {
-		return event.Delta.PartialJSON
-	}
-	return ""
-}
-
-// ExtractContentBlockStop extracts block stop info from content_block_stop event.
-func ExtractContentBlockStop(eventRaw json.RawMessage) *ContentBlockStop {
-	if eventRaw == nil {
-		return nil
-	}
-	var event struct {
-		Type  string `json:"type"`
-		Index int    `json:"index"`
-	}
-	if err := json.Unmarshal(eventRaw, &event); err != nil {
-		return nil
-	}
-	if event.Type == "content_block_stop" {
-		return &ContentBlockStop{Index: event.Index}
-	}
-	return nil
-}
-
-// --- Extract functions for assistant message (from Message or Event raw) ---
-
-// ExtractAssistantContent extracts concatenated text blocks from a raw assistant message.
-func ExtractAssistantContent(msgRaw json.RawMessage) string {
-	if msgRaw == nil {
-		return ""
-	}
-	var msg struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(msgRaw, &msg); err != nil {
-		return ""
-	}
-	var b strings.Builder
-	for _, block := range msg.Content {
-		if block.Type == "text" {
-			b.WriteString(block.Text)
-		}
-	}
-	return b.String()
-}
+// --- Extract functions for assistant message (from parsed *Message) ---
 
 // ExtractAssistantContentFromMsg extracts text from a parsed Message struct.
 func ExtractAssistantContentFromMsg(msg *Message) string {
@@ -427,38 +290,6 @@ func ExtractAssistantContentFromMsg(msg *Message) string {
 		}
 	}
 	return b.String()
-}
-
-// ExtractToolUseFromAssistant extracts tool_use blocks from raw assistant message.
-func ExtractToolUseFromAssistant(msgRaw json.RawMessage) []ToolUseBlock {
-	if msgRaw == nil {
-		return nil
-	}
-	var msg struct {
-		Content []struct {
-			Type  string          `json:"type"`
-			ID    string          `json:"id"`
-			Name  string          `json:"name"`
-			Input json.RawMessage `json:"input"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(msgRaw, &msg); err != nil {
-		return nil
-	}
-	var blocks []ToolUseBlock
-	for _, block := range msg.Content {
-		if block.Type == "tool_use" && block.ID != "" && block.Name != "" {
-			blocks = append(blocks, ToolUseBlock{
-				ID:    block.ID,
-				Name:  block.Name,
-				Input: block.Input,
-			})
-		}
-	}
-	if len(blocks) == 0 {
-		return nil
-	}
-	return blocks
 }
 
 // ExtractToolUseFromAssistantMsg extracts tool_use blocks from a parsed Message struct.

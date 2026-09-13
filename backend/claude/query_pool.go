@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"llm-knowledge/agent"
 	"llm-knowledge/db"
 	"log"
 	"strings"
@@ -49,12 +50,9 @@ func (qs *QuerySession) routeEvents() {
 		}
 
 		// Accumulate stream_event text deltas for auto-save (covers streaming models)
-		if evt.Type == "stream_event" && evt.Event != nil {
-			delta := ExtractTextDelta(evt.Event)
-			if delta != "" {
-				qs.hasStreamDeltas = true
-				qs.currentContent.WriteString(delta)
-			}
+		if evt.Delta != nil && evt.Delta.Kind == agent.DeltaText && evt.Delta.Text != "" {
+			qs.hasStreamDeltas = true
+			qs.currentContent.WriteString(evt.Delta.Text)
 		}
 
 		// On result/error, add message save info and prepare auto-save data
@@ -479,23 +477,14 @@ func StartSession(ctx context.Context, claudeBin string, userDir string, systemP
 	if userDir == "" {
 		return nil, fmt.Errorf("userDir is required for session isolation")
 	}
-	secureArgs, err := BuildSecureArgs([]string{"Read", "Glob", "Grep", "LS"})
+	proto := agent.NewClaudeProtocol(claudeBin, GetSettingsPath())
+	args, err := proto.SessionArgs(systemPrompt, []string{"Read", "Glob", "Grep", "LS"})
 	if err != nil {
-		return nil, fmt.Errorf("build secure args: %w", err)
-	}
-	args := []string{
-		"--output-format", "stream-json",
-		"--input-format", "stream-json",
-		"--verbose",
-	}
-	args = append(args, secureArgs...)
-
-	if systemPrompt != "" {
-		args = append(args, "--system-prompt", systemPrompt)
+		return nil, fmt.Errorf("build session args: %w", err)
 	}
 
 	// Build environment with ALLOWED_DIR
-	env := BuildSecureEnv(userDir)
+	env := proto.Env(userDir)
 
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := buildCmdWithEnv(ctx, claudeBin, args, userDir, env)
@@ -510,6 +499,7 @@ func StartSession(ctx context.Context, claudeBin string, userDir string, systemP
 		cmd:           cmd,
 		stdin:         stdinPipe,
 		stdoutScanner: newScanner(stdoutPipe),
+		proto:         proto,
 		eventCh:       make(chan StreamEvent, 100),
 		ctx:           ctx,
 		cancel:        cancel,
@@ -552,24 +542,14 @@ func StartSession(ctx context.Context, claudeBin string, userDir string, systemP
 // No init message is sent — the first real user message triggers system.init.
 // userDir is the user's directory (cmd.Dir) for Claude session isolation and security restriction.
 func StartResumedSession(ctx context.Context, claudeBin string, userDir string, prevSessionID string, systemPrompt string) (*InteractiveSession, error) {
-	secureArgs, err := BuildSecureArgs([]string{"Read", "Glob", "Grep", "LS"})
+	proto := agent.NewClaudeProtocol(claudeBin, GetSettingsPath())
+	args, err := proto.ResumeArgs(prevSessionID, systemPrompt, []string{"Read", "Glob", "Grep", "LS"})
 	if err != nil {
-		return nil, fmt.Errorf("build secure args: %w", err)
-	}
-	args := []string{
-		"--resume", prevSessionID,
-		"--output-format", "stream-json",
-		"--input-format", "stream-json",
-		"--verbose",
-	}
-	args = append(args, secureArgs...)
-
-	if systemPrompt != "" {
-		args = append(args, "--system-prompt", systemPrompt)
+		return nil, fmt.Errorf("build resume args: %w", err)
 	}
 
 	// Build environment with ALLOWED_DIR
-	env := BuildSecureEnv(userDir)
+	env := proto.Env(userDir)
 
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := buildCmdWithEnv(ctx, claudeBin, args, userDir, env)
@@ -584,6 +564,7 @@ func StartResumedSession(ctx context.Context, claudeBin string, userDir string, 
 		cmd:           cmd,
 		stdin:         stdinPipe,
 		stdoutScanner: newScanner(stdoutPipe),
+		proto:         proto,
 		eventCh:       make(chan StreamEvent, 100),
 		ctx:           ctx,
 		cancel:        cancel,

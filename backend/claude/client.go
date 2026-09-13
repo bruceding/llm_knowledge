@@ -6,47 +6,32 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"llm-knowledge/agent"
 	"os/exec"
 	"strings"
 )
 
 // Client wraps the Claude CLI binary for programmatic invocation.
 type Client struct {
-	BinPath string // Path to the claude binary (e.g., "claude" or "/usr/local/bin/claude")
+	BinPath string         // Path to the claude binary (e.g., "claude" or "/usr/local/bin/claude")
+	Proto   agent.Protocol // 协议实现;nil 时按 BinPath 惰性构造 ClaudeProtocol
 }
 
-// StreamEvent represents a single event in the streaming response from Claude CLI.
-// This is the internal event type that flows through readEvents/routeEvents.
-// SSE handlers convert it to SSEEvent via StreamProcessor before sending to frontend.
-type StreamEvent struct {
-	Type             string          `json:"type"`                        // system, assistant, stream_event, result, error
-	Content          string          `json:"content"`                     // Text content of the event (extracted)
-	Subtype          string          `json:"subtype"`                     // subtype for system messages
-	SessionID        string          `json:"session_id,omitempty"`        // Session ID from system events
-	Result           string          `json:"result"`                      // Result text for type "result"
-	Error            string          `json:"error,omitempty"`             // Error message if any
-	ToolName         string          `json:"toolName,omitempty"`          // Tool name for tool_use events
-	ToolInput        string          `json:"toolInput,omitempty"`         // Tool input for tool_use events
-	Message          *Message        `json:"message,omitempty"`           // Message for type "assistant"
-	Event            json.RawMessage `json:"event,omitempty"`             // Raw sub-event payload for stream_event type
-	ResultMessageID  uint            `json:"resultMessageId,omitempty"`   // User message ID for saving assistant reply (set in result)
-	ResultFullContent string         `json:"resultFullContent,omitempty"` // Accumulated assistant content for saving (set in result)
+// protocol 返回生效的 Protocol,nil 时按 BinPath 惰性构造。
+func (c *Client) protocol() agent.Protocol {
+	if c.Proto != nil {
+		return c.Proto
+	}
+	return agent.NewClaudeProtocol(c.BinPath, GetSettingsPath())
 }
 
-// Message represents the message field in assistant events
-type Message struct {
-	Role    string        `json:"role"`
-	Content []ContentBlock `json:"content"`
-}
-
-// ContentBlock represents a content block in a message
-type ContentBlock struct {
-	Type  string          `json:"type"`  // text, thinking, tool_use
-	Text  string          `json:"text"`  // text content (for text/thinking blocks)
-	ID    string          `json:"id,omitempty"`   // tool use ID
-	Name  string          `json:"name,omitempty"` // tool name (for tool_use blocks)
-	Input json.RawMessage `json:"input,omitempty"` // tool input (for tool_use blocks)
-}
+// 以下类型已上移到 agent 包(见 docs/superpowers/specs/2026-09-12-pi-backend-switch-design.md)。
+// 保留别名使既有 import 与测试零改动。
+type (
+	StreamEvent  = agent.StreamEvent
+	Message      = agent.Message
+	ContentBlock = agent.ContentBlock
+)
 
 // RawEvent represents the raw JSON event from Claude CLI (used for parsing)
 type RawEvent struct {
@@ -63,20 +48,14 @@ type RawEvent struct {
 // The caller should close the channel after Send returns.
 // If workDir is non-empty, the command runs in that directory.
 func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamEvent, workDir string) error {
-	secureArgs, err := BuildSecureArgs([]string{"Read", "Write", "Edit"})
+	args, err := c.protocol().OnceArgs("", []string{"Read", "Write", "Edit"}, true)
 	if err != nil {
-		return fmt.Errorf("build secure args: %w", err)
+		return fmt.Errorf("build once args: %w", err)
 	}
-	args := []string{
-		"--print",
-		"--output-format", "stream-json",
-		"--verbose",
-	}
-	args = append(args, secureArgs...)
 	cmd := exec.CommandContext(ctx, c.BinPath, args...)
 	if workDir != "" {
 		cmd.Dir = workDir
-		if env := BuildSecureEnv(workDir); len(env) > 0 {
+		if env := c.protocol().Env(workDir); len(env) > 0 {
 			cmd.Env = env
 		}
 	}
@@ -179,19 +158,17 @@ func (c *Client) SendSimple(ctx context.Context, prompt string) (string, error) 
 // This is faster than stream-json mode for simple tasks like generating summaries.
 // If workDir is non-empty, the command runs in that directory.
 func (c *Client) SendSimpleWithRead(ctx context.Context, prompt string, workDir string) (string, error) {
-	secureArgs, err := BuildSecureArgs([]string{"Read"})
+	args, err := c.protocol().OnceArgs("", []string{"Read"}, false)
 	if err != nil {
-		return "", fmt.Errorf("build secure args: %w", err)
+		return "", fmt.Errorf("build once args: %w", err)
 	}
-	args := []string{"-p"}
-	args = append(args, secureArgs...)
 	args = append(args, prompt)
 
 	cmd := exec.CommandContext(ctx, c.BinPath, args...)
 	if workDir != "" {
 		cmd.Dir = workDir
 		// Set ALLOWED_DIR environment for security hooks
-		if env := BuildSecureEnv(workDir); len(env) > 0 {
+		if env := c.protocol().Env(workDir); len(env) > 0 {
 			cmd.Env = env
 		}
 	}

@@ -3,10 +3,10 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"llm-knowledge/agent"
 	"log"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -209,85 +209,17 @@ type Hook struct {
 	Timeout int    `json:"timeout,omitempty"`
 }
 
-// BuildSecureEnv builds environment variables for Claude CLI with security settings
-// Returns a complete environment slice with ALLOWED_DIR set, filtering any
-// pre-existing ALLOWED_DIR from the parent environment to prevent shadowing.
-//
-// allowedDir is resolved through filepath.EvalSymlinks so it matches what
-// path-validator.py sees after its own realpath() call. Without this, a caller
-// passing /tmp/foo on macOS (a symlink to /private/tmp/foo) would mismatch the
-// hook's resolved /private/tmp/foo and every legitimate read would be denied.
+// BuildSecureEnv 转发到 agent.ClaudeProtocol.Env,保留以兼容既有调用点。
 func BuildSecureEnv(allowedDir string) []string {
-	if allowedDir == "" {
-		return nil
-	}
-
-	if resolved, err := filepath.EvalSymlinks(allowedDir); err == nil {
-		allowedDir = resolved
-	}
-
-	// Filter out any existing ALLOWED_DIR from parent environment to prevent shadowing
-	baseEnv := os.Environ()
-	filtered := make([]string, 0, len(baseEnv))
-	for _, e := range baseEnv {
-		if !strings.HasPrefix(e, "ALLOWED_DIR=") {
-			filtered = append(filtered, e)
-		}
-	}
-
-	return append(filtered, fmt.Sprintf("ALLOWED_DIR=%s", allowedDir))
+	return agent.NewClaudeProtocol("claude", GetSettingsPath()).Env(allowedDir)
 }
 
-// DangerousDisallowedTools is the canonical list of tools that must never be allowed
-// in production sessions. --disallowedTools takes precedence over
-// --dangerously-skip-permissions, so listing them here yields a hard block.
-//
-// WebFetch/WebSearch are intentionally NOT included — they are useful and cannot
-// directly read local files. SSRF risk for WebFetch is tracked separately.
-var DangerousDisallowedTools = []string{
-	"Bash",
-	"Task",
-	"NotebookEdit",
-	"KillShell",
-	"BashOutput",
-	"SlashCommand",
-}
+// DangerousDisallowedTools 已迁至 agent.ClaudeDangerousDisallowedTools,保留别名。
+var DangerousDisallowedTools = agent.ClaudeDangerousDisallowedTools
 
-// BuildSecureArgs returns the standard set of CLI args that enforce the project's
-// security model: a tool whitelist, an explicit blacklist of dangerous tools, the
-// permissions bypass, and the security settings file (when configured).
-//
-// Callers should append their own --output-format / --input-format / --print /
-// --resume / --system-prompt flags around the returned slice.
-//
-// Returns an error if allowedTools contains any entry from DangerousDisallowedTools.
-// That is a programming error (the conflicting flags would leave behavior up to CLI
-// internals), but we surface it as an error rather than panic so a buggy caller
-// inside a goroutine can't crash the whole server process.
+// BuildSecureArgs 转发到 agent.ClaudeProtocol.SecureArgs,保留以兼容既有调用点。
 func BuildSecureArgs(allowedTools []string) ([]string, error) {
-	for _, t := range allowedTools {
-		if slices.Contains(DangerousDisallowedTools, t) {
-			return nil, fmt.Errorf("BuildSecureArgs: allowedTools contains dangerous tool %q; "+
-				"this conflicts with --disallowedTools and must be a programming error", t)
-		}
-	}
-
-	args := make([]string, 0, 8)
-
-	if len(allowedTools) > 0 {
-		args = append(args, "--allowedTools", strings.Join(allowedTools, ","))
-	}
-
-	args = append(args,
-		"--disallowedTools", strings.Join(DangerousDisallowedTools, ","),
-		"--dangerously-skip-permissions",
-	)
-
-	if settingsPath := GetSettingsPath(); settingsPath != "" {
-		args = append(args, "--settings", settingsPath)
-	}
-
-	return args, nil
+	return agent.NewClaudeProtocol("claude", GetSettingsPath()).SecureArgs(allowedTools)
 }
 
 // CleanupSecuritySettings removes the settings file (call on server shutdown)
