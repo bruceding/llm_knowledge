@@ -9,6 +9,20 @@
       "enabled": false
     }
   },
+  "commands": {
+    "websearch": {
+      "enabled": false
+    },
+    "curator": {
+      "enabled": false
+    },
+    "search": {
+      "enabled": false
+    },
+    "google-account": {
+      "enabled": false
+    }
+  },
   "fetchContent": {
     "domainPolicy": {
       "allow": [],

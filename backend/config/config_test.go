@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -384,6 +385,10 @@ func TestLoadPiWebToolNames_WarnsOnlyWhenPiWouldRejectConfig(t *testing.T) {
 //     注意设计文档的表格写的是 fetchContent.deny/.allow,少了 domainPolicy 这一层,
 //     以源码为准。空数组等价于 DEFAULT_DOMAIN_POLICY(ssrf-protection.ts:65),
 //     且 assertDomainPolicy(:265-273)只在 allow 非空时才做白名单,故 [] 不限制任何域名
+//   - commands.{websearch,curator,search,google-account}.enabled:index.ts:172 的
+//     类型定义与 :277-279 的 isCommandEnabled(`config.commands?.[name]?.enabled
+//     !== false` —— **默认是开的**)。这四个命令必须显式关,理由见
+//     TestWebSearchSample_DisablesExtensionCommands 的注释
 func TestWebSearchSample_PinsSecurityKeys(t *testing.T) {
 	// 模板放在 tracked 的 backend/scripts/,与 path-validator.py 同目录。仓库根的
 	// scripts/ 被 .gitignore 的 /scripts/ 整体忽略,只承载部署产物;放那里的文件
@@ -414,6 +419,9 @@ func TestWebSearchSample_PinsSecurityKeys(t *testing.T) {
 				Deny  *[]string `json:"deny"`
 			} `json:"domainPolicy"`
 		} `json:"fetchContent"`
+		Commands *map[string]struct {
+			Enabled *bool `json:"enabled"`
+		} `json:"commands"`
 	}
 	if err := json.Unmarshal(data, &sample); err != nil {
 		t.Fatalf("模板必须是合法 JSON 对象(pi 的 parseConfigRoot 要求对象,数组会抛错): %v", err)
@@ -455,5 +463,57 @@ func TestWebSearchSample_PinsSecurityKeys(t *testing.T) {
 		// assertDomainPolicy 仅在 allow 非空时才做白名单),所以将来运维往模板里
 		// 填真实域名收紧策略时,本断言不应变红。
 		t.Error("fetchContent.domainPolicy 的 allow 与 deny 都必须显式写出(允许为空数组;为空等价于不限制任何域名)")
+	}
+
+	// commands 这四个键钉住的是一条**规格与实现计划都未覆盖**的注入面:
+	// rpc 模式下以 `/` 开头的用户消息会被 pi 当成扩展命令派发执行。源码链路
+	// (pi 0.85.1):
+	//
+	//	modes/rpc/rpc-mode.js:301-304  session.prompt(command.message, {...})
+	//	                             —— **没有**传 expandPromptTemplates
+	//	core/agent-session.js:822      ... ?? true(默认为真)
+	//	                  :828-834   if (expandPromptTemplates && text.startsWith("/"))
+	//	                                 _tryExecuteExtensionCommand(text)
+	//	                  :954-961   getCommand(name) 命中即执行
+	//
+	// 三道既有防线都拦不住它:`--tools` 只管工具调用(命令是扩展自己的 JS);
+	// `--no-skills`/`--no-prompt-templates` 只关 skill 与模板;沙箱 extension 的
+	// `input` hook 在 :839-851,位于 :828 的命令派发**之后**。
+	//
+	// 而 Claude 侧的对应物 SlashCommand 早就在 ClaudeDangerousDisallowedTools 里被
+	// 硬阻断 —— 所以关掉它是追平两个后端的安全强度,不是额外收紧。
+	// 已实测的可利用面:pi-web-access 自己注册了 4 个命令(index.ts:3164 websearch、
+	// :3427 curator、:3469 google-account、:3517 search),其中 `/curator` 会拉起
+	// 浏览器,且扩展命令自行驱动 LLM、绕过我们注入的 --system-prompt。
+	//
+	// 残留风险(已记进计划 R9):其他已加载包(如本机的 pi-subagents)的命令不由
+	// 本模板覆盖,只能靠 R1 的运维隔离。故意**不**在 EncodeUserMessage 里改写以
+	// `/` 开头的用户文本:那会污染 LLM 输入与 DB 里的历史消息,且与 claude
+	// 后端的「/ 就是普通文本」不一致。
+	//
+	// 这四个命令名取自 index.ts:277 的 isCommandEnabled 形参类型,与上述四处
+	// registerCommand 一一对应。用遍历而不是四条并列断言,是为了让「模板里多出
+	// 一个未知的 enabled:true 命令」也变红 —— 升级 pi-web-access 后它若新增命令,
+	// 默认就是开的。
+	wantDisabled := []string{"websearch", "curator", "search", "google-account"}
+	if sample.Commands == nil {
+		t.Fatalf("模板必须显式写出 commands 段:这四个扩展命令默认是开的(index.ts:278 的 `!== false`)," +
+			"而 rpc 模式下以 / 开头的用户消息会被当成扩展命令派发执行(见上方注释的源码链路)")
+	}
+	for _, name := range wantDisabled {
+		cmd, ok := (*sample.Commands)[name]
+		if !ok || cmd.Enabled == nil {
+			t.Errorf("commands.%s.enabled 必须显式写出", name)
+		} else if *cmd.Enabled {
+			t.Errorf("commands.%s.enabled 必须为 false", name)
+		}
+	}
+	for name, cmd := range *sample.Commands {
+		if !slices.Contains(wantDisabled, name) {
+			t.Errorf("commands 里出现本测试未知的命令名 %q:请核实 pi-web-access 当前版本的 registerCommand 清单并更新本用例", name)
+		}
+		if cmd.Enabled == nil || *cmd.Enabled {
+			t.Errorf("commands.%s.enabled 必须显式为 false", name)
+		}
 	}
 }
