@@ -4,7 +4,7 @@
 
 **Goal:** 在 Plan 1 已就位的 `agent.Protocol` seam 上实现第二个后端 `PiProtocol`,并让后端选择成为管理员 Settings 里的全局开关,覆盖文档问答、自由问答、ingest 三条链路。前端聊天代码零改动,`SSEEvent` 线格式不变,claude 路径作为可回退默认值。
 
-**Architecture:** 沿用规格的方案 A(Protocol 接口注入现有 `InteractiveSession`)。池逻辑、SSE 连接计数、30s 清理循环、订阅扇出全部不动;新增 `agent.PiProtocol` 与 `agent` 包级 resolver(`Init`/`Current`/`Invalidate`),把所有 `agent.NewClaudeProtocol(...)` 硬编码构造点换成 `agent.Current()`。沙箱用 pi extension(`scripts/pi-path-validator.ts`)承载,强度对齐 `path-validator.py` 并**额外**堵住 `fetch_content` 的本地文件向量。
+**Architecture:** 沿用规格的方案 A(Protocol 接口注入现有 `InteractiveSession`)。池逻辑、SSE 连接计数、30s 清理循环、订阅扇出全部不动;新增 `agent.PiProtocol` 与 `agent` 包级 resolver(`Init`/`Current`/`Invalidate`),把所有 `agent.NewClaudeProtocol(...)` 硬编码构造点换成 `agent.Current()`。沙箱用 pi extension(`backend/scripts/pi-path-validator.ts`,部署时复制到运行时 `scripts/`)承载,强度对齐 `path-validator.py` 并**额外**堵住 `fetch_content` 的本地文件向量。
 
 **Tech Stack:** Go 1.25+ 标准库(`os/exec`、`encoding/json`);TypeScript(pi extension API);无新增 Go 第三方依赖。运行时新增硬依赖:Node >= 22.19.0、pi >= 0.85.1、`pi-web-access`(pin v0.29.0)。
 
@@ -31,9 +31,9 @@
 - **claude 路径行为不变**(除「决策点 D3」记录的 once-call prompt 传递方式):所有既有 API/SSE 形状、既有 30+ `stream_test.go` 用例、既有 e2e 全绿
 - **前端聊天组件 diff 必须为空**:`SSEEvent` 的 JSON tag 一字不改。前端只允许改 `types.ts`、`SettingsPage.tsx`、i18n 资源
 - **不在 `claude`/`api`/`ingest` 包里出现后端分支**:禁止 `if proto.Backend() == agent.BackendPi` 这类判断。后端差异只能落在 `agent` 包的两个 Protocol 实现内。这是 Plan 1 建立的核心不变式,Plan 2 最容易破坏它
-- **不动** `CLAUDE.md`、`scripts/path-validator.py`、`backend/dependencies/`(规格明确:不把 pi 加进 checker,不改前端对 `/api/dependencies/status` 的消费)
+- **不动** `CLAUDE.md`、`path-validator.py`(tracked 源 `backend/scripts/path-validator.py` 与运行时副本 `scripts/path-validator.py` 都不动)、`backend/dependencies/`(规格明确:不把 pi 加进 checker,不改前端对 `/api/dependencies/status` 的消费)
 - **不新增 Go 第三方依赖**,不改 `go.mod`
-- **每个任务的收尾闸门**:`cd backend && go build ./... && go vet ./... && go test ./...` 全绿才允许 commit。已知 3 个环境性失败可容忍且必须逐个指名:`api.TestWebClippingXArticle`(网络)、`browser.TestFetchRenderedHTML_TimeoutOnMissingSelector`(浏览器)、`ingest.TestExtractPDFText`(缺 `pdftotext`)。**出现第 4 个失败即视为闸门未过**
+- **每个任务的收尾闸门**:`cd backend && go build ./... && go vet ./... && go test ./...` 全绿才允许 commit。已知环境性失败可容忍且必须逐个指名:`api` 包的**出网类**用例(`TestWebClippingXArticle` 与 `TestFetchHTML`,同在 `backend/api/web_test.go`;本机 TLS 握手超时时具体哪个失败随网络状况变化,两者都算同一类)、`browser.TestFetchRenderedHTML_TimeoutOnMissingSelector`(浏览器)、`ingest.TestExtractPDFText`(缺 `pdftotext`)。**出现上述之外的失败即视为闸门未过**;若怀疑是既有环境问题,须像 Task 1 那样 `git stash` 后在基线上复跑同一用例并贴出逐字相同的输出,不得仅凭断言
 - 提交信息用中文,前缀按任务指定(`feat(agent):` / `feat(security):` / `feat(admin):` / `feat(settings):` / `docs:`)
 - 涉及真实 `pi` 子进程的测试,`pi` 不在 PATH 时 `t.Skip`,不得让 CI/他人环境红
 
@@ -51,6 +51,20 @@ Plan 1 抽象了 args/env/encode/parse,但**二进制路径没有走 Protocol**�
 不先收口这些,`agent.Current()` 返回 `PiProtocol` 时仍会 spawn claude。Task 5 与 Task 8 分别处理。
 
 `backend/dependencies/checker.go:95,115,176` 的 3 处 `exec.Command("claude", ...)` **按规格保持不动**(范围外)。
+
+## `scripts/` 目录约定(2026-09-13 核实,规格未提及)
+
+规格把两个新产物写作 `scripts/pi-path-validator.ts` 与 `scripts/web-search.json.sample`,但**仓库根 `scripts/` 整体被 git 忽略**(`.gitignore:6` = `/scripts/`,注释「Local deployment scripts」)。实测:
+
+- `git ls-files scripts/ backend/scripts/` 只返回 `backend/scripts/SECURITY_DEPLOYMENT.md` 与 `backend/scripts/path-validator.py`
+- `git check-ignore -v scripts/pi-path-validator.ts` → `.gitignore:6:/scripts/`
+- 运行时 `scripts/path-validator.py` 是**未跟踪的本地副本**,与 `backend/scripts/path-validator.py` 内容相同
+
+既有范式(必须沿用):**tracked 源放 `backend/scripts/`,部署时复制到运行时 `scripts/`**。`SECURITY_DEPLOYMENT.md:90` 是 `cp backend/scripts/path-validator.py /opt/llm-knowledge/scripts/`,`:129` 是 Dockerfile 的 `COPY`;运行时目录由 `start.sh:137` 的 `LLM_SCRIPTS_DIR="${SCRIPT_DIR}/scripts"` 指定。
+
+Go 侧定位脚本的既有机制:`main.go:78` 读 `LLM_SCRIPTS_DIR` → `security.go:125` 的 `generateSettingsFile(scriptsDir)` → `filepath.Join(scriptsDir, "path-validator.py")` + `os.Stat`,**文件不存在就返回错误**(`security.go:131-133`),绝不启动一个没有沙箱的进程。
+
+**因此本计划的产物落点一律改为 `backend/scripts/`**,且 `PiProtocol` 必须照抄上面这条 fail-closed 先例(见 Task 2)。若把 extension 放在被忽略的目录,新克隆/新部署里它根本不存在,而 pi 的 `-e` 指向缺失文件时的行为未经证实 —— 那就可能整条 pi 路径**没有任何工具调用拦截**(安全 fail-open),而沙箱 extension 正是本设计新增的关键控制。
 
 ## 决策点(规格未定或本计划有意偏离,已论证)
 
@@ -127,8 +141,8 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 | `backend/agent/pi_constraints_test.go` | 专测规格列出的 pi 专有约束(5 条) |
 | `backend/agent/resolver_test.go` | TTL 命中、`Invalidate` 后立即重读、未知/空值回退 claude |
 | `backend/agent/probe_test.go` | `Probe` 对不存在的二进制返回错误 |
-| `scripts/pi-path-validator.ts` | 沙箱 extension:路径校验 + `fetch_content` URL 校验 |
-| `scripts/web-search.json.sample` | 部署模板,固化 `allowBrowserCookies:false`、`ssrf.allowRanges:[]`、`ssrf.trustEnvProxy:false`、`sourceCheck` 关 |
+| `backend/scripts/pi-path-validator.ts` | 沙箱 extension:路径校验 + `fetch_content` URL 校验(tracked 源,部署时复制到运行时 `scripts/`) |
+| `backend/scripts/web-search.json.sample` | 部署模板,固化 `allowBrowserCookies:false`、`ssrf.allowRanges:[]`、`ssrf.trustEnvProxy:false`、`sourceCheck` 关(部署到 `$PI_CODING_AGENT_DIR/web-search.json`) |
 
 **修改**
 
@@ -160,21 +174,46 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 - [ ] `config.go` 增 `PiBin`(env `PI_BIN`,默认 `"pi"`),与 `ClaudeBin` 并列;二者只在 `agent.Init` 时用
 - [ ] 新增 web 工具名解析:读 `$PI_CODING_AGENT_DIR/web-search.json`(未设则 `~/.pi/agent/web-search.json`)的 `toolNames`,缺省 `web_search`/`fetch_content`/`get_search_content`;文件缺失或解析失败**不报错**,用默认名(与 `loadSsrfConfig()` 的宽容行为一致)
 - [ ] 明确「给哪几个」由调用方决定:本任务只提供名称解析;`source_check` **不给**(规格决策)
-- [ ] 产出 `scripts/web-search.json.sample`,固化规格表格里那 5 个键
+- [ ] 产出 `backend/scripts/web-search.json.sample`,固化规格表格里那 5 个键(**不是** `scripts/` —— 该目录被 `.gitignore:6` 忽略,见「`scripts/` 目录约定」)
 - [ ] 单测:默认名、`toolNames` 改写生效、文件缺失回退、malformed JSON 回退
+- [ ] 配置一致性测试(计划原列在 Task 6,因产物在本任务产生,提前到此处):断言 sample 里 `allowBrowserCookies` 为 `false`、`ssrf.allowRanges` 为空、`ssrf.trustEnvProxy` 为 `false`、`sourceCheck` 已关
+- [ ] `toolNames` 的键名与嵌套形状**必须从 `~/.pi/agent/npm/node_modules/pi-web-access/` 源码核实**(建议 `utils.ts` 与配置类型定义),不得凭规格描述推测;核实依据(`文件:行号` + 原文)写进提交信息
 
 **闸门:** `go build ./... && go vet ./... && go test ./config/... ./agent/...`
 **提交:** `feat(agent): config 增 PiBin 与 web 工具名单一事实来源`
 
+### ✅ Task 1 已完成(`ef6500b`,2026-09-13)
+
+交付:`backend/config/config.go`(+114:`PiBin`/`PI_BIN`、`PiWebToolNames`、`PiWebSearchConfigPath()`、`LoadPiWebToolNames()`、`Names()`)、`backend/config/config_test.go`(新增 258,该包此前无任何测试)、`backend/scripts/web-search.json.sample`(18)。闸门由控制方独立复跑通过。
+
+**已核实的 `pi-web-access` v0.29.0 schema(后续任务直接引用,不必重新推导):**
+
+| 事实 | 依据 |
+|---|---|
+| `toolNames` 是**根级**键,类型为 `Partial<ToolNames>`,`ToolNames` 四键为**驼峰** `webSearch`/`sourceCheck`/`fetchContent`/`getSearchContent` | `index.ts:146`(`interface WebSearchConfig`)、`:173`、`:227-232` |
+| 默认名 `web_search`/`source_check`/`fetch_content`/`get_search_content` | `index.ts:234-239` 的 `DEFAULT_TOOL_NAMES` |
+| 合法值判据 `/^[A-Za-z][A-Za-z0-9_-]{0,63}$/`,逐键合并 + 先 trim 再校验 | `index.ts:240`、`:288-301` 的 `resolveToolNames` |
+| 配置目录:`PI_CODING_AGENT_DIR` 最高优先,否则 `~/.pi/agent`;文件不存在时 `loadConfig()` 返回 `{}` | `utils.ts:10-26`、`index.ts:100`、`:210-213` |
+| **`sourceCheck` 默认是开的**,故「不给 `source_check`」需要两道:白名单不授予 + 配置里 `tools.sourceCheck.enabled=false` | `index.ts:271-274` 的 `isToolEnabled` |
+| 域名策略真实路径是 `fetchContent.domainPolicy.{allow,deny}`;`allow` 为空 = 不限制 | `ssrf-protection.ts:67-85`、`:65`、`:265-273` |
+
+规格已同步勘误两处(`sourceCheck` 默认值、`fetchContent.domainPolicy` 少一层)。
+
+**接受的覆盖缺口:** `Load()` 里 `PiBin` 的 env 解析**没有单测** —— `Load()` 内部执行 `flag.String("port", ...)` + `flag.Parse()`,同一测试进程内二次调用会 panic(`flag redefined: port`),且它读真实 env/HOME。`PiBin` 逻辑仅 4 行且与紧邻的 `ClaudeBin` 逐字对称,故本计划接受该缺口;正确修法是先把 `Load()` 拆成可注入的纯函数(见「开放项」4)。
+
 ## Task 2: `PiProtocol` 旗标、env 与 `Probe`
 
 - [ ] `pi_args.go`:`PiProtocol{bin, webTools []string, sessionDirRoot string}` + `NewPiProtocol(...)`;`Backend()` 返回 `BackendPi`;`Bin()` 返回 `bin`
-- [ ] `SessionArgs`/`ResumeArgs`/`OnceArgs` 按规格「pi 进程配方」产出:`--mode rpc`(会话)/`--mode json` 或 `-p`(一次性)、`--tools <allowlist>`、`--no-skills`、`--no-prompt-templates`、`--no-context-files`、`-e <repo>/scripts/pi-path-validator.ts`、`-na`、`--session-dir <userDir>/.pi-sessions`、`[--session <id>]`、`[--system-prompt <p>]`
+- [ ] `SessionArgs`/`ResumeArgs`/`OnceArgs` 按规格「pi 进程配方」产出:`--mode rpc`(会话)/`--mode json` 或 `-p`(一次性)、`--tools <allowlist>`、`--no-skills`、`--no-prompt-templates`、`--no-context-files`、`-e $LLM_SCRIPTS_DIR/pi-path-validator.ts`、`-na`、`--session-dir <userDir>/.pi-sessions`、`[--session <id>]`、`[--system-prompt <p>]`
 - [ ] `OnceArgs` 按 D3 带 model hint 形参,`PiProtocol` **忽略**它(断言产出里不含 `--model`/`--provider`)
 - [ ] 工具名映射 `Read→read`、`Glob→find`、`Grep→grep`、`LS→ls`、`Write→write`、`Edit→edit`;四档白名单:doc chat `read`+web、自由问答 `read,find,grep,ls`+web、ingest `Send`/`SendWithTools` `read,write,edit`(**不含** web)、`SendSimpleWithRead` `read`
+- [ ] web 工具名与 `PI_WEB_TOOLS` 一律取自 Task 1 的 `config.LoadPiWebToolNames()`,**不得在 `agent` 包里再写任何工具名字面量**(单一事实来源的意义就在于此)
+- [ ] `source_check` 的两道防线都要在位:白名单不含它(Task 2)+ 部署模板 `tools.sourceCheck.enabled=false`(Task 1 已固化)。实测它默认是**开**的,只靠白名单一旦写错就是敞口
 - [ ] **断言不含**:`--no-extensions`(否则 `pi-web-access` 加载不了)、`--dangerously-skip-permissions`、`--verbose`、`--model`、`--provider`
 - [ ] `Env(allowedDir)`:继承 `BuildSecureEnv` 的 realpath 行为(macOS `/tmp`→`/private/tmp`),注入 `ALLOWED_DIR`、`PI_WEB_TOOLS`(与 `--tools` 同源)、**`PI_CODING_AGENT_DIR`(显式钉死,不依赖默认值)**
 - [ ] `Probe(ctx)`:`exec.LookPath(bin)` + `pi --version`(5s 超时)
+- [ ] **fail-closed 前置校验**(照抄 `security.go:131-133` 的先例):`NewPiProtocol` 接收 `scriptsDir`,三个 `*Args` 在拼 `-e` 之前 `os.Stat(filepath.Join(scriptsDir, "pi-path-validator.ts"))`,文件缺失就**返回错误**,绝不产出缺沙箱的 argv。配套单测:文件不存在时 `SessionArgs`/`ResumeArgs`/`OnceArgs` 都报错
+- [ ] `scriptsDir` 的传递方式与 `ClaudeProtocol` 的 `settingsPath` 对称:由 `agent.Init` 从 `main.go:78` 的 `LLM_SCRIPTS_DIR` 传入,**不在 `agent` 包里自己读 env**
 - [ ] `InitCommands()` 返回 `get_state` 那一行(D1);同时给 `ClaudeProtocol` 补 `InitCommands() nil` 与接口断言,保证本任务结束时 `go build ./...` 仍绿
 - [ ] 单测 `pi_args_test.go` + `probe_test.go`,覆盖规格列出的每一条
 
@@ -222,15 +261,16 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 **闸门:** 全局闸门 + `pytest tests/e2e/test_chat_streaming.py` 12 passed(claude 路径回归)
 **提交:** `feat(agent): resolver 与会话层接入,spawn 统一走 Protocol.Bin()`
 
-## Task 6: 沙箱 extension `scripts/pi-path-validator.ts`
+## Task 6: 沙箱 extension `backend/scripts/pi-path-validator.ts`
 
 - [ ] `pi.on("tool_call", ...)` 四步:白名单外一律 block(文件工具 ∪ env `PI_WEB_TOOLS`);文件工具提路径→realpath→必须落在 `ALLOWED_DIR` 内(**分隔符边界比较**,防 `/u/1` 匹配 `/u/10`)+ 敏感路径正则 block;`fetch_content` 校验 `url` 与 `urls[]` **全部元素**(仅 `http:`/`https:`,拒绝绝对/相对本地路径与 `file:`/`data:`/`gopher:`/`ftp:` 等);`ALLOWED_DIR` 未设置→文件工具全拒(fail-closed)
 - [ ] 敏感路径正则表与 `path-validator.py` **逐条同步**(`/etc/shadow`、`~/.ssh`、`~/.aws`、Keychains 等,含 macOS `/private` 前缀)
 - [ ] `ALLOWED_DIR`/`PI_WEB_TOOLS` 都从 `process.env` 读,不硬编码工具名
+- [ ] 产物落 `backend/scripts/`(tracked);在 `SECURITY_DEPLOYMENT.md` 的 cp 步骤与 Dockerfile `COPY` 步骤里补上这个文件,并在本地复制一份到运行时 `scripts/`,否则 Task 11 的集成测试无从跑起
 - [ ] **不**实现 IP/DNS 级 SSRF 校验(那是 `pi-web-access/ssrf-protection.ts` 的职责,规格已论证它更严)
 - [ ] `security_test.go`:把 `TestDangerousToolsCrossLanguageSync` 扩为三语言(同时解析 TS 的拒绝集合与敏感路径正则,任一漂移即失败)
 - [ ] 新增 TS 用例(以 shell 驱动,参照既有 `TestPathValidator_WebFetchSSRF` 的手法):路径边界 5 条 + `fetch_content` URL 校验 8 条(含 `urls[]` 任一非法即整体 block、空 `url`/空 `urls` 拒绝)
-- [ ] 新增配置一致性测试:断言 `scripts/web-search.json.sample` 里 `allowBrowserCookies` 为 `false`、`ssrf.allowRanges` 为空、`ssrf.trustEnvProxy` 为 `false`、`sourceCheck` 已关
+- [ ] 配置一致性测试已在 Task 1 随产物落地(`backend/scripts/web-search.json.sample`),本任务只需复核其仍然通过
 
 **闸门:** 全局闸门 + `npx tsc --noEmit scripts/pi-path-validator.ts`(或等价的类型检查;若引入 TS 工具链需先确认不污染前端 `package.json`)
 **提交:** `feat(security): pi 沙箱 extension 与三语言同步测试`
@@ -268,7 +308,7 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 
 ## Task 10: `start.sh`、README 与部署文档
 
-- [ ] `start.sh`:补 `command -v pi` 检查、把 `/opt/homebrew/bin` 加进 PATH(Apple Silicon 的 npm 全局 bin 在此,脚本目前只补 `/usr/local/bin`)、检查 `pi-web-access` 是否已装;顺带修 `:28` 的 `brew install poppler` 缺 `|| true`(它会阻塞启动)
+- [ ] `start.sh`:补 `command -v pi` 检查、把 `/opt/homebrew/bin` 加进 PATH(Apple Silicon 的 npm 全局 bin 在此,脚本目前只补 `/usr/local/bin`)、检查 `pi-web-access` 是否已装;顺带修 `:28` 的 `brew install poppler` 缺 `|| true`(它会阻塞启动);并在导出 `LLM_SCRIPTS_DIR`(`:137`)之后,把 `backend/scripts/` 下的 `path-validator.py` 与 `pi-path-validator.ts` 复制到运行时 `scripts/`(缺则复制)——消除部署文档里的手工步骤,也堵住「extension 缺失导致 pi 路径 fail-open」
 - [ ] README / README_ZH:Prerequisites 增 pi 与 Node 版本要求、`pi-web-access`(pin 版本)、`web-search.json` 必须固化的安全键(尤其 `allowBrowserCookies:false`)及其部署路径 `$PI_CODING_AGENT_DIR/web-search.json`;说明 claude/pi 按 Settings 开关择一生效
 - [ ] 写清规格的三条运维警示:①切换后端会使进行中的对话丢失上下文续接能力(历史消息仍在 DB),且**作废是双向的**、「切回原后端可恢复原对话」不成立;②后端切换仅 `admin` 账号可操作,**不要重命名或删除该账号**(`db/db.go:38` 那条无守卫迁移会把它升回,改名即锁死 UI 开关);③`--tools` 拦不住扩展**加载期**的任意代码,须 pin `pi-web-access` 版本并管控 `settings.json` 的 `packages` 列表
 
@@ -301,9 +341,12 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 | R3 | D2 把 prompt 从 argv 移到 stdin,是 claude 路径的一处可观测变化 | 既有单测 + 12 个 e2e 用例作为闸门;若某处依赖 argv prompt(如日志),在该任务内一并修正 |
 | R4 | Task 5 删除 `claudeBin` 形参会波及大量调用点,易与 Task 8 重叠 | Task 5 只改 `backend/claude` 内部与其直接调用方;`main.go`/`api`/`ingest` 的形参删除留给 Task 8。两任务不得同时修改同一文件 |
 | R5 | 会话池在浏览器断开后不回收 claude 子进程(既有问题,每轮全量 e2e 留约 8 个孤儿),pi 路径下同理会积累 node 进程 | 属既有缺陷,**不在本计划范围**;但 Task 11 的集成测试必须在 teardown 里显式 kill 自己 spawn 的进程,不得加剧 |
+| R6 | `pi-path-validator.ts` 若不在运行时 `scripts/` 里,pi 路径将没有任何工具调用拦截(安全 fail-open);而仓库根 `scripts/` 被 git 忽略,新克隆里天然没有该文件 | 三重防护:产物 tracked 在 `backend/scripts/`;Task 2 的 `os.Stat` 前置校验(缺失即拒绝产出 argv);Task 10 让 `start.sh` 自动复制 |
+| R7 | `source_check` 在 pi-web-access 里**默认注册且启用**(`index.ts:271-274`),`--tools` 白名单只决定「不授予调用」 | 两道防线:白名单不含它 + `web-search.json` 里 `tools.sourceCheck.enabled=false`(Task 1 的 sample 已固化,并由 `config_test.go` 的一致性测试守护) |
 
 ## 开放项(承规格,本计划不做)
 
 1. pi-web 的会话常驻模型(`sessiond` + `web` 拆分)——与现有 30s 清理策略冲突,暂不采用
 2. SSE 重连恢复简化(用 `get_messages` 取代 `streamingContent` 累积 + `sseReconnectContent` 去重)——留作 pi 路径稳定后的独立简化项
 3. `backend/dependencies` 的孤儿状态(前端至今未消费 `/api/dependencies/status`)——仅复用其探测手法,不扩大范围
+4. `config.Load()` 不可测:它内部 `flag.String` + `flag.Parse()`,二次调用即 panic,导致 `PiBin`/`ClaudeBin` 的 env 解析无法单测。应拆成「纯函数解析(可注入 env/args)」+「薄壳 `Load()`」。**本计划不做**(属既有结构问题,与后端切换无关)
