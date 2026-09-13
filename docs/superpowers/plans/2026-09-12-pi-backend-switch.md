@@ -384,7 +384,7 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 **闸门:** 全局闸门 + `pytest tests/e2e/test_chat_streaming.py` 12 passed(claude 路径回归)
 **提交:** `feat(agent): resolver 与会话层接入,spawn 统一走 Protocol.Bin()`
 
-### ✅ Task 5 已完成(`c317065`,2026-09-13)—— **但 e2e 闸门未执行,见末尾**
+### ✅ Task 5 已完成(`c317065` + `b9e99d3`,2026-09-13)—— e2e 闸门已补跑至 12 passed,但过程中查出两处是非,见末尾
 
 交付:`agent/resolver.go`、`agent/resolver_test.go`(7 个用例)、`agent/invariant_test.go`(2 个用例);改造 `claude/{session,query_pool,client}.go`、`db/models.go`、`main.go`(2 行)与 4 个测试文件的注入方式。
 
