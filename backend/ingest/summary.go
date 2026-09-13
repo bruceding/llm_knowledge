@@ -27,7 +27,7 @@ const summaryPrompt = `请阅读文件 %s 的内容，并用200-300字概括其�
 // Claude uses its Read tool to read the paper.md content
 // userDir is the user's directory for Claude session isolation
 // rawRelPath is the path relative to userDir (e.g., "raw/papers/title" or "raw/rss/feed/title.md")
-func GenerateSummary(userDir string, rawRelPath string, claudeBin string) (string, error) {
+func GenerateSummary(userDir string, rawRelPath string) (string, error) {
 	summarySem <- struct{}{}
 	defer func() { <-summarySem }()
 
@@ -48,7 +48,7 @@ func GenerateSummary(userDir string, rawRelPath string, claudeBin string) (strin
 	}
 
 	// Create Claude client
-	client := claude.NewClientWithPath(claudeBin)
+	client := claude.NewClient()
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)

@@ -16,8 +16,7 @@ import (
 
 func TestWebHandlerExists(t *testing.T) {
 	h := WebHandler{
-		DataDir:   "/tmp/test",
-		ClaudeBin: "claude",
+		DataDir: "/tmp/test",
 	}
 	if h.DataDir != "/tmp/test" {
 		t.Errorf("Expected DataDir to be set")

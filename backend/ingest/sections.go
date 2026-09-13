@@ -56,7 +56,7 @@ type rawSection struct {
 // Results are cached to sections/index.json (+ per-section <slug>.src.md) so
 // re-opening the view is instant. userDir is the Claude working directory;
 // rawRelPath is the paper dir relative to userDir (e.g. "raw/papers/foo").
-func Sectionize(userDir, rawRelPath, claudeBin string) ([]Section, error) {
+func Sectionize(userDir, rawRelPath string) ([]Section, error) {
 	sectionsDir := filepath.Join(userDir, rawRelPath, "sections")
 	paperMdPath := filepath.Join(userDir, rawRelPath, "paper.md")
 	// Cache hit only if index.json exists AND paper.md hasn't changed since
@@ -76,7 +76,7 @@ func Sectionize(userDir, rawRelPath, claudeBin string) ([]Section, error) {
 		return nil, fmt.Errorf("timed out waiting for sectionize slot: %w", acquireCtx.Err())
 	}
 
-	client := claude.NewClientWithPath(claudeBin)
+	client := claude.NewClient()
 	// Sectionize reads the whole paper and emits all section bodies — give it
 	// more room than a single-section explain.
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
@@ -283,7 +283,7 @@ const sectionExplainPrompt = `请用 Read 工具读取文件 %s。
 // titles can no longer make Claude explain the wrong occurrence.
 // userDir is the Claude working directory; srcRelPath is <slug>.src.md
 // relative to userDir.
-func GenerateSectionExplain(userDir, srcRelPath, sectionTitle, claudeBin string) (string, error) {
+func GenerateSectionExplain(userDir, srcRelPath, sectionTitle string) (string, error) {
 	acquireCtx, acCancel := context.WithTimeout(context.Background(), 200*time.Second)
 	defer acCancel()
 	select {
@@ -293,7 +293,7 @@ func GenerateSectionExplain(userDir, srcRelPath, sectionTitle, claudeBin string)
 		return "", fmt.Errorf("timed out waiting for generation slot: %w", acquireCtx.Err())
 	}
 
-	client := claude.NewClientWithPath(claudeBin)
+	client := claude.NewClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 

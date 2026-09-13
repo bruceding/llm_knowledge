@@ -43,9 +43,8 @@ func setupQueryHandler(t *testing.T) *QueryHandler {
 	t.Cleanup(func() { pool.Close() })
 
 	return &QueryHandler{
-		DataDir:   dataDir,
-		ClaudeBin: "/nonexistent/claude",
-		Pool:      pool,
+		DataDir: dataDir,
+		Pool:    pool,
 	}
 }
 

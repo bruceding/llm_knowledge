@@ -6,124 +6,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"llm-knowledge/agent"
 )
-
-// TestBuildSecureArgs_AlwaysContainsDisallowedTools is the regression test for the
-// production incident where --dangerously-skip-permissions silently neutralized
-// --allowedTools, letting the model run Bash/Task/etc. The contract: every
-// invocation MUST emit --disallowedTools containing the dangerous set.
-func TestBuildSecureArgs_AlwaysContainsDisallowedTools(t *testing.T) {
-	cases := [][]string{
-		nil,
-		{},
-		{"Read"},
-		{"Read", "Glob", "Grep", "LS"},
-		{"Read", "Write", "Edit"},
-	}
-
-	for _, allowed := range cases {
-		args, err := BuildSecureArgs(allowed)
-		if err != nil {
-			t.Fatalf("BuildSecureArgs(%v) returned unexpected error: %v", allowed, err)
-		}
-
-		idx := slices.Index(args, "--disallowedTools")
-		if idx < 0 || idx == len(args)-1 {
-			t.Fatalf("BuildSecureArgs(%v) missing --disallowedTools value: %v", allowed, args)
-		}
-		value := args[idx+1]
-
-		// Every dangerous tool must appear in the value (csv).
-		toolSet := strings.Split(value, ",")
-		for _, dangerous := range DangerousDisallowedTools {
-			if !slices.Contains(toolSet, dangerous) {
-				t.Errorf("BuildSecureArgs(%v) --disallowedTools missing %q (got %q)",
-					allowed, dangerous, value)
-			}
-		}
-	}
-}
-
-func TestBuildSecureArgs_AllowedToolsRespected(t *testing.T) {
-	args, err := BuildSecureArgs([]string{"Read", "Glob"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	idx := slices.Index(args, "--allowedTools")
-	if idx < 0 || idx == len(args)-1 {
-		t.Fatalf("--allowedTools not present: %v", args)
-	}
-	if args[idx+1] != "Read,Glob" {
-		t.Errorf("--allowedTools value = %q, want %q", args[idx+1], "Read,Glob")
-	}
-}
-
-func TestBuildSecureArgs_EmptyAllowedToolsOmitsFlag(t *testing.T) {
-	// When the caller passes no allowed tools (rare but legal — e.g., text-only
-	// prompts), --allowedTools should not appear; --disallowedTools must still
-	// appear so dangerous tools remain blocked.
-	args, err := BuildSecureArgs(nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if slices.Contains(args, "--allowedTools") {
-		t.Errorf("expected --allowedTools to be omitted when input is nil, got %v", args)
-	}
-	if !slices.Contains(args, "--disallowedTools") {
-		t.Errorf("expected --disallowedTools to remain, got %v", args)
-	}
-}
-
-func TestBuildSecureArgs_BypassFlagPresent(t *testing.T) {
-	args, err := BuildSecureArgs([]string{"Read"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !slices.Contains(args, "--dangerously-skip-permissions") {
-		t.Errorf("expected --dangerously-skip-permissions flag, got %v", args)
-	}
-}
-
-// TestDangerousDisallowedTools_CoversKnownAttackVectors locks in the minimum set
-// of tools that must never be reachable. Adding a new dangerous tool to the
-// product should add it here too.
-func TestDangerousDisallowedTools_CoversKnownAttackVectors(t *testing.T) {
-	required := []string{"Bash", "Task", "NotebookEdit", "KillShell", "BashOutput", "SlashCommand"}
-	for _, tool := range required {
-		if !slices.Contains(DangerousDisallowedTools, tool) {
-			t.Errorf("DangerousDisallowedTools missing required tool %q", tool)
-		}
-	}
-}
-
-// TestBuildSecureArgs_RejectsAllowedDangerousOverlap verifies BuildSecureArgs
-// rejects programming errors where a caller passes a dangerous tool name into
-// allowedTools. Without this guard, the CLI would receive conflicting
-// --allowedTools and --disallowedTools entries with undefined precedence.
-//
-// Returns an error rather than panicking so a buggy caller inside a goroutine
-// can't crash the whole server process.
-func TestBuildSecureArgs_RejectsAllowedDangerousOverlap(t *testing.T) {
-	for _, dangerous := range DangerousDisallowedTools {
-		t.Run(dangerous, func(t *testing.T) {
-			args, err := BuildSecureArgs([]string{"Read", dangerous})
-			if err == nil {
-				t.Errorf("expected error when allowedTools contains %q, got args=%v", dangerous, args)
-			}
-			if args != nil {
-				t.Errorf("expected nil args on error, got %v", args)
-			}
-		})
-	}
-}
 
 // TestCleanupStaleSettings_AgeGated verifies that orphaned settings files
 // older than the cutoff are removed while recent files (potentially in use by
@@ -160,31 +50,6 @@ func TestCleanupStaleSettings_AgeGated(t *testing.T) {
 	}
 	if _, err := os.Stat(unrelatedPath); err != nil {
 		t.Errorf("expected unrelated file kept, stat err=%v", err)
-	}
-}
-
-// TestBuildSecureEnv_ResolvesSymlinks pins the macOS symlink-aware behavior:
-// /tmp on macOS is a symlink to /private/tmp, but path-validator.py calls
-// os.path.realpath(allowed_dir) and resolves it. If BuildSecureEnv left the
-// raw path, every path inside ALLOWED_DIR would mismatch and be denied.
-func TestBuildSecureEnv_ResolvesSymlinks(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("symlink layout for /tmp is macOS-specific")
-	}
-
-	tmp := t.TempDir() // typically /var/folders/.../T/... → realpath /private/var/...
-	resolved, err := filepath.EvalSymlinks(tmp)
-	if err != nil {
-		t.Fatalf("EvalSymlinks(%q): %v", tmp, err)
-	}
-	if resolved == tmp {
-		t.Skipf("temp dir %q has no symlink layer; nothing to verify", tmp)
-	}
-
-	env := BuildSecureEnv(tmp)
-	want := "ALLOWED_DIR=" + resolved
-	if !slices.Contains(env, want) {
-		t.Errorf("BuildSecureEnv(%q) did not emit %q; env=%v", tmp, want, env)
 	}
 }
 
@@ -242,7 +107,7 @@ func TestPathValidator_WebFetchSSRF(t *testing.T) {
 }
 
 // TestDangerousToolsCrossLanguageSync 校验三份实现的危险工具集合与敏感路径正则表保持对齐:
-// Go 的 DangerousDisallowedTools、Python 的 ALWAYS_DENIED_TOOLS(Claude CLI hook)、
+// Go 的 agent.ClaudeDangerousDisallowedTools、Python 的 ALWAYS_DENIED_TOOLS(Claude CLI hook)、
 // TS 的 ALWAYS_DENIED_TOOLS(pi extension)。任一漂移都会产生静默的防御缺口
 // (例如某工具在 CLI 被拦但 hook 兜底没拦,或反之)。本测试曾抓到 PR #42 评审报出的
 // SlashCommand 漂移。
@@ -274,14 +139,14 @@ func TestDangerousToolsCrossLanguageSync(t *testing.T) {
 		pyTools = append(pyTools, string(tok[1]))
 	}
 
-	for _, goTool := range DangerousDisallowedTools {
+	for _, goTool := range agent.ClaudeDangerousDisallowedTools {
 		if !slices.Contains(pyTools, goTool) {
-			t.Errorf("Go DangerousDisallowedTools has %q but Python ALWAYS_DENIED_TOOLS does not (drift)", goTool)
+			t.Errorf("Go agent.ClaudeDangerousDisallowedTools has %q but Python ALWAYS_DENIED_TOOLS does not (drift)", goTool)
 		}
 	}
 	for _, pyTool := range pyTools {
-		if !slices.Contains(DangerousDisallowedTools, pyTool) {
-			t.Errorf("Python ALWAYS_DENIED_TOOLS has %q but Go DangerousDisallowedTools does not (drift)", pyTool)
+		if !slices.Contains(agent.ClaudeDangerousDisallowedTools, pyTool) {
+			t.Errorf("Python ALWAYS_DENIED_TOOLS has %q but Go agent.ClaudeDangerousDisallowedTools does not (drift)", pyTool)
 		}
 	}
 
@@ -299,7 +164,7 @@ func TestDangerousToolsCrossLanguageSync(t *testing.T) {
 	tsMapping := tsStringMap(t, tsBody, "DENIED_TOOL_MAPPING")
 
 	// Go 的每个危险工具,TS 侧必须明确表态:有 pi 对应物且已进拒绝集合,或被显式记为无对应物。
-	for _, goTool := range DangerousDisallowedTools {
+	for _, goTool := range agent.ClaudeDangerousDisallowedTools {
 		piName, mapped := tsMapping[goTool]
 		switch {
 		case mapped:
@@ -309,14 +174,14 @@ func TestDangerousToolsCrossLanguageSync(t *testing.T) {
 		case slices.Contains(tsNoCounterpart, goTool):
 			// 无对应物且已显式记录,符合预期
 		default:
-			t.Errorf("Go DangerousDisallowedTools has %q but the TS extension neither maps it via DENIED_TOOL_MAPPING nor lists it in DENIED_TOOLS_WITHOUT_PI_COUNTERPART (drift)", goTool)
+			t.Errorf("Go agent.ClaudeDangerousDisallowedTools has %q but the TS extension neither maps it via DENIED_TOOL_MAPPING nor lists it in DENIED_TOOLS_WITHOUT_PI_COUNTERPART (drift)", goTool)
 		}
 	}
 
 	// 反向:TS 的映射键不能是 Go 侧已不存在的陈旧工具名。
 	for claudeName := range tsMapping {
-		if !slices.Contains(DangerousDisallowedTools, claudeName) {
-			t.Errorf("TS DENIED_TOOL_MAPPING has stale Claude tool %q not in Go DangerousDisallowedTools (drift)", claudeName)
+		if !slices.Contains(agent.ClaudeDangerousDisallowedTools, claudeName) {
+			t.Errorf("TS DENIED_TOOL_MAPPING has stale Claude tool %q not in Go agent.ClaudeDangerousDisallowedTools (drift)", claudeName)
 		}
 	}
 

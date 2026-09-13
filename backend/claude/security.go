@@ -135,15 +135,15 @@ func generateSettingsFile(scriptsDir string) (string, error) {
 	// Hook all file-access and execution tools as defense-in-depth. Even if
 	// --disallowedTools is misconfigured, the hook will deny these tools.
 	//
-	// The always-denied half is derived from DangerousDisallowedTools so the
+	// The always-denied half is derived from agent.ClaudeDangerousDisallowedTools so the
 	// CLI flag list and the hook list cannot drift apart. ALWAYS_DENIED_TOOLS
-	// in path-validator.py must mirror DangerousDisallowedTools as well.
+	// in path-validator.py must mirror agent.ClaudeDangerousDisallowedTools as well.
 	//
 	// WebFetch is hooked separately so the validator can apply SSRF protection
 	// (block loopback / link-local / RFC1918 / cloud metadata) without removing
 	// the tool entirely — public-internet WebFetch is still useful.
 	pathValidatedTools := []string{"Read", "Write", "Edit", "Glob", "Grep", "LS"}
-	hookedTools := append(pathValidatedTools, DangerousDisallowedTools...)
+	hookedTools := append(pathValidatedTools, agent.ClaudeDangerousDisallowedTools...)
 	hookedTools = append(hookedTools, "WebFetch")
 
 	// Claude CLI matchers accept regex alternation, so collapse the per-tool
@@ -207,19 +207,6 @@ type Hook struct {
 	Type    string `json:"type"`
 	Command string `json:"command,omitempty"`
 	Timeout int    `json:"timeout,omitempty"`
-}
-
-// BuildSecureEnv 转发到 agent.ClaudeProtocol.Env,保留以兼容既有调用点。
-func BuildSecureEnv(allowedDir string) []string {
-	return agent.NewClaudeProtocol("claude", GetSettingsPath()).Env(allowedDir)
-}
-
-// DangerousDisallowedTools 已迁至 agent.ClaudeDangerousDisallowedTools,保留别名。
-var DangerousDisallowedTools = agent.ClaudeDangerousDisallowedTools
-
-// BuildSecureArgs 转发到 agent.ClaudeProtocol.SecureArgs,保留以兼容既有调用点。
-func BuildSecureArgs(allowedTools []string) ([]string, error) {
-	return agent.NewClaudeProtocol("claude", GetSettingsPath()).SecureArgs(allowedTools)
 }
 
 // CleanupSecuritySettings removes the settings file (call on server shutdown)

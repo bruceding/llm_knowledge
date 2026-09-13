@@ -36,19 +36,17 @@ var execClaudeAllowlist = map[string]string{
 	// /api/dependencies/status 的消费(该接口至今无人调用,属既有孤儿功能)。
 	"dependencies/checker.go": "规格豁免:dependencies checker 保持 claude 专有,本次不扩大范围",
 
-	// TODO(Task 8):PDF 逐页转 Markdown 这一处要改走 agent.Current() + OnceArgs +
-	// proto.Bin() + prompt 入 stdin(计划 D2/D3),并删掉硬编码的 --model sonnet。
-	// Task 8 完成后必须删除本条,否则本测试会以「豁免项已不再命中」失败。
-	"api/documents.go": "Task 8 待办:改走 agent.Current()",
+	// api/documents.go 的豁免已于 Task 8 删除:PDF 逐页转 Markdown 改走
+	// agent.Current() + proto.OnceArgs(..., "sonnet") + proto.Bin(),prompt 入 stdin。
 }
 
 // newClaudeProtocolAllowlist 是允许直接构造 ClaudeProtocol 的文件。
-var newClaudeProtocolAllowlist = map[string]string{
-	// BuildSecureArgs / BuildSecureEnv 两个兼容垫片,供尚未改造的调用点使用。
-	// Task 8 把 api/documents.go 迁到 agent.Current() 之后,这两个垫片将只剩测试
-	// 调用点,届时应一并删除并移除本条豁免。
-	"claude/security.go": "兼容垫片 BuildSecureArgs/BuildSecureEnv;Task 8 之后应删除",
-}
+//
+// Task 8 之后**为空**:唯一的条目是 claude/security.go 的 BuildSecureArgs /
+// BuildSecureEnv 两个兼容垫片,它们随 api/documents.go 迁到 agent.Current() 一起
+// 删掉了。保留这个空 map 而不是删掉变量:它让「今后谁再硬编码构造 ClaudeProtocol」
+// 仍然会被判红,同时把「当前没有任何豁免」这件事写成显式事实。
+var newClaudeProtocolAllowlist = map[string]string{}
 
 // backendPiExemptDir 是唯一允许出现 BackendPi 的目录。
 const backendPiExemptDir = "agent"

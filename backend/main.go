@@ -230,8 +230,7 @@ func main() {
 
 	// Raw file storage API (protected)
 	rawH := &api.RawHandler{
-		DataDir:   cfg.DataDir,
-		ClaudeBin: cfg.ClaudeBin,
+		DataDir: cfg.DataDir,
 	}
 	apiGroup.POST("/raw/pdf", rawH.UploadPDF, middleware.BodyLimit("50M"))
 	apiGroup.POST("/raw/pdf-url", rawH.UploadPDFFromURL)
@@ -242,7 +241,6 @@ func main() {
 
 	webH := &api.WebHandler{
 		DataDir:     cfg.DataDir,
-		ClaudeBin:   cfg.ClaudeBin,
 		BrowserPool: browserPool,
 	}
 	apiGroup.POST("/raw/web", webH.UploadWeb)
@@ -250,8 +248,7 @@ func main() {
 
 	// Document CRUD API (protected)
 	docH := &api.DocHandler{
-		DataDir:   cfg.DataDir,
-		ClaudeBin: cfg.ClaudeBin,
+		DataDir: cfg.DataDir,
 	}
 	apiGroup.GET("/documents/inbox", docH.ListInbox)
 	apiGroup.GET("/documents", docH.ListAll)
@@ -277,9 +274,8 @@ func main() {
 	// Query API (SSE streaming with session pool) (protected)
 	querySessionPool := claude.NewQuerySessionPool(cfg.DataDir)
 	queryH := &api.QueryHandler{
-		DataDir:   cfg.DataDir,
-		ClaudeBin: cfg.ClaudeBin,
-		Pool:      querySessionPool,
+		DataDir: cfg.DataDir,
+		Pool:    querySessionPool,
 	}
 	apiGroup.POST("/query/conversation", queryH.CreateConversation)
 	apiGroup.GET("/query/stream", queryH.Stream)
@@ -292,8 +288,7 @@ func main() {
 
 	// Translate API (SSE streaming) (protected)
 	translateH := &api.TranslateHandler{
-		DataDir:   cfg.DataDir,
-		ClaudeBin: cfg.ClaudeBin,
+		DataDir: cfg.DataDir,
 	}
 	apiGroup.POST("/translate", translateH.Translate)
 
@@ -351,8 +346,7 @@ func main() {
 
 	// RSS API (protected)
 	rssH := &api.RSSHandler{
-		DataDir:   cfg.DataDir,
-		ClaudeBin: cfg.ClaudeBin,
+		DataDir: cfg.DataDir,
 	}
 	apiGroup.POST("/rss/feeds", rssH.AddFeed)
 	apiGroup.GET("/rss/feeds", rssH.ListFeeds)
@@ -364,8 +358,7 @@ func main() {
 
 	// Newsletter IMAP API (protected)
 	newsletterH := &api.NewsletterHandler{
-		DataDir:   cfg.DataDir,
-		ClaudeBin: cfg.ClaudeBin,
+		DataDir: cfg.DataDir,
 	}
 	apiGroup.GET("/imap/config", newsletterH.GetConfig)
 	apiGroup.PUT("/imap/config", newsletterH.UpdateConfig)
@@ -380,7 +373,6 @@ func main() {
 	// Blog Feed API (protected)
 	blogH := &api.BlogHandler{
 		DataDir:     cfg.DataDir,
-		ClaudeBin:   cfg.ClaudeBin,
 		BrowserPool: browserPool,
 	}
 	apiGroup.POST("/blog/feeds", blogH.AddFeed)

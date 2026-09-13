@@ -120,17 +120,17 @@ type: topic
 
 // Pipeline manages the ingestion of raw documents into the wiki
 type Pipeline struct {
-	WikiDir string       // Path to the wiki directory (relative to UserDir)
-	UserDir string       // User's directory for Claude session isolation
+	WikiDir string // Path to the wiki directory (relative to UserDir)
+	UserDir string // User's directory for Claude session isolation
 	Claude  *claude.Client
 }
 
 // NewPipeline creates a new ingest pipeline
-func NewPipeline(userDir string, claudeBin string) *Pipeline {
+func NewPipeline(userDir string) *Pipeline {
 	return &Pipeline{
 		WikiDir: filepath.Join(userDir, "wiki"),
 		UserDir: userDir,
-		Claude:  claude.NewClientWithPath(claudeBin),
+		Claude:  claude.NewClient(),
 	}
 }
 

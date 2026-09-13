@@ -148,7 +148,7 @@ func TestTranslateHandler_InvalidRequest(t *testing.T) {
 	defer cleanupTestDB(t)
 
 	e := setupTestEcho()
-	handler := &TranslateHandler{DataDir: t.TempDir(), ClaudeBin: "/nonexistent/claude"}
+	handler := &TranslateHandler{DataDir: t.TempDir()}
 
 	// Test empty body - c.Bind returns nil for empty body, docId will be 0
 	req := httptest.NewRequest(http.MethodPost, "/api/translate", nil)
@@ -179,7 +179,7 @@ func TestTranslateHandler_DocumentNotFound(t *testing.T) {
 	defer cleanupTestDB(t)
 
 	e := setupTestEcho()
-	handler := &TranslateHandler{DataDir: t.TempDir(), ClaudeBin: "/nonexistent/claude"}
+	handler := &TranslateHandler{DataDir: t.TempDir()}
 
 	body := `{"docId": 999, "targetLang": "zh"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/translate", strings.NewReader(body))

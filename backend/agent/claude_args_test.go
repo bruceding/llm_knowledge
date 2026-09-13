@@ -225,3 +225,45 @@ func TestClaudeEnv_EmptyDirReturnsNil(t *testing.T) {
 		t.Fatalf("expected nil env for empty allowedDir, got: %v", env)
 	}
 }
+
+// 以下三个用例原先住在 claude/security_test.go,测的是兼容垫片 BuildSecureArgs 与
+// DangerousDisallowedTools 别名。Task 8 删掉垫片后把它们搬到这里:它们钉住的是
+// SecureArgs 与危险工具清单**本身**的行为,与「由哪个包暴露」无关,不该随垫片消失。
+
+func TestClaudeSecureArgs_EmptyAllowedToolsOmitsFlag(t *testing.T) {
+	// 调用方不传任何 allowed tool 时(少见但合法,例如纯文本 prompt),
+	// --allowedTools 不该出现;但 --disallowedTools 必须仍在,否则危险工具就放开了。
+	p := &ClaudeProtocol{bin: "claude"}
+	args, err := p.SecureArgs(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if slices.Contains(args, "--allowedTools") {
+		t.Errorf("expected --allowedTools to be omitted when input is nil, got %v", args)
+	}
+	if !slices.Contains(args, "--disallowedTools") {
+		t.Errorf("expected --disallowedTools to remain, got %v", args)
+	}
+}
+
+func TestClaudeSecureArgs_BypassFlagPresent(t *testing.T) {
+	p := &ClaudeProtocol{bin: "claude"}
+	args, err := p.SecureArgs([]string{"Read"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !slices.Contains(args, "--dangerously-skip-permissions") {
+		t.Errorf("expected --dangerously-skip-permissions flag, got %v", args)
+	}
+}
+
+// TestClaudeDangerousDisallowedTools_CoversKnownAttackVectors 锁定「绝不能可达」的
+// 工具最小集合。产品里新增危险工具时,这里也要跟着加。
+func TestClaudeDangerousDisallowedTools_CoversKnownAttackVectors(t *testing.T) {
+	required := []string{"Bash", "Task", "NotebookEdit", "KillShell", "BashOutput", "SlashCommand"}
+	for _, tool := range required {
+		if !slices.Contains(ClaudeDangerousDisallowedTools, tool) {
+			t.Errorf("ClaudeDangerousDisallowedTools missing required tool %q", tool)
+		}
+	}
+}

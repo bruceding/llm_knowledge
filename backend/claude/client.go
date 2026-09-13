@@ -13,20 +13,19 @@ import (
 
 // Client wraps the Claude CLI binary for programmatic invocation.
 type Client struct {
-	BinPath string         // Path to the claude binary (e.g., "claude" or "/usr/local/bin/claude")
-	Proto   agent.Protocol // 协议实现;nil 时按 BinPath 惰性构造 ClaudeProtocol
+	// Proto 是协议实现。nil 时由 protocol() 向 resolver 惰性取当前生效后端 ——
+	// 这正是「Settings 里切后端」能对 once 调用链路生效的原因,所以**不要**给它
+	// 加一个二进制路径字段:那会让某个调用点重新钉死后端(Plan 1 遗留的接缝缺口)。
+	Proto agent.Protocol
 }
 
 // protocol 返回生效的 Protocol。
 //
-// c.Proto 非空时用它(显式注入;Task 8 之后 ingest 与 api 都走这条路)。否则向
-// resolver 取当前后端 —— **不得**在此直接 agent.NewClaudeProtocol(c.BinPath, ...):
-// 那是 Plan 1 遗留的硬编码构造点,留着就等于后端开关对 Client 这条路径无效
-// (Settings 切到 pi,而摘要/分节/翻译/PDF 转换依旧 spawn claude,且不报错)。
+// c.Proto 非空时用它(显式注入,供测试与需要钉死后端的场合)。否则向 resolver 取
+// 当前后端 —— **不得**在此直接 agent.NewClaudeProtocol(...):那是 Plan 1 遗留的
+// 硬编码构造点,留着就等于后端开关对 Client 这条路径无效(Settings 切到 pi,而
+// 摘要/分节/翻译/PDF 转换依旧 spawn claude,且不报错)。
 // agent/invariant_test.go 会把这种泄漏判红。
-//
-// 代价:BinPath 字段自此不再决定 spawn 哪个二进制,它只是 NewClientWithPath 的
-// 遗留入参。Task 8 删掉那 5 个调用点后,该字段与 NewClientWithPath 应一并移除。
 func (c *Client) protocol() (agent.Protocol, error) {
 	if c.Proto != nil {
 		return c.Proto, nil
@@ -280,11 +279,11 @@ func (c *Client) SendWithOutput(ctx context.Context, prompt string, output io.Wr
 }
 
 // NewClient creates a new Claude client with the default binary path ("claude").
+// NewClient returns a Client that resolves its backend lazily through the
+// resolver (see protocol()). There is deliberately no "WithPath" variant:
+// letting a call site pin the binary is exactly the seam that made Plan 1's
+// backend switch ineffective for the once-call paths (summary/sectionize/
+// translate/PDF), so the option was removed rather than deprecated.
 func NewClient() *Client {
-	return &Client{BinPath: "claude"}
-}
-
-// NewClientWithPath creates a new Claude client with a specific binary path.
-func NewClientWithPath(binPath string) *Client {
-	return &Client{BinPath: binPath}
+	return &Client{}
 }

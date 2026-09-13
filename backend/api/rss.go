@@ -28,8 +28,7 @@ import (
 )
 
 type RSSHandler struct {
-	DataDir   string
-	ClaudeBin string
+	DataDir string
 }
 
 type AddRSSFeedRequest struct {
@@ -364,18 +363,16 @@ func (h *RSSHandler) syncFeedInternal(feed *db.RSSFeed) SyncResult {
 		}
 
 		// Generate summary asynchronously if ClaudeBin is configured
-		if h.ClaudeBin != "" {
-			docID := doc.ID
-			go func() {
-				summary, err := ingest.GenerateSummary(userDir, "raw/rss/"+sanitizeFilename(feed.Name)+"/"+title+".md", h.ClaudeBin)
-				if err != nil {
-					fmt.Printf("[api] summary generation failed for RSS article %d: %v\n", docID, err)
-				} else {
-					db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
-					fmt.Printf("[api] summary generated for RSS article %d\n", docID)
-				}
-			}()
-		}
+		docID := doc.ID
+		go func() {
+			summary, err := ingest.GenerateSummary(userDir, "raw/rss/"+sanitizeFilename(feed.Name)+"/"+title+".md")
+			if err != nil {
+				fmt.Printf("[api] summary generation failed for RSS article %d: %v\n", docID, err)
+			} else {
+				db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
+				fmt.Printf("[api] summary generated for RSS article %d\n", docID)
+			}
+		}()
 
 		newArticles++
 	}

@@ -90,15 +90,12 @@ func (h *DocHandler) Sectionize(c echo.Context) error {
 	if !ok {
 		return nil
 	}
-	if h.ClaudeBin == "" {
-		return c.JSON(http.StatusServiceUnavailable, echo.Map{"error": "claude binary not configured"})
-	}
 	userDir := GetUserDir(c)
 	paperMdPath := filepath.Join(userDir, rawRelPath, "paper.md")
 	if _, err := os.Stat(paperMdPath); err != nil {
 		return c.JSON(http.StatusNotFound, echo.Map{"error": "paper content not generated yet"})
 	}
-	sections, err := ingest.Sectionize(userDir, rawRelPath, h.ClaudeBin)
+	sections, err := ingest.Sectionize(userDir, rawRelPath)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to sectionize: " + err.Error()})
 	}
@@ -118,9 +115,6 @@ func (h *DocHandler) GenerateSection(c echo.Context) error {
 	idx, err := strconv.Atoi(c.Param("index"))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"error": "invalid section index"})
-	}
-	if h.ClaudeBin == "" {
-		return c.JSON(http.StatusServiceUnavailable, echo.Map{"error": "claude binary not configured"})
 	}
 	userDir := GetUserDir(c)
 	sectionsDir := filepath.Join(userDir, rawRelPath, "sections")
@@ -146,10 +140,9 @@ func (h *DocHandler) GenerateSection(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to mark generating"})
 	}
 
-	claudeBin := h.ClaudeBin
 	go func() {
 		defer ingest.ClearGenerating(sectionsDir, section.Slug)
-		explanation, err := ingest.GenerateSectionExplain(userDir, srcRelPath, section.Title, claudeBin)
+		explanation, err := ingest.GenerateSectionExplain(userDir, srcRelPath, section.Title)
 		if err != nil || explanation == "" {
 			return
 		}

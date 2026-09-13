@@ -18,8 +18,7 @@ import (
 )
 
 type RawHandler struct {
-	DataDir   string // Global data dir for shared resources
-	ClaudeBin string // Path to Claude CLI binary
+	DataDir string // Global data dir for shared resources
 }
 
 // UploadPDF handles PDF file upload, saves the original file,
@@ -114,18 +113,16 @@ func (h *RawHandler) UploadPDF(c echo.Context) error {
 	docID := doc.ID
 
 	// Trigger async ingest pipeline
-	if h.ClaudeBin != "" {
-		// Generate summary asynchronously
-		go func() {
-			summary, err := ingest.GenerateSummary(userDir, "raw/papers/"+name, h.ClaudeBin)
-			if err != nil {
-				log.Printf("[api] summary generation failed for %s: %v", name, err)
-			} else {
-				db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
-				log.Printf("[api] summary generated for %s", name)
-			}
-		}()
-	}
+	// Generate summary asynchronously
+	go func() {
+		summary, err := ingest.GenerateSummary(userDir, "raw/papers/"+name)
+		if err != nil {
+			log.Printf("[api] summary generation failed for %s: %v", name, err)
+		} else {
+			db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
+			log.Printf("[api] summary generated for %s", name)
+		}
+	}()
 
 	return c.JSON(http.StatusOK, echo.Map{
 		"id":      doc.ID,
@@ -243,17 +240,15 @@ func (h *RawHandler) UploadPDFFromURL(c echo.Context) error {
 	docID := doc.ID
 
 	// Trigger async summary generation
-	if h.ClaudeBin != "" {
-		go func() {
-			summary, err := ingest.GenerateSummary(userDir, "raw/papers/"+name, h.ClaudeBin)
-			if err != nil {
-				log.Printf("[api] summary generation failed for %s: %v", name, err)
-			} else {
-				db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
-				log.Printf("[api] summary generated for %s", name)
-			}
-		}()
-	}
+	go func() {
+		summary, err := ingest.GenerateSummary(userDir, "raw/papers/"+name)
+		if err != nil {
+			log.Printf("[api] summary generation failed for %s: %v", name, err)
+		} else {
+			db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
+			log.Printf("[api] summary generated for %s", name)
+		}
+	}()
 
 	return c.JSON(http.StatusOK, echo.Map{
 		"id":      doc.ID,
