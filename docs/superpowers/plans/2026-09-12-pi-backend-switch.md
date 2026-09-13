@@ -141,6 +141,15 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 
 **代价:** `PiProtocol` 不再持有计划草图里的 `sessionDirRoot` 字段(改用常量 `piSessionDirName = ".pi-sessions"` 与 `Env()` 的 realpath 结果拼接);`--session-dir` 进入 Task 2 的「禁含旗标」断言清单,由 `TestPiArgs_NeverContainForbiddenFlags` 钉住。
 
+### D5:`tool_execution_end` **不**映射为 `DeltaToolEnd`(Task 4 实现时发现)
+
+本计划 Task 4 写的是「`toolcall_end` **或** `tool_execution_end`(→`DeltaToolEnd`.」。只实现前者,理由两条:
+
+1. `tool_execution_end` 是**顶层**事件,带的是 `toolCallId` 而**没有 `contentIndex`**(`rpc.md:1042-1050`)。映射成 `DeltaToolEnd` 会让 `Delta.Index` 落到零值 `0`,**可能误关掉另一个正在进行的工具** —— 而 `index 0` 是真实存在的槽位(规格实测:thinking 占 0、text 占 1)。
+2. `Process` 的 `activeTools` 是 `map[int]*activeTool`,**只按 Index 关联**;`Delta` 虽然有 `ToolID` 字段,但 `DeltaToolEnd` 分支不读它。要按 `toolCallId` 关联就得改 `claude` 包的 `Process` —— 那是 Task 4 的范围外,且会动到 claude 路径。
+
+**不丢功能:** `toolcall_end` 是 assistant 消息流的一部分,工具调用完成时必然到达;即便某轮缺席,`agent_settled` → `result` 会让 `Process` 重置 `activeTools`,不会泄漏。`tool_execution_start`/`update`/`end` 三者一并加入忽略清单(`update` 的 `partialResult` 是**累积快照**而非增量,`rpc.md:1052-1054`,放行会让前端重复显示)。
+
 ## 文件结构
 
 **创建**
@@ -330,6 +339,37 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 
 **闸门:** 全局闸门 + `go test ./agent/... ./claude/...` 逐条绿
 **提交:** `feat(agent): PiProtocol.ParseLine 归一化 pi 事件流`
+
+### ✅ Task 4 已完成(`731c0e4`,2026-09-13)
+
+交付:`pi_parse.go`(309)、`pi_parse_test.go`(60 个表驱动子用例)、`pi_constraints_test.go`(9 个约束用例)。`PiProtocol` 至此满足 `Protocol`,已补上 `var _ Protocol = (*PiProtocol)(nil)`。
+
+**权威源的选择:rpc.md 而不是 pi-ai 的 `.d.ts`。** 两者不一致,而 ParseLine 吃的是 rpc 线格式:
+
+| 事实 | 依据 |
+|---|---|
+| `.d.ts:411-455` 的每个 `assistantMessageEvent` 都带 `partial: AssistantMessage`(累积快照),但 **rpc 线格式已移除它** —— 照 `.d.ts` 写会去读一个线上根本不存在的字段 | `rpc.md:992-993` "intentionally omits the former cumulative `message` field and `assistantMessageEvent.partial"`;即风险登记 R2 记载的那次破坏性变更 |
+| `.d.ts:442` 的 `toolcall_start` 只有 `contentIndex`,而线上带 `id` 与 `toolName`(rpc 层补的) | `rpc.md:990` 的示例 + `:994` "`toolcall_start` provides the call `id` and `toolName`",与规格实测结论一致 |
+| `tool_execution_update.partialResult` 是**累积快照**而非增量 | `rpc.md:1052-1054` |
+| `agent_end` 之后仍可能跟 retry/compaction/queued,`agent_settled` 才是完全落定 | `rpc.md:893` vs `:905-911` |
+
+按计划要求,**没有**写 `{"type":"session",...}` 头行的用例(rpc 模式不发该头行,它只属于 `--mode json`)。
+
+**规格未覆盖、实现时从源码查出的坑:块类型必须翻译。** pi 的内容块叫 **`"toolCall"`**、入参字段叫 **`arguments` 且是个对象**(`pi-ai/types.d.ts:256-264`、`:307-312`),而 `claude` 包的 `ExtractToolUseFromAssistantMsg` 硬编码判 `block.Type == "tool_use"`。直接把 `message_end.message` 塑进归一化 `Message` 会让 pi 的工具块被**静默丢弃**。正常流式路径下看不出来(前端已从 `toolcall_start` 拿到 `tool_start`),这个洞只在 **SSE 重连**时暴露:重连走 assistant 完整消息 + `sentToolIDs` 去重那条路,拿不到工具块就永远补不回 `tool_start`。故 `convertPiMessage` 做三步翻译(`text`→`text`、`thinking`→`thinking` 且内容字段 `thinking`→`Text`、`toolCall`→`tool_use` 且 `arguments` 原样透传为 `RawMessage`),约束 8 穿 `StreamProcessor` 钉住。
+
+**D5 已落地**(见「决策点」):`tool_execution_end` 不映射为 `DeltaToolEnd`,因为它没有 `contentIndex`、而 `Process` 只按 Index 关联。
+
+**变异检验 8 处全部被抓**,且每条报错都直指用户可见后果:去掉 role 过滤 → 用户自己的提问被当助手回复推回;放行 `text_end.content` → 前端收到 3 段 delta(文本重复);`agent_end` 也驱动 done → 自动重试期间发出 3 个 done;`prompt` response 当完成信号 → 模型还没开口就 done;去掉空 `toolcall_delta` 守卫 → 多出一个 ToolInput 完全相同的 tool_input;不翻译 `toolCall` → 工具块被静默丢弃;`Delta.Index` 恒为 0 → 工具入参被丢弃;`get_state` 不归一化 → 上层拿不到真实 sessionId。
+
+**两个约束用例带对照组**(否则无法区分「被正确过滤」与「本来就不产生事件」):约束 2 用同样形状换成 `role=assistant` 断言必须下发 `full`;约束 7 用 index 错位的 delta 断言确实被丢弃(证明 `Index` 是被真实使用的键)。
+
+**为何用外部测试包:** `pi_constraints_test.go` 要把 `ParseLine` 的输出穿过 `claude` 包的 `StreamProcessor`,而 `claude` 已 import `agent`,包内测试无法反向 import;`agent_test` 与 `agent` 是两个不同的包,`agent_test → claude → agent` 不成环。
+
+**计数漂移(同 `ClaudeBin`「11 处 vs 实测 10 处」同类):** 本计划写「规格的 5 条约束逐条一个用例」,但规格的「实测确认的 pi 专有约束」只有 **3 条**编号约束(另有一节「其他实测细节」5 个要点)。实际写了 9 个:3 条编号约束 + `prompt` response 时序 + `agent_settled` vs `agent_end` + 空增量守卫 + `contentIndex` 一致性 + `toolCall` 翻译 + 错误可达前端。
+
+**接受的缺口:** 没有真跑一次 pi 重新采集事件序列。规格明写它那一列「以 2026-09-12 实测为准(pi 0.85.1 + qwen3.8-max,`--mode rpc`,单轮 prompt)」,而本机正是 pi 0.85.1 + 同一模型(Task 2 的探针已确认 `model.id=qwen3.8-max`),故沿用「规格实测 + rpc.md」双重来源,不为此消耗配额。真实 spawn 下的端到端行为属 Task 11 范围。
+
+**计划外收获:** 实测抓到 `extension_ui_request`(pi-subagents 在无任何请求时主动推 `setWidget`),它不在本任务的忽略清单里,靠「未知类型静默跳过」落地;已把真实样本写成用例钉住,免得后人给它加分支。
 
 ## Task 5: resolver + 会话层接入(收口 `Bin()` 与握手)
 
