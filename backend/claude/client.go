@@ -3,7 +3,6 @@ package claude
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"llm-knowledge/agent"
@@ -45,16 +44,6 @@ type (
 	ContentBlock = agent.ContentBlock
 )
 
-// RawEvent represents the raw JSON event from Claude CLI (used for parsing)
-type RawEvent struct {
-	Type    string          `json:"type"`
-	Subtype string          `json:"subtype"`
-	Result  string          `json:"result"`
-	IsError bool            `json:"is_error"`
-	Message json.RawMessage `json:"message"`
-	Event   json.RawMessage `json:"event"` // stream_event sub-event payload
-}
-
 // Send executes the Claude CLI with streaming JSON output.
 // Events are sent to the provided channel as they are received.
 // The caller should close the channel after Send returns.
@@ -82,6 +71,10 @@ func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamE
 		return fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 
+	// stderr 必须接管:不设时 os/exec 会把它接到 /dev/null,子进程的失败原因就彻底丢了。
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start claude command: %w", err)
 	}
@@ -91,55 +84,49 @@ func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamE
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 
+	emitted := 0
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
 
-		// Parse raw event first
-		var raw RawEvent
-		if err := json.Unmarshal(line, &raw); err != nil {
-			// Skip malformed JSON lines
+		// 解析一律走 Protocol 接缝,不在这里认任何后端的线格式。
+		//
+		// 两个后端的事件词表**没有交集**:claude 是 assistant/result/system,pi 的
+		// --mode json 是 message_update/message_end/agent_settled/response。改造前这里
+		// 用 claude 的 RawEvent 解析,而 spawn 已经跟随 resolver —— 于是切到 pi 之后
+		// 每个事件都落到 switch 之外,Content/Result 恒为空。后果不是「少一段文本」:
+		// api/translate.go 会拿这个空串**覆盖已有的 paper_<lang>.md 并报成功**,
+		// ingest 的进度与错误日志一起消失,而且 err 始终为 nil(静默失败)。
+		event, ok := proto.ParseLine(line)
+		if !ok {
+			// 畸形 JSON:与改造前一致,跳过
 			continue
 		}
 
-		// Convert to StreamEvent based on type
-		event := StreamEvent{
-			Type:    raw.Type,
-			Subtype: raw.Subtype,
-		}
-
-		switch raw.Type {
-		case "assistant":
-			// Parse message content
-			if raw.Message != nil {
-				var msg Message
-				if err := json.Unmarshal(raw.Message, &msg); err == nil {
-					event.Message = &msg
-					// Extract text from content blocks
-					for _, block := range msg.Content {
-						if block.Type == "text" && block.Text != "" {
-							event.Content = block.Text
-						}
-					}
-				}
-			}
-		case "result":
-			event.Content = raw.Result
-			event.Result = raw.Result
-			if raw.IsError {
-				event.Type = "error"
-				event.Error = raw.Result
-			}
+		switch event.Type {
 		case "system":
-			// Skip system messages (hooks, init, etc.) unless it's an error
-			if raw.Subtype == "error" {
-				event.Type = "error"
-			} else {
+			// 与改造前逐条等价:init/hook 之类的 system 帧不下发,只有 error 例外。
+			// pi 侧的 get_state 响应会被归一化成 system/init,正是这里要挡掉的 ——
+			// once 调用链路不需要 session id,下发它只会给 SSE 多出无意义的帧。
+			if event.Subtype != "error" {
 				continue
+			}
+			event.Type = "error"
+		case "result":
+			// claude 的 result 文本既作 Result 也作 Content(调用方两者都读);
+			// ResultIsError 时转成 error,与改造前的 is_error 分支一致。
+			// pi 的 agent_settled 归一化成**空** result(正文已由 message_end 下发),
+			// 于是这里只起「回合结束」的作用,不会覆盖已有内容。
+			event.Content = event.Result
+			if event.ResultIsError {
+				event.Type = "error"
+				event.Error = event.Result
 			}
 		}
 
 		// Send the event
 		eventCh <- event
+		emitted++
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -150,6 +137,22 @@ func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamE
 
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("claude command failed: %w", err)
+	}
+
+	// 零事件 + 有 stderr = 失败,即使退出码是 0。
+	//
+	// 实测 pi 0.85.1:模型/凭据不可用时,`--mode json` 只在 stdout 写一行 session 头
+	// (被 ParseLine 跳过)、把真正的原因写在 stderr,而**退出码是 0**。于是一个事件
+	// 也不产出、Wait() 返回 nil —— 调用方看到的是「成功但内容为空」,而
+	// api/translate.go 会拿这个空串覆盖已有的 paper_<lang>.md 并回 complete。
+	// 切换探测(ProbePi)也拦不住它:它只跑 `pi --version` + SessionArgs +
+	// web-search.json 静态预检,**不验凭据**。
+	//
+	// claude 侧同理成立:成功的 --print --output-format stream-json 至少会有一个
+	// result 事件,「零事件 + stderr 有内容」在那里同样是失败。
+	if emitted == 0 && stderr.Len() > 0 {
+		return fmt.Errorf("agent backend produced no events (stderr: %s)",
+			strings.SplitN(stderr.String(), "\n", 2)[0])
 	}
 
 	return nil
