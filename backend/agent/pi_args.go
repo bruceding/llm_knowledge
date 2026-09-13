@@ -147,16 +147,18 @@ func piSandboxExtensionPath(scriptsDir string) string {
 // 重名在 pi 侧是致命的 —— resolveToolNames(index.ts:303-311)对**已启用**的键
 // 检测到重名即抛错,扩展加载失败,pi 以退出码 1 退出(整个后端不可用,而
 // `pi --version` 探测不到,见 Task 1 的 I-1)。Go 侧无法阻止 pi 读同一份配置而
-// 失败,但至少:①自己产出的 --tools 与 PI_WEB_TOOLS 必须是良构的;②必须告警,
-// 因为 Task 1 的 warnInvalid 只覆盖单键非法,不覆盖跨键重名,这条路径此前是静默的。
+// 失败,但至少自己产出的 --tools 与 PI_WEB_TOOLS 必须是良构的。
+//
+// **本函数不再自己告警**:重名检测已下沉到 config.ValidatePiWebConfig —— 只有它能
+// 看到完整的四个键与 tools.*.enabled,从而精确镜像 pi「只对已启用的键查重名」的行为
+// (不过滤就会对 pi 其实接受的重名误报)。告警由 LoadPiWebToolNames 统一打;
+// 两处各告一次只会让同一条问题在日志里出现两遍。
 func resolvePiWebTools() []string {
 	names := config.LoadPiWebToolNames().Names()
 	out := make([]string, 0, len(names))
 	seen := make(map[string]bool, len(names))
 	for _, n := range names {
 		if seen[n] {
-			log.Printf("[agent] pi 联网工具名重复:%q 在 %s 里出现多次 —— Go 侧已按首次出现去重,但 pi-web-access 的 resolveToolNames(index.ts:303-311)会在同一份配置上抛错,导致扩展加载失败、pi 以退出码 1 退出,整个 pi 后端不可用(含不用 web 工具的 ingest 链路),而 `pi --version` 探测不到。请修正该文件",
-				n, config.PiWebSearchConfigPath())
 			continue
 		}
 		seen[n] = true

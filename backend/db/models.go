@@ -19,7 +19,7 @@ type Document struct {
 	Metadata   string         `json:"metadata"`                    // JSON string
 	SourceURL  string         `json:"sourceUrl"`                   // Original URL for web/rss/blog
 	SourceGUID string         `json:"sourceGuid"`                  // RSS item GUID for dedup
-	ChatSessionID string      `json:"chatSessionId"`               // Claude session ID for doc-chat --resume
+	ChatSessionID string      `json:"chatSessionId"`               // agent session ID (claude or pi) for resume
 	UserID     uint           `gorm:"index;not null;default:1" json:"userId"`
 	RSSFeedID  uint           `json:"rssFeedId"`  // Associated RSS feed
 	BlogFeedID uint           `json:"blogFeedId"` // Associated Blog feed
@@ -45,7 +45,7 @@ type DocumentTag struct {
 type Conversation struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	Title     string    `json:"title"`
-	SessionID string    `json:"sessionId"` // Claude session ID for --resume
+	SessionID string    `json:"sessionId"` // agent session ID (claude or pi) for resume
 	UserID    uint      `gorm:"index;not null;default:1" json:"userId"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`

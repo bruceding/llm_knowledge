@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"llm-knowledge/config"
 	"llm-knowledge/db"
 )
 
@@ -157,4 +160,51 @@ func readBackendName() string {
 		log.Printf("[agent] GlobalSettings.LLMBackend = %q 不是已知后端(claude/pi),已回退 claude。请检查该行的写入来源", name)
 		return name
 	}
+}
+
+// ProbePi 在管理员把后端切到 pi **之前**做一次可用性校验,nil 表示可以切。
+//
+// 不能走 Current():那时生效的后端还是旧值,探测不到目标后端。本函数用 Init 时
+// 登记的 PiBin / ScriptsDir 直接构造一个 PiProtocol 来探测。
+//
+// 三段校验,由浅入深、由便宜到贵:
+//
+//  1. 二进制可用:LookPath + `pi --version`(PiProtocol.Probe,5s 超时)
+//  2. 部署完整:SessionArgs 会因沙箱 extension 缺失而报错(fail-closed)。
+//     把风险登记 R6 从「首次聊天才炸」提前到「切换时就 400」
+//  3. 配置不会让 pi 整体拒绝启动:config.ValidatePiWebConfig 的 problem 为空
+//
+// 第 3 段是风险登记 R8 的处置,也是本函数存在的主要理由:R8 的后果是「切换探测
+// 通过、随后每个请求都失败」,而 `pi --version` 在 pi 的 main.js:483-486 提前
+// exit(0)、**根本不加载扩展**,所以第 1 段在结构上就探测不到它。
+//
+// 这里刻意**不**用「spawn 一次真 pi 看它起不起得来」来做第 3 段,尽管那能覆盖更多
+// 失败模式:①慢(扩展加载 + npm 包解析,秒级到数十秒),放在 PUT handler 里容易撞
+// HTTP 超时;②有副作用(会在 pi 的 agent 目录里留下会话文件,并触发已加载包的
+// 加载期代码,即 R1);③实测 pi 在 rpc 模式下 stdin EOF 后并不退出(探针等了 25s
+// 仍需外部 kill),要可靠收尾就得自己管进程生命周期。
+// 权衡下来:Go 与 pi-web-access 读的是同一个文件(不变式 I1 保证),所以 Go 完全
+// 能算出 pi 会不会在 resolveToolNames 上抛错 —— 用零成本、确定性的静态判定换掉
+// 一次昂贵且不确定的动态探测。「pi 能否真的带着扩展启动」留给 Task 11 的集成测试,
+// 那才是它该被验证的地方(CI 里跑,不占用户的一次 Settings 保存)。
+func ProbePi(ctx context.Context) error {
+	resolverMu.Lock()
+	opts, ready := resolverOpts, resolverReady
+	resolverMu.Unlock()
+	if !ready {
+		return errors.New("agent.Init was never called; cannot probe the pi backend")
+	}
+
+	proto := NewPiProtocol(opts.PiBin, opts.ScriptsDir)
+	if err := proto.Probe(ctx); err != nil {
+		return err
+	}
+	// 沙箱 extension 缺失 → SessionArgs 报错(R6 的 fail-closed 前置校验)
+	if _, err := proto.SessionArgs("", nil); err != nil {
+		return err
+	}
+	if _, problem := config.ValidatePiWebConfig(); problem != "" {
+		return fmt.Errorf("pi 会因这份配置整体拒绝启动:%s", problem)
+	}
+	return nil
 }

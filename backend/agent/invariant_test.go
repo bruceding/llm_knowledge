@@ -105,8 +105,16 @@ func TestInvariant_NoBackendKnowledgeOutsideAgentPackage(t *testing.T) {
 			if newClaudeProtocolCall.MatchString(line) {
 				hitsNewProto[rel] = append(hitsNewProto[rel], loc+"  "+trimmed)
 			}
-			// BackendPi 只允许出现在 agent 包内
-			if strings.Contains(line, "BackendPi") && filepath.Dir(rel) != backendPiExemptDir {
+			// 规则 3:agent 包外不得引用后端种类常量、也不得比较 Backend()。
+			// 匹配的是**限定名** agent.BackendPi 而不是裸的 BackendPi:后者会把
+			// api 层自己定义的常量 llmBackendPi 误伤(实测踩过)—— 那是 API 契约里
+			// 的取值字面量,不是「后端是哪个」的判断。包内引用是不限定的,
+			// 所以本规则只对 agent/ 以外的文件生效。
+			outsideAgent := filepath.Dir(rel) != backendPiExemptDir
+			if outsideAgent && (strings.Contains(line, "agent.BackendPi") ||
+				strings.Contains(line, "agent.BackendClaude") ||
+				strings.Contains(line, ".Backend() ==") ||
+				strings.Contains(line, ".Backend() !=")) {
 				hitsBackendPi[rel] = append(hitsBackendPi[rel], loc+"  "+trimmed)
 			}
 		}
@@ -143,7 +151,7 @@ func TestInvariant_NoBackendKnowledgeOutsideAgentPackage(t *testing.T) {
 
 	// 规则 3:agent 包外不得判断后端种类
 	for rel, lines := range hitsBackendPi {
-		t.Errorf("不变式违背:%s 出现了 BackendPi 的判断。后端差异只能落在 agent 包的两个 "+
+		t.Errorf("不变式违背:%s 引用了 agent.Backend* 或比较了 Backend()。后端差异只能落在 agent 包的两个 "+
 			"Protocol 实现内;`if proto.Backend() == agent.BackendPi` 这类分支一旦出现在 "+
 			"claude/api/ingest,每加一个后端就要改遍所有调用点。命中:\n  %s",
 			rel, strings.Join(lines, "\n  "))

@@ -336,6 +336,11 @@ func TestLoadPiWebToolNames_WarnsOnlyWhenPiWouldRejectConfig(t *testing.T) {
 		{"值不是字符串:同上", `{"toolNames":{"webSearch":42}}`, true},
 		{"值不合 TOOL_NAME_PATTERN:同上", `{"toolNames":{"fetchContent":"1fetch"}}`, true},
 		{"不授予的 sourceCheck 非法:同样让 pi exit 1,必须告警", `{"toolNames":{"sourceCheck":42}}`, true},
+		// 跨键重名:Task 1 原本不覆盖这一条(它的 warnInvalid 只管单键非法),
+		// Task 7 把它补进 ValidatePiWebConfig。pi 的 resolveToolNames
+		// (index.ts:303-311)对**已启用**的键查到重名即抛错 → exit 1。
+		{"已启用的两键重名:pi 抛错 -> exit 1,必须告警", `{"toolNames":{"webSearch":"x","fetchContent":"x"}}`, true},
+		{"重名但其中一键已禁用:pi 只对已启用的键查重,故不抛错,必须静默", `{"toolNames":{"webSearch":"x","sourceCheck":"x"},"tools":{"sourceCheck":{"enabled":false}}}`, false},
 	}
 
 	for _, tc := range cases {

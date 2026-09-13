@@ -98,6 +98,9 @@ const (
 	piDefaultWebSearchTool        = "web_search"
 	piDefaultFetchContentTool     = "fetch_content"
 	piDefaultGetSearchContentTool = "get_search_content"
+	// sourceCheck 的名字本设计不采纳,但重名检测需要它的默认值参与
+	// (pi 的 resolveToolNames 对**已启用**的四个键查重名,index.ts:303-311)
+	piDefaultSourceCheckTool = "source_check"
 )
 
 // piToolNamePattern 与 pi-web-access 的 TOOL_NAME_PATTERN 一致(index.ts:240)。
@@ -186,7 +189,28 @@ func PiWebSearchConfigPath() string {
 // 请求才失败、Go 侧零日志。因此第二类在此打一条 log —— 规格禁止的是返回
 // error,不禁止日志;第一类保持静默,否则每次调用都会刷屏。
 func LoadPiWebToolNames() PiWebToolNames {
-	names := PiWebToolNames{
+	names, problem := ValidatePiWebConfig()
+	if problem != "" {
+		// 前缀在这里加而不是在 ValidatePiWebConfig 里:那个函数返回的字符串还要
+		// 直接进 PUT /api/admin/settings 的 400 响应体,带日志前缀会很怪。
+		log.Printf("[config] %s", problem)
+	}
+	return names
+}
+
+// ValidatePiWebConfig 与 LoadPiWebToolNames 读同一份配置、用**同一套判定**,区别只是
+// 把「会让 pi 整体拒绝启动」的问题作为返回值交出来,而不是只打日志。
+//
+// 存在的理由:管理员在 Settings 里把后端切到 pi 时,api 层需要据此把风险登记 R8
+// 那种「切换探测通过、随后每个请求都失败」的情形提前拦成 400。而 R8 的探测盲区是
+// 结构性的 —— `pi --version` 在 main.js:483-486 提前 exit(0)、根本不加载扩展。
+// 与其在 HTTP handler 里 spawn 一次真 pi(慢、有副作用、且实测 pi 在 rpc 模式下
+// stdin EOF 后并不退出),不如让 Go 侧把它**已经能看见**的那份配置判定复用一遍:
+// Go 与 pi-web-access 读的是同一个文件(不变式 I1 保证),所以 Go 能算出 pi 会不会抛错。
+//
+// 返回的 problem 为空串表示「pi 不会因这份配置拒绝启动」。
+func ValidatePiWebConfig() (names PiWebToolNames, problem string) {
+	names = PiWebToolNames{
 		WebSearch:        piDefaultWebSearchTool,
 		FetchContent:     piDefaultFetchContentTool,
 		GetSearchContent: piDefaultGetSearchContentTool,
@@ -196,44 +220,81 @@ func LoadPiWebToolNames() PiWebToolNames {
 	if path == "" {
 		// 配置位置不可解析(PI_CODING_AGENT_DIR 未设置且 home 取不到)。
 		// 显式判空,不依赖 os.ReadFile("") 报错 —— 尤其不能退化成读 CWD。
-		return names
+		return names, ""
 	}
+
+	// 用 defer + 具名返回值组装 problem,于是下面那些提前 return 的分支不必各自
+	// 拼消息,也不会漏掉(漏掉就等于该情形静默放过)。
+	var reasons []string
+	defer func() {
+		if len(reasons) == 0 {
+			return
+		}
+		problem = fmt.Sprintf("%s: %s —— Go 侧沿用默认工具名;但 pi-web-access 会在同一处配置上抛错(resolveToolNames, index.ts:288-313),导致扩展加载失败、pi 以退出码 1 退出,整个 pi 后端不可用(含不用 web 工具的 ingest 链路),而 `pi --version` 探测不到。请修正该文件",
+			path, strings.Join(reasons, ";"))
+	}()
+
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return names // 文件不存在或不可读:pi 侧同样当作 {} 处理,属正常状态
+		return names, "" // 文件不存在或不可读:pi 侧同样当作 {} 处理,属正常状态
 	}
 
 	// 两级解析,以便区分「根不是对象」(pi 吞掉)与「toolNames 非法」(pi 抛错)。
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(data, &root); err != nil {
-		return names // JSON 非法或根不是对象:pi 的 parseConfigRoot 抛后被 catch 成 {}
-	}
-	rawToolNames, present := root["toolNames"]
-	if !present {
-		return names // 键缺席:pi 用 DEFAULT_TOOL_NAMES,与 Go 一致,无需告警
+		return names, "" // JSON 非法或根不是对象:pi 的 parseConfigRoot 抛后被 catch 成 {}
 	}
 
-	// 到这里 toolNames 键存在。它一旦非法,pi 会 exit 1(见函数注释),所以本函数
-	// 往下的每条非法分支都必须留下日志。
-	warnInvalid := func(reason string) {
-		log.Printf("[config] %s: %s —— Go 侧对该键沿用默认工具名;但 pi-web-access 会在同一处配置上抛错(resolveToolNames, index.ts:288-313),导致扩展加载失败、pi 以退出码 1 退出,整个 pi 后端不可用(含不用 web 工具的 ingest 链路),而 pi --version 探测不到。请修正该文件", path, reason)
+	// toolEnabled 镜像 isToolEnabled(index.ts:271-274)的 `config.tools?.[key]?.enabled
+	// !== false`:只有显式 false 才算关。重名检测必须按它过滤 —— pi 的
+	// resolveToolNames(:303-311)只对**已启用**的键查重名,不过滤就会对 pi 其实
+	// 接受的重名误报,进而把一次合法的后端切换拦成 400。
+	toolEnabled := func(key string) bool {
+		rawTools, ok := root["tools"]
+		if !ok {
+			return true
+		}
+		var tools map[string]json.RawMessage
+		if err := json.Unmarshal(rawTools, &tools); err != nil {
+			return true
+		}
+		rawEntry, ok := tools[key]
+		if !ok {
+			return true
+		}
+		var entry struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := json.Unmarshal(rawEntry, &entry); err != nil {
+			return true
+		}
+		return entry.Enabled == nil || *entry.Enabled
 	}
+
+	rawToolNames, present := root["toolNames"]
+	if !present {
+		return names, "" // 键缺席:pi 用 DEFAULT_TOOL_NAMES,与 Go 一致,四个默认名互不重复
+	}
+
+	// 到这里 toolNames 键存在。它一旦非法,pi 会 exit 1(见函数注释),所以往下的
+	// 每条非法分支都必须留下 reason。
+	warnInvalid := func(reason string) { reasons = append(reasons, reason) }
 
 	if string(rawToolNames) == "null" {
 		// pi 侧:`config.toolNames !== undefined && !config.toolNames` → 抛错。
 		// Go 侧 json.Unmarshal(null) 到 map 不报错,故必须显式拦下。
 		warnInvalid("toolNames 为 null")
-		return names
+		return names, ""
 	}
 	// 键名是驼峰,与 pi-web-access 的 ToolNames 类型一致(index.ts:227-232)。
 	var toolNames map[string]json.RawMessage
 	if err := json.Unmarshal(rawToolNames, &toolNames); err != nil {
 		warnInvalid("toolNames 不是 JSON 对象")
-		return names
+		return names, ""
 	}
 
 	// valid 返回某个键的合法工具名;键缺席或非法都返回 nil(即沿用默认名),
-	// 区别只在于非法时留下告警 —— 那正是 pi 会 exit 1 的情形。
+	// 区别只在于非法时留下 reason —— 那正是 pi 会 exit 1 的情形。
 	valid := func(key string) *string {
 		raw, ok := toolNames[key]
 		if !ok {
@@ -245,7 +306,7 @@ func LoadPiWebToolNames() PiWebToolNames {
 			return nil
 		}
 		// pi 侧同样先 trim 再校验(index.ts:297-301)。注意 strings.TrimSpace 与
-		// JS 的 String.prototype.trim() 字符集不同:Go 剥 U+0085(NEL) 但不剥
+		// JS 的 String.prototype.trim() 字符集不同:Go 剥 U+0085(NEL)但不剥
 		// U+FEFF(BOM),JS 相反。两个方向的后果都只是名字与 pi 实际注册名不符,
 		// 而 --tools 是 fail-closed 的(名字不匹配 = 工具调不到),不构成安全问题,
 		// 故不为此引入逐字符对齐。
@@ -267,11 +328,39 @@ func LoadPiWebToolNames() PiWebToolNames {
 		names.GetSearchContent = *v
 	}
 	// sourceCheck 不采纳(本设计不授予该工具),但它非法同样会让 pi exit 1,
-	// 校验一次只为留下告警。pi 的 resolveToolNames 也只校验 ToolNames 的四个
+	// 校验一次只为留下 reason。pi 的 resolveToolNames 也只校验 ToolNames 的四个
 	// 已知键(index.ts:293 遍历 DEFAULT_TOOL_NAMES 的键),未知键被忽略不抛错,
 	// 所以这里同样不校验未知键 —— 否则会产生 pi 侧根本不会失败的假告警。
-	_ = valid("sourceCheck")
-	return names
+	sourceCheck := valid("sourceCheck")
+
+	// 重名检测:pi 的 resolveToolNames(index.ts:303-311)对**已启用**的键查到重名
+	// 即抛错 → 扩展加载失败 → pi exit 1。这是 Task 1 原先没覆盖的一条(Task 2 的
+	// resolvePiWebTools 只在运行时去重并告警,拦不住切换动作本身),故补在此处。
+	// 四个键的生效名字都要参与:sourceCheck 虽然不被本设计采纳,但只要它在配置里
+	// 是启用的,pi 就会拿它参与查重。
+	resolved := map[string]string{
+		"webSearch":        names.WebSearch,
+		"fetchContent":     names.FetchContent,
+		"getSearchContent": names.GetSearchContent,
+		"sourceCheck":      piDefaultSourceCheckTool,
+	}
+	if sourceCheck != nil {
+		resolved["sourceCheck"] = *sourceCheck
+	}
+	seen := map[string]string{}
+	for _, key := range []string{"webSearch", "sourceCheck", "fetchContent", "getSearchContent"} {
+		if !toolEnabled(key) {
+			continue
+		}
+		name := resolved[key]
+		if prev, dup := seen[name]; dup {
+			warnInvalid(fmt.Sprintf("toolNames.%s 与 toolNames.%s 重名(都解析为 %q)", key, prev, name))
+			continue
+		}
+		seen[name] = key
+	}
+
+	return names, ""
 }
 
 // Names 按固定顺序返回授予的工具名,供 --tools 白名单与 PI_WEB_TOOLS 共用,
