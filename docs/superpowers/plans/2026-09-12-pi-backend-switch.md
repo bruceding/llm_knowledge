@@ -128,6 +128,19 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 
 **代价:** 这是 `Protocol` 接口继 D1 之后的第二处签名变更,Plan 1 冻结的 `OnceArgs(sysPrompt, tools, print)` 需同步改;两个实现与相关单测一并更新。
 
+### D4:`--session-dir` 改由 env 注入 —— 因为 `SessionArgs` 签名里没有 userDir(Task 2 实现时发现)
+
+规格写的是 `--session-dir <userDir>/.pi-sessions`,但 Plan 1 冻结的 `SessionArgs(sysPrompt, tools)` 签名里**没有 userDir**(它只经 `Env(allowedDir)` 与 `cmd.Dir` 传递)。照字面实现只有两条路,都更差:
+
+1. **传相对值 `.pi-sessions`** —— 它能工作,但把正确性挂在「子进程 cwd 恰好等于 userDir」这个隐式耦合上。已核实可行:`cli/args.js:88-89` 逐字取值不做解析,`core/session-manager.js:600` 只做 `normalizePath`,而 `utils/paths.js:58-80` 的 `normalizePath` 只 trim / 展开 `~` / Windows 规范化,**不绝对化**;且 `grep -rn "process.chdir" dist/` 零命中(pi 从不改 cwd)。于是相对值最终由 fs 按 `process.cwd()` 解析。
+2. **给三个 `*Args` 加 userDir 形参** —— 波及 `ClaudeProtocol` 与全部调用点,直接违反「claude 路径行为不变」。
+
+改为走 env:pi 的优先级是 **旗标 > `PI_CODING_AGENT_SESSION_DIR` > settings**(`main.js:531-534`;env 名由 `config.js:407` 的 `${APP_NAME.toUpperCase()}_CODING_AGENT_SESSION_DIR` 得出)。不传旗标即由本 env 生效,而且它**压过** `settings.json` 里可能被运维设过的 `sessionDir` —— 这一点比旗标方案更强,因为会话目录不允许被运维配置改写。
+
+`Env(allowedDir)` 本就拿到 userDir 且已做 `filepath.EvalSymlinks`,于是会话目录与 `ALLOWED_DIR` **同源同 realpath**,不可能漂移;而方案 1 的相对值不经 realpath,macOS 上 `/tmp` 与 `/private/tmp` 会让两者分家。
+
+**代价:** `PiProtocol` 不再持有计划草图里的 `sessionDirRoot` 字段(改用常量 `piSessionDirName = ".pi-sessions"` 与 `Env()` 的 realpath 结果拼接);`--session-dir` 进入 Task 2 的「禁含旗标」断言清单,由 `TestPiArgs_NeverContainForbiddenFlags` 钉住。
+
 ## 文件结构
 
 **创建**
@@ -237,6 +250,36 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 **闸门:** 全局闸门
 **提交:** `feat(agent): PiProtocol 承接旗标、env 与可用性探测`
 
+### ✅ Task 2 已完成(`b54a735`,2026-09-13)
+
+交付:`backend/agent/pi_args.go`(新)、`pi_args_test.go`(新,21 个用例)、`probe_test.go`(新,4 个用例);并按 D1/D3 改 `Protocol` 接口(`InitCommands()` 新增、`OnceArgs` 增 model hint),连带更新 `claude_args.go`、`claude_args_test.go`(补 model hint 用例)与 `client.go:51`/`:161` 两个调用点(都传 `""`)。
+
+`PiProtocol` 此时**尚未**满足 `Protocol`(缺 `Encode*`/`ParseLine`,属 Task 3/4),故有意不写 `var _ Protocol = (*PiProtocol)(nil)` —— 该断言由 Task 4 补上。
+
+**D4 已在本任务落地**(见「决策点」):会话目录改由 `Env()` 注入 `PI_CODING_AGENT_SESSION_DIR`,`--session-dir` 进入禁含旗标清单。
+
+**已核实的 pi 0.85.1 事实(Task 3/4/5 可直接引用,不必重新推导):**
+
+| 事实 | 依据 |
+|---|---|
+| `--mode` 只认 text/json/rpc,**非法值被静默忽略**(mode 变 undefined) | `cli/args.js` parseArgs 的 `--mode` 分支 |
+| rpc 模式**不读**管道 stdin(留作 JSON-RPC);json/print 会读并**前置**拼进初始 prompt | `main.js:701-708`、`cli/initial-message.js:6-18` |
+| `-p` 会**贪婪吞掉**紧随其后那个不以 `-` 开头的实参当 message | `cli/args.js:172-176` |
+| 未知 `--xxx` 旗标被收进 `unknownFlags` **静默忽略**;未知单横线选项才报 error | `cli/args.js` parseArgs 尾部 |
+| 工具名重名 → `resolveToolNames` 抛错(仅限**已启用**的键)→ pi `exit 1` | `pi-web-access/index.ts:303-311` |
+
+由第 2、3 条得出两条实现约束,都有用例钉住:once-call 的 prompt **绝不能进 argv**(否则与 stdin 内容被拼接成一段),且 `-p` 必须放**末尾**(让误吞在结构上不可能)。
+
+**M-2 处置:去重 + 告警。** `config` 的 `Names()` 不去重,而重名在 pi 侧致命(`exit 1`,且 `pi --version` 探测不到)。Task 1 的 `warnInvalid` 只覆盖单键非法、**不覆盖跨键重名**,这条路径此前是静默的。`PiProtocol` 在构造时(M-7:解析一次并持有)按首次出现去重并补上告警。
+
+**三个安全把关:** ①fail-closed 沙箱前置校验(照抄 `security.go:131-133`,三个 `*Args` 在拼 `-e` 之前 `os.Stat`);②`-e` 的值**必须绝对** —— Go 的 Stat 以服务进程 CWD 解析相对路径而 pi 子进程以 cwd(= userDir)解析,基准不同就会出现「Stat 通过但 pi 加载不到」即 R6 的 fail-open,有用例专门堵这条;③I1 落实为**派生**而非重算,并新增两条把关(含 `~` 时不注入、相对路径按服务进程 CWD 绝对化),三种「不注入」情形都先剔除继承来的坏值,不靠「后写覆盖先写」这种实现细节。
+
+**变异检验 5 处全部被抓:** 去掉 `-na`;`OnceArgs` 误授 web 工具;I1 改成重读 env(报出「子进程会读 `backend/agent/web-search.json` 而 Go 读 `~/.pi/agent/web-search.json`」);去掉 `requireSandbox`;去掉重名去重。
+
+**测试密封:** 每个用例都用 `t.Setenv` 把 `PI_CODING_AGENT_DIR` 钉到空临时目录,否则会读开发机/CI 上真实的 `~/.pi/agent/web-search.json`,一旦运维改过 `toolNames`,所有关于工具名的断言都随环境漂移。
+
+**接受的缺口:** `Probe` 的 5s 超时**没有用例**。要验证它得造一个在 `--version` 上挂住的假二进制并真等 5s,代价(每次全量测试多 5s)与收益不匹配;超时本身是 `context.WithTimeout` 两行,由审查覆盖。同理未测 ctx 已取消的分支 —— 我最初写了该用例,但发现选的二进制(`sh --version`)会立刻退出、证明不了取消语义,遂删除而不是留一个没有牙的假护栏。
+
 ## Task 3: `PiProtocol` 的 stdin 编码
 
 - [ ] `EncodeUserMessage(content, images)`:pi 的 `prompt` 命令形状;带图时是 `images:[{type:"image",data,mimeType}]`,**注意与 Claude 的 `content:[{type:image,source:{media_type,data}}]` 不同**
@@ -245,6 +288,28 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 
 **闸门:** 全局闸门
 **提交:** `feat(agent): PiProtocol 的 stdin 编码(prompt/images/abort)`
+
+### ✅ Task 3 已完成(`c8afadd`,2026-09-13)
+
+交付:`backend/agent/pi_encode.go`、`pi_encode_test.go`(6 个用例)。wire 形状对 `docs/rpc.md` 逐字核实(`:43-58` prompt、`:78` images、`:124-134` abort)。
+
+**与 Claude 的三处结构差异**(故不能照搬 `ClaudeProtocol.EncodeUserMessage`):pi 的 `message` 恒为**字符串**、图片走**兄弟字段** `images`;键是 `mimeType`(驼峰)且无 `source` 包装;`abort` 只有一个键、无 `request_id`。三条都有用例钉住(断言 `images[i]` 恰好三键,且 `source`/`media_type` 出现即报错)。
+
+`prompt` 的 id 用包级 atomic 计数器而不是 `time.Now().UnixNano()` —— 后者在紧循环下会撞,正是本分支 `061e7dd` 修的那个坑。用例还钉住「prompt 的 id 绝不与 `InitCommands` 的 `get_state` id 撞上」:混淆两者会直接坏掉会话 ID 捕获,或把 prompt 的 `response` 误当完成信号而提前发 `done`(Task 4 的关键约束)。
+
+**变异检验:4 处被抓**(图片改用 Claude 的 `source`/`media_type` 形状;prompt 丢掉结尾换行;`abort` 改成 `control_request`;id 变常量或与 `init-1` 撞名)。
+
+**一处没抓到、且已如实写进注释而不是留假论证:** id 改回 `UnixNano` 后连跑 5 次全绿。我最初按「2000 次必撞(生日悖论)」把迭代数提到 2000,**实测推翻** —— 本用例循环体(含多字节文本的 `json.Marshal`)每次 >1µs,在本机约 1µs 的时钟粒度下反而不撞;而 claude 侧那个轻得多的 `EncodeInterrupt` 在 50 次循环里就有约四成概率撞。已改回 200 并重写注释:唯一性由构造(计数器)保证,不依赖该用例;它钉住的是「id 非空、彼此不同、且不与 `get_state` 撞名」。
+
+### ⚠️ Task 3 期间发现的新缺口 R9(已修 `fbe6e45` + 登记 `2100e31`)
+
+为核实 `prompt` 形状而读 `docs/rpc.md` 时发现:**rpc 模式下以 `/` 开头的用户消息会被 pi 当扩展命令派发执行**(`rpc-mode.js:301-304` 未传 `expandPromptTemplates` → `agent-session.js:822` 默认 `true` → `:828-834` 派发 → `:954-961` 执行)。规格与本计划都未覆盖,四道既有防线(`--tools`、`--no-skills`/`--no-prompt-templates`、沙箱 `input` hook、`-na`)全拦不住它。详见风险登记 R9。
+
+已修:部署模板显式关掉 `pi-web-access` 的 4 个命令(`commands.*.enabled=false`;`isCommandEnabled` 在 `index.ts:277-279` 是 `!== false`,**默认开**),守护测试扩进既有的 `TestWebSearchSample_PinsSecurityKeys`(4 处变异全抓,含「模板里多出未知的 `enabled:true` 命令」)。
+
+**定性:这不是额外收紧,而是追平两个后端的安全强度** —— Claude 侧的对应物 `SlashCommand` 早就在 `ClaudeDangerousDisallowedTools` 里被硬阻断,pi 路径此前有一个敞开的等价物。
+
+**留给后续任务的两件事:** ①残留部分(其他已加载包的命令,如本机的 `pi-subagents`)只能靠 R1 的运维隔离,Task 10 须写第四条运维警示;②Task 11 的验证**必须带对照组**(临时把 `enabled` 改成 `true`,断言命令确实会执行),否则无法区分「被关掉了」与「本来就没触发」—— 这与 Task 6 对沙箱 extension 提的是同一条要求。**一个尚未决定的开放项**:是否在 Go 侧启动时对「部署的 `web-search.json` 仍开着 commands」`log.Printf` 告警(与 Task 1 的 `warnInvalid` 同手法)。本次未做,因为它属 Task 1 已冻结的 `config.go`,且需要重新解析 `commands` 段;不做则运维漏配时是静默 fail-open。
 
 ## Task 4: `PiProtocol.ParseLine`
 
