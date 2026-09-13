@@ -36,6 +36,8 @@
 - **每个任务的收尾闸门**:`cd backend && go build ./... && go vet ./... && go test ./...` 全绿才允许 commit。已知环境性失败可容忍且必须逐个指名:`api` 包的**出网类**用例(`TestWebClippingXArticle` 与 `TestFetchHTML`,同在 `backend/api/web_test.go`;本机 TLS 握手超时时具体哪个失败随网络状况变化,两者都算同一类)、`browser.TestFetchRenderedHTML_TimeoutOnMissingSelector`(浏览器)、`ingest.TestExtractPDFText`(缺 `pdftotext`)。**出现上述之外的失败即视为闸门未过**;若怀疑是既有环境问题,须像 Task 1 那样 `git stash` 后在基线上复跑同一用例并贴出逐字相同的输出,不得仅凭断言
 - 提交信息用中文,前缀按任务指定(`feat(agent):` / `feat(security):` / `feat(admin):` / `feat(settings):` / `docs:`)
 - 涉及真实 `pi` 子进程的测试,`pi` 不在 PATH 时 `t.Skip`,不得让 CI/他人环境红
+- **不变式 I1(Task 1 ↔ Task 2,审查者提出、已实测支撑)**:每一次 pi spawn,`PiProtocol.Env()` 注入的 `PI_CODING_AGENT_DIR` 必须**逐字等于** `filepath.Dir(config.PiWebSearchConfigPath())` 在 Go 进程内解析出的目录。实现方式必须是**派生,不是重算**:`"PI_CODING_AGENT_DIR=" + filepath.Dir(config.PiWebSearchConfigPath())`;禁止重新读 env、禁止硬编码 `~/.pi/agent`、禁止用 Settings/DB 里的另一个路径。该值还必须**非空、绝对、不含 `~`**(`pi-web-access/utils.ts:13-14` 不做 tilde 展开,而 pi 本体 `getAgentDir()` 会做 `expandTildePath`,`config.js:408-409`/`:422-425`;`~`-前缀会让 auth 目录与 web-search 目录分家),且**不得指向一个新建的空目录**(它同时是 pi 的 auth/settings 目录)。
+  I1 成立即可彻底消除「Go 读的配置文件 ≠ pi 子进程读的配置文件」这条漂移:`utils.ts:13-14` 的第一分支对任何非空值无条件返回,注入后子进程内 XDG/legacy 两级不可达。Go 侧只实现四级回退的第 1、4 级是**有意**的 —— XDG/legacy 那两级是 `pi-web-access` 独有的怪癖,pi 本体的 `getAgentDir()`(`config.js:421-427`)没有 XDG 回退,故两级实现与 pi 本体语义一致
 
 ## Plan 1 遗留的接缝缺口(本计划必须收口)
 
@@ -199,6 +201,16 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 
 规格已同步勘误两处(`sourceCheck` 默认值、`fetchContent.domainPolicy` 少一层)。
 
+**审查与修复轮(0 Critical / 3 Important / 7 Minor → 已修 `9a873b7`)**:审查者抓出两条控制方与实现者都没看见的真问题,均已修复:
+
+- **I-1(运维炸点,已由源码推证升级为实测)**:`web-search.json` 的 `toolNames` 写错,后果**不是**「联网不可用」,而是**整个 pi 后端 `exit 1`**(连带不用 web 工具的 ingest 链路)。实测:临时 `PI_CODING_AGENT_DIR` + 只读 symlink 真实 `auth.json`/`settings.json`/`npm`,对照组 `{"allowBrowserCookies":false}` → 退出码 0、stderr 空;实验组 `{"toolNames":{"webSearch":42}}` → 退出码 1、stderr `Failed to load extension ".../pi-web-access/index.ts": ... toolNames.webSearch ... must be a string`。链路:`resolveToolNames`(`index.ts:288-313`)抛错 → 位于 `loadConfigForExtensionInit` 的 catch **之外**(`:1065` vs `:1068`)→ `loader.js:483-486` → `main.js:631-634` → **`main.js:723-731 process.exit(1)`,在所有 mode 的公共路径上(含 `--mode rpc`)**。而 `pi --version` 在 `main.js:483-486` 提前 `exit(0)`、不加载扩展 → **Task 2 的 `Probe` 与 Task 7 的切换探测都抓不到它**:管理员切到 pi 时探测通过,随后所有请求失败。
+  处置:注释按「pi 吞掉(文件缺失 / JSON 非法 / 根非对象)vs pi 抛错(`toolNames` 形状、取值、重名,含 `null`)」两栏写准确;仅在后者那一支 `log.Printf` 告警(带配置路径与后果);并由 `TestLoadPiWebToolNames_WarnsOnlyWhenPiWouldRejectConfig`(11 个子用例:6 静默 + 5 必须告警)把这条承诺变成断言。规格禁止的是**返回 error**,不禁止日志。
+- **I-3(本 diff 新引入的唯一 fail-open 通路)**:`os.UserHomeDir()` 失败时原实现回退 `"."`,使一条安全相关的**读**路径变成 CWD 相对路径(`$HOME` 未设 + CWD 可写时可植入 `{"toolNames":{"webSearch":"source_check"}}`,一次击穿两道 `source_check` 防线)。已改为返回 `""` 且调用方显式判空(`config.go:145-147`、`:195-199`),并补诱饵配置用例(`t.Chdir` + 一份把三个工具名全改成 `source_check` 的配置,断言不被读取)。
+- **I-2**:见上文不变式 I1(已写进「全局约束」并落进 `config.go:108-140` 的条件句注释)。
+- Minor 已修:M-1(注释同源)、M-3(trim 字符集差异 U+0085/U+FEFF,仅注释)、M-4(原断言恒真的子测试升级为「任何输入下 `Names()` 都不得含 `source_check`」)、M-5(正则 `{0,63}` 边界 64/65、改名后顺序、`toolNames:null`、根是数组/标量)、M-6(改消息不收紧断言)。
+- 一处**有据的越界**:`resolveToolNames` 遍历的是 `Object.keys(DEFAULT_TOOL_NAMES)` 全四键(`index.ts:293`),故 `{"toolNames":{"sourceCheck":42}}` 同样会让 pi `exit 1`;Go 若只校验自己采纳的三个键就会保持沉默 —— 那正是 I-1 要消灭的「零日志的整体不可用」。因此对 `sourceCheck` 也做校验(**仅告警,不采纳其名字**),未知键仍不校验(pi 也不校验,否则会产生假告警)。控制方已复核该依据成立。
+- 解析结构由「单次 struct unmarshal」改为「两级 map 解析」,这是 I-1 的**必要条件**而非重构偏好:原实现无法区分「`toolNames` 不是对象(pi 抛错)」与「根 JSON 非法(pi 吞掉)」,也就无法只对前者告警。既有用例期望值一字未改。
+
 **接受的覆盖缺口:** `Load()` 里 `PiBin` 的 env 解析**没有单测** —— `Load()` 内部执行 `flag.String("port", ...)` + `flag.Parse()`,同一测试进程内二次调用会 panic(`flag redefined: port`),且它读真实 env/HOME。`PiBin` 逻辑仅 4 行且与紧邻的 `ClaudeBin` 逐字对称,故本计划接受该缺口;正确修法是先把 `Load()` 拆成可注入的纯函数(见「开放项」4)。
 
 ## Task 2: `PiProtocol` 旗标、env 与 `Probe`
@@ -214,6 +226,10 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 - [ ] `Probe(ctx)`:`exec.LookPath(bin)` + `pi --version`(5s 超时)
 - [ ] **fail-closed 前置校验**(照抄 `security.go:131-133` 的先例):`NewPiProtocol` 接收 `scriptsDir`,三个 `*Args` 在拼 `-e` 之前 `os.Stat(filepath.Join(scriptsDir, "pi-path-validator.ts"))`,文件缺失就**返回错误**,绝不产出缺沙箱的 argv。配套单测:文件不存在时 `SessionArgs`/`ResumeArgs`/`OnceArgs` 都报错
 - [ ] `scriptsDir` 的传递方式与 `ClaudeProtocol` 的 `settingsPath` 对称:由 `agent.Init` 从 `main.go:78` 的 `LLM_SCRIPTS_DIR` 传入,**不在 `agent` 包里自己读 env**
+- [ ] **落实不变式 I1**(见「全局约束」):`Env()` 里的 `PI_CODING_AGENT_DIR` 必须由 `filepath.Dir(config.PiWebSearchConfigPath())` **派生**。守护测试:在「env 已设」与「env 未设」两种情形下,各断言一次 `Env(dir)` 返回中该键的值 `==` 派生值
+- [ ] **拒绝相对路径的 `PI_CODING_AGENT_DIR`**(Task 1 修复轮新发现):相对值会让 Go 按服务进程 CWD 解析、而 pi 子进程 cwd 是 `userDir`,两边必然不一致 —— 与 I-3 堵的是同一类问题、只是入口不同。在注入前把关(`filepath.Abs` 或直接拒绝),并加用例
+- [ ] web 工具名**在 `NewPiProtocol` 里解析一次并持有**(M-7):若三个 `*Args` 各调一次 `LoadPiWebToolNames()`,等于每次请求 3 次磁盘读 + 3 次可能的告警刷屏;解析一次也顺带关掉 I1 的时间窗(解析名字与注入 env 之间配置被改)
+- [ ] 决定 M-2:`Names()` 目前不去重(`{"toolNames":{"webSearch":"x","fetchContent":"x"}}` → `["x","x",...]`)。对 `--tools` 无害(allowlist 语义),但 `PI_WEB_TOOLS` 与 Task 6 的 hook 白名单会带重复项。要么按首次出现去重,要么加用例把当前行为钉住并注明「重名在 pi 侧是致命的(会让 pi `exit 1`),见 Task 1 的 I-1」
 - [ ] `InitCommands()` 返回 `get_state` 那一行(D1);同时给 `ClaudeProtocol` 补 `InitCommands() nil` 与接口断言,保证本任务结束时 `go build ./...` 仍绿
 - [ ] 单测 `pi_args_test.go` + `probe_test.go`,覆盖规格列出的每一条
 
@@ -310,6 +326,7 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 
 - [ ] `start.sh`:补 `command -v pi` 检查、把 `/opt/homebrew/bin` 加进 PATH(Apple Silicon 的 npm 全局 bin 在此,脚本目前只补 `/usr/local/bin`)、检查 `pi-web-access` 是否已装;顺带修 `:28` 的 `brew install poppler` 缺 `|| true`(它会阻塞启动);并在导出 `LLM_SCRIPTS_DIR`(`:137`)之后,把 `backend/scripts/` 下的 `path-validator.py` 与 `pi-path-validator.ts` 复制到运行时 `scripts/`(缺则复制)——消除部署文档里的手工步骤,也堵住「extension 缺失导致 pi 路径 fail-open」
 - [ ] README / README_ZH:Prerequisites 增 pi 与 Node 版本要求、`pi-web-access`(pin 版本)、`web-search.json` 必须固化的安全键(尤其 `allowBrowserCookies:false`)及其部署路径 `$PI_CODING_AGENT_DIR/web-search.json`;说明 claude/pi 按 Settings 开关择一生效
+- [ ] **必须写进运维警示(Task 1 已实测)**:`web-search.json` 的 `toolNames` 写错会让**整个 pi 后端 `exit 1`**(不只是联网不可用,连不用 web 工具的 ingest 链路一起死),而 Settings 里切换到 pi 时的探测跑的是 `pi --version`、**不加载扩展因而探测不到**。有效配置路径 = `$PI_CODING_AGENT_DIR/web-search.json`,未设该 env 时为 `<服务账号 HOME>/.pi/agent/web-search.json`,**不是** `$XDG_CONFIG_HOME/pi/`
 - [ ] 写清规格的三条运维警示:①切换后端会使进行中的对话丢失上下文续接能力(历史消息仍在 DB),且**作废是双向的**、「切回原后端可恢复原对话」不成立;②后端切换仅 `admin` 账号可操作,**不要重命名或删除该账号**(`db/db.go:38` 那条无守卫迁移会把它升回,改名即锁死 UI 开关);③`--tools` 拦不住扩展**加载期**的任意代码,须 pin `pi-web-access` 版本并管控 `settings.json` 的 `packages` 列表
 
 **闸门:** `bash -n start.sh`;`./start.sh` 能起来(不实际消耗配额)
@@ -320,6 +337,7 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 - [ ] Go 集成测试:spawn 真实 `pi --mode rpc`,发 prompt 要求读 `ALLOWED_DIR` 外文件,断言工具调用被 block;`pi` 不在 PATH 时 `t.Skip`
 - [ ] **本地文件向量集成测试**(本次新增控制的核心验证;`pi-web-access` 未装时 `t.Skip`):诱导 `fetch_content` 取 `ALLOWED_DIR` 外的本地路径(绝对路径视频 / `/etc/passwd`),断言被 hook block,且 `video-extract.ts` 的 `readFile(absolutePath)` 与 `execFileSync("ffmpeg", ...)` 未被触达
 - [ ] e2e 回归:`pytest tests/e2e/test_chat_streaming.py`(12)、`test_chat_view.py`、`test_mobile_chat_view.py`、`test_desktop_no_mobile_dom.py`
+- [ ] 留意既有脆弱用例 `api.TestDocChat_PersistsChatSessionIDOnInit`:`api/docchat_test.go:17-29` 的假 claude 脚本 `printf` init 事件后 `sleep 5`,而测试等 `onRealSessionID` 的预算只有 `3 * time.Second`(`:71-78`),`go test ./...` 多包并行时 spawn `/bin/sh` + 调度即可超时(Task 1 修复轮实测到一次,单独跑与连跑 10 次均 PASS,且基线同样偶发)。**它恰好是 D1「把 pi 的 `get_state` 响应归一化成 `system/init`」最直接的回归护栏**,Task 5 必须保持它绿;本任务顺手把预算放宽到 8s
 - [ ] 手工验收(**两种后端各跑一遍**,由人执行,不消耗配额的自动化不得替代):文档问答多轮 + SSE 断线重连、自由问答带图片、中途 interrupt、ingest 摘要与分节
 - [ ] resume 往返验收(两种后端各一遍):第一轮后查 DB 确认 `chat_session_id`/`session_id` 写入的是**该后端自己的** ID 格式;重启进程或等 30s 清理后再提问,确认走 `--resume`/`--session` 且上下文续接成功
 - [ ] `LLMBackend=pi` 时把 Settings 切到 pi,重跑 e2e 的聊天用例,确认前端零改动即可工作
@@ -343,6 +361,7 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 | R5 | 会话池在浏览器断开后不回收 claude 子进程(既有问题,每轮全量 e2e 留约 8 个孤儿),pi 路径下同理会积累 node 进程 | 属既有缺陷,**不在本计划范围**;但 Task 11 的集成测试必须在 teardown 里显式 kill 自己 spawn 的进程,不得加剧 |
 | R6 | `pi-path-validator.ts` 若不在运行时 `scripts/` 里,pi 路径将没有任何工具调用拦截(安全 fail-open);而仓库根 `scripts/` 被 git 忽略,新克隆里天然没有该文件 | 三重防护:产物 tracked 在 `backend/scripts/`;Task 2 的 `os.Stat` 前置校验(缺失即拒绝产出 argv);Task 10 让 `start.sh` 自动复制 |
 | R7 | `source_check` 在 pi-web-access 里**默认注册且启用**(`index.ts:271-274`),`--tools` 白名单只决定「不授予调用」 | 两道防线:白名单不含它 + `web-search.json` 里 `tools.sourceCheck.enabled=false`(Task 1 的 sample 已固化,并由 `config_test.go` 的一致性测试守护) |
+| R8 | `web-search.json` 的 `toolNames` 写错 → pi-web-access 扩展加载失败 → **`pi` 以退出码 1 退出**(`main.js:723-731`),整个 pi 后端不可用;而切换探测跑 `pi --version` 不加载扩展,**探测不到**(Task 1 已实测:对照组退出 0、实验组退出 1) | Go 侧在该支 `log.Printf` 告警并由 11 个子用例钉住;Task 10 写入运维警示;Task 7 的探测**不能**只靠 `pi --version`(可考虑追加一次带扩展的最小 spawn,代价是探测变慢——留给 Task 7 决定) |
 
 ## 开放项(承规格,本计划不做)
 
