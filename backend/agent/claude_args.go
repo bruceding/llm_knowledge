@@ -123,9 +123,14 @@ func (p *ClaudeProtocol) Env(allowedDir string) []string {
 
 // OnceArgs 构造一次性调用的旗标。
 // print=true 时用 --print + stream-json(Claude 的 Send 路径);
-// print=false 时只用 -p(纯文本输出,对应 SendSimpleWithRead,prompt 由调用方追加)。
-// sysPrompt 非空时把 --system-prompt 追加到末尾(secure 旗标之后)。
-func (p *ClaudeProtocol) OnceArgs(sysPrompt string, tools []string, print bool) ([]string, error) {
+// print=false 时只用 -p(纯文本输出,对应 SendSimpleWithRead)。
+// 两种情况下 prompt 都由调用方写入子进程 stdin(见 Protocol.OnceArgs 注释)。
+// model 非空时追加 --model <model>;空串不加旗标,走 claude 默认模型。
+// sysPrompt 非空时把 --system-prompt 追加到末尾。
+//
+// 旗标集合与语义与引入 model hint 之前一致,只有顺序变化:--model 从
+// secureArgs 之前(原 api/documents.go 的写法)移到之后。claude CLI 不依赖旗标顺序。
+func (p *ClaudeProtocol) OnceArgs(sysPrompt string, tools []string, print bool, model string) ([]string, error) {
 	secure, err := p.SecureArgs(tools)
 	if err != nil {
 		return nil, err
@@ -135,11 +140,18 @@ func (p *ClaudeProtocol) OnceArgs(sysPrompt string, tools []string, print bool) 
 		args = []string{"--print", "--output-format", "stream-json", "--verbose"}
 	}
 	args = append(args, secure...)
+	if model != "" {
+		args = append(args, "--model", model)
+	}
 	if sysPrompt != "" {
 		args = append(args, "--system-prompt", sysPrompt)
 	}
 	return args, nil
 }
+
+// InitCommands 返回 nil:Claude 的 system.init 由首条用户消息触发,
+// spawn 后无需先写任何握手命令。
+func (p *ClaudeProtocol) InitCommands() [][]byte { return nil }
 
 // Probe 探测 CLI 是否可用。Claude 后端保持既有行为(不做探测),
 // 因此返回 nil。Plan 2 的 PiProtocol 会实现为 LookPath + `pi --version`。

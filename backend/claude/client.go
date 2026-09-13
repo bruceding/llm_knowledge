@@ -48,7 +48,7 @@ type RawEvent struct {
 // The caller should close the channel after Send returns.
 // If workDir is non-empty, the command runs in that directory.
 func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamEvent, workDir string) error {
-	args, err := c.protocol().OnceArgs("", []string{"Read", "Write", "Edit"}, true)
+	args, err := c.protocol().OnceArgs("", []string{"Read", "Write", "Edit"}, true, "")
 	if err != nil {
 		return fmt.Errorf("build once args: %w", err)
 	}
@@ -158,7 +158,7 @@ func (c *Client) SendSimple(ctx context.Context, prompt string) (string, error) 
 // This is faster than stream-json mode for simple tasks like generating summaries.
 // If workDir is non-empty, the command runs in that directory.
 func (c *Client) SendSimpleWithRead(ctx context.Context, prompt string, workDir string) (string, error) {
-	args, err := c.protocol().OnceArgs("", []string{"Read"}, false)
+	args, err := c.protocol().OnceArgs("", []string{"Read"}, false, "")
 	if err != nil {
 		return "", fmt.Errorf("build once args: %w", err)
 	}
