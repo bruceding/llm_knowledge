@@ -150,6 +150,20 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 
 **不丢功能:** `toolcall_end` 是 assistant 消息流的一部分,工具调用完成时必然到达;即便某轮缺席,`agent_settled` → `result` 会让 `Process` 重置 `activeTools`,不会泄漏。`tool_execution_start`/`update`/`end` 三者一并加入忽略清单(`update` 的 `partialResult` 是**累积快照**而非增量,`rpc.md:1052-1054`,放行会让前端重复显示)。
 
+### D6:R8 的切换探测用**静态预检**而不是「追加一次带扩展的最小 spawn」(Task 7 决定)
+
+R8 的处置列写着「Task 7 的探测**不能**只靠 `pi --version`(可考虑追加一次带扩展的最小 spawn,代价是探测变慢——留给 Task 7 决定)」。`pi --version` 在 pi 的 `main.js:483-486` 提前 `exit(0)`、**根本不加载扩展**,所以它在结构上就探测不到 `web-search.json` 的致命配置 —— 这个判断成立。但「追加一次 spawn」被否决,三条理由:
+
+1. **慢**:扩展加载 + npm 包解析是秒级到数十秒,放在 `PUT /api/admin/settings` 的 handler 里容易撞 HTTP 超时
+2. **有副作用**:会在 pi 的 agent 目录里留下会话文件,并触发已加载包的**加载期代码**(即 R1)
+3. **收尾不可靠**:实测 pi 在 rpc 模式下 stdin EOF 后**并不退出**(Task 4 前的探针等了 25s 仍需外部 kill),要可靠收尾就得在 HTTP handler 里自己管进程生命周期
+
+改用静态预检:**Go 与 pi-web-access 读的是同一个文件**(不变式 I1 保证),所以 Go 完全能算出 pi 会不会在 `resolveToolNames` 上抛错。零成本、确定性、可单测。
+
+为此把 Task 1 的判定逻辑抽成 `config.ValidatePiWebConfig() (names, problem)`,`LoadPiWebToolNames` 变成「调用它 + 打日志」的薄壳 —— **共用同一份实现,两条路径不可能漂移**。`problem` 不带 `[config] ` 前缀,因为它还要直接进 400 响应体。
+
+**代价与边界:** 静态预检只能覆盖 Go 能从配置算出来的失败(`toolNames` 的形状/取值/重名),覆盖不了「pi-web-access 根本没装」或「其他包加载期抛错」—— 前者由 Task 10 的 `start.sh` 检查兼 Task 11 的集成测试覆盖。「pi 能否真的带着扩展启动」留给 Task 11 的集成测试 —— 那才是它该被验证的地方(在 CI 里跑,不占用户的一次 Settings 保存)。
+
 ## 文件结构
 
 **创建**
@@ -526,6 +540,33 @@ frontend/node_modules/.bin/tsc --noEmit --strict --target es2022 --module esnext
 
 **闸门:** 全局闸门
 **提交:** `feat(admin): Settings 增 llmBackend 开关与 pi 可用性探测`
+
+### ✅ Task 7 已完成(`0320e7a`,2026-09-13)
+
+交付:`api/admin_settings.go` 的开关与校验、`api/admin_settings_test.go`(13 个用例,该接口此前**无任何测试**)、`agent.ProbePi`、`config.ValidatePiWebConfig`;并补上 `db/models.go:22`/`:48` 两处注释的后端中立化(仅注释)。
+
+`db.GlobalSettings.LLMBackend` 字段本身已随 Task 5 提前落地(`agent.Current` 要读它),本任务只做 API 层。
+
+**R8 已按 D6 处置**(静态预检,不在 handler 里 spawn)。`agent.ProbePi(ctx)` 三段由浅入深:①`LookPath` + `pi --version`;②`SessionArgs`(沙箱 extension 缺失即报错 —— 把 R6 从「首次聊天才炸」提前到「切换时就 400」);③`ValidatePiWebConfig` 的 problem 为空。
+
+**顺带补上 Task 1 未覆盖的跨键重名检测。** 它必须按 `tools.*.enabled` 过滤 —— pi 的 `resolveToolNames`(`index.ts:303-311`)只对**已启用**的键查重名,不过滤就会对 pi 其实接受的重名误报,把一次合法的后端切换拦成 400。有用例带对照组钉住(`sourceCheck` 关掉时重名合法、开着时必须 400)。同时删掉 Task 2 在 `resolvePiWebTools` 里那份重复的重名告警(检测已下沉到 config,两处各告一次只会让同一条问题在日志里出现两遍),**去重本身保留**。Task 1 的告警测试也补了两个子用例(11 → 13),否则「运行时告警」这条路径无人守。
+
+**API 行为的四个决定:**
+
+- 非法取值 → 400 并回显收到的值,**不静默忽略**:前端下拉框只有两个选项,能走到这里说明请求是手造的或前后端版本不一致,静默忽略会让调用方以为切换成功了
+- `"claude"` → **不探测**。claude 是默认后端与回退值,给它加探测会堵住「pi 已经坏了、切回 claude 自救」这条路,而那正是运维最需要的逃生门。用例用 **marker 文件**证明假 pi 确实没被调用(而不是靠推断)
+- 400 与中间件的 403(`"admin access required"`)消息可区分(规格硬要求)
+- 只在**确实改了后端**时才调 `agent.Invalidate()`:改翻译配置不该把会话层的 Protocol 缓存也丢掉
+
+**变异检验 5 处被抓:** 切到 pi 时不探测(200 而非 400,且 llmBackend 被写进 DB);保存后不调 Invalidate(`Current()` 仍返回 claude);切到 claude 也探测(marker 出现);ProbePi 去掉 R8 预检(3 个子用例全部变成 200);重名检测不按 enabled 过滤。另:`invariant_test` 的规则 3 单独验过有牙(在 api 里注入一处 `pr.Backend() == agent.BackendPi` → 判红)。
+
+**修掉自己写的一个误报:** `invariant_test` 规则 3 原先用裸子串 `BackendPi` 匹配,结果把 api 层自己定义的常量 `llmBackendPi` 误判成「后端种类判断」—— 那是 API 契约里的取值字面量,不是后端分支。改为匹配限定名 `agent.BackendPi`/`agent.BackendClaude` 与 `.Backend() ==`/`!=`。**修的是测试的匹配精度,而不是为了让糙测试通过去改一个合理的命名。**
+
+**两次「变异没生效却以为通过」的教训(已改进做法):** 本轮有两处我最初以为变异被抓/通过,实际是变异根本没落地:一次 perl 模式没匹配上,一次替换让 `fmt` 变成未使用而编译失败 —— 而我的 grep 只过滤 `^(ok|--- FAIL)`,把 `FAIL ... [build failed]` 漏掉了。现在每次变异都先 grep 确认标记文本存在再跑测试,且 grep 模式包含 build failed。
+
+**一个没写成代码的发现:** 我原本担心 GORM 对带 `default` 标签的零值字段会从 INSERT 里省略、导致刚 `FirstOrCreate` 出来的内存对象里 `LLMBackend` 是空串(那会让前端下拉框显示为空白),准备加一层归一化。先用用例实测:**它确实返回 `"claude"`**,所以没加那段防御代码(避免为不存在的场景写兜底)。用例本身留下,以防 GORM 行为变化。
+
+**遗留:** 前端开关是 Task 9。在那之前 `llmBackend` 只能靠 API 改,且 GET 已经会返回它。
 
 ## Task 8: `main.go` 去注入 + `ingest`/`api` 形参改造
 
