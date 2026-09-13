@@ -384,6 +384,39 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 **闸门:** 全局闸门 + `pytest tests/e2e/test_chat_streaming.py` 12 passed(claude 路径回归)
 **提交:** `feat(agent): resolver 与会话层接入,spawn 统一走 Protocol.Bin()`
 
+### ✅ Task 5 已完成(`c317065`,2026-09-13)—— **但 e2e 闸门未执行,见末尾**
+
+交付:`agent/resolver.go`、`agent/resolver_test.go`(7 个用例)、`agent/invariant_test.go`(2 个用例);改造 `claude/{session,query_pool,client}.go`、`db/models.go`、`main.go`(2 行)与 4 个测试文件的注入方式。
+
+**三处 spawn 全部收口。** `buildCmdWithEnv` 改收 `agent.Protocol` 而不是 bin 字符串 —— 这是故意的:收 Protocol 让「二进制路径必走 `proto.Bin()`」在**类型上**成立,传字符串的话调用方完全可能再把一个硬编码的 `"claude"` 递进来。D1 抽成 `writeInitCommands(proto, stdin)`,**没有任何 `if backend == pi` 分支**;两个 `Start*` 是先 `readEvents` 再 `waitForInit(5s)`,而 `waitForInit` 等的正是这个响应,所以握手必须写在 `readEvents` **之前**(写晚了 pi 的响应就没人读,白等一轮 5s 超时)。
+
+**两个我自己写出、又被自己的测试抓住的问题:**
+
+1. **TTL 缓存顺序写反**。原先 `backendNameProvider()` 在缓存判断**之前**调用,于是每次 `Current()` 都读一次 DB,缓存只剩「不重建 Protocol」这一点收益,完全违背「避免每次 spawn 都打一次 DB」的目的。`TestResolver_TTLCacheAvoidsPerSpawnDBRead` 报出「TTL 内 5 次只该读 1 次,实际 5 次」。修正后 `cachedName` 变成只写不读的死状态,已一并删除。
+2. **`client.go:23` 的惰性分支漏改**。本任务清单明写要替换 `agent.NewClaudeProtocol(c.BinPath, ...)`,第一遍漏了,是 `invariant_test` 判红才补上 —— 这正是把不变式写成可执行断言而不是写在文档里的价值。
+
+**一处假绿(已修,并加了护栏):** `protocol()` 改走 `Current()` 后 `BinPath` 不再决定 spawn 哪个二进制,而 `client_test.go` 那 4 个用例仍在用 `NewClientWithPath` 注入。它们**依旧通过** —— 因为 `Current()` 未 Init 时返回的错误同样满足 `err != nil`。实测错误文本是 `agent.Init was never called`,即「二进制不存在」「上下文已取消」这两个行为一次都没被执行到。已改为 `initTestBackend` + `NewClient()`,并新增 `assertNotResolverError`(错误里出现 `agent.Init` 即判红),让这种假绿无法再次静默发生。变异验证:去掉 `initTestBackend` 后该断言确实报错。
+
+**invariant_test 的两个设计点:**
+
+- 豁免清单带**反 stale 机制**:豁免项若已不再命中就判红。否则清单只增不减,Task 8 做完也没人记得回来删,留着就等于给未来的泄漏开一张空白通行证。当前豁免:`dependencies/checker.go`(规格豁免)、`api/documents.go`(**Task 8 必须删**)、`claude/security.go` 的两个兼容垫片(Task 8 迁走 documents.go 后它们只剩测试调用点,应一并删除)。
+- 带一条 `scanned < 20` 的下限断言:第一版把 `WalkDir` 的根节点(`".."`,其 `d.Name()` 也是 `".."`)当隐藏目录整个跳掉了,扫到 0 个文件。**没有这条下限断言,该测试会静默变成永真。**
+
+**两处有意的越界(已论证):**
+
+1. `main.go` 改了 2 行(两个池构造函数的实参)。R4 允许 Task 5 改「`backend/claude` 内部与其直接调用方」,而这两处正是直接调用点;不改则本任务的「`go build ./...` 全绿」闸门不可能成立 —— 计划把「去掉 `claudeBin` 实参」列在 Task 8,但 Task 5 删了形参,两者必须有一个先动。其余 8 处 `ClaudeBin` 字段注入未触碰。
+2. `db/models.go` 的 `LLMBackend` 字段从 Task 7 提前到此处:`Current()` 要读它,否则 Task 5 无法编译。Task 7 仍负责 API 层的校验、探测与 `Invalidate` 接线,以及 `:22`/`:48` 两处注释的后端中立化(本次未动,保持任务边界可追溯)。
+
+**D2 的连带影响(需知悉):** `SendSimple` / `SendWithOutput` 的旗标集变了(原本只有裸 `-p`,现在带 secure 旗标)。这是必需的:不走 `OnceArgs` 就拿不到 pi 的硬化旗标,pi 会以**全部内置工具(含 bash)**启动。两者在生产代码里**零调用点**(`SendWithOutput` 完全无人调用,`SendSimple` 只有两个错误路径单测),故不影响现有行为;若将来要启用 `SendSimple`,应先重新评估工具面(claude 侧从「无权限绕过」变成「绕过权限但 Bash/Task 硬阻断、文件工具过 hook」,而 WebFetch/WebSearch 故意不在黑名单里)。顺带修掉一个既有怪癖:`SendWithOutput` 原先把 prompt 同时放进 argv **和** stdin,两遗都送。
+
+**遗留:** `Client.BinPath` 自此不再决定 spawn 哪个二进制,只是 `NewClientWithPath` 的遗留入参(尚有 5 个生产调用点:`ingest/{pipeline,sections×2,summary}.go`、`api/translate.go`)。Task 8 删掉这 5 处后,该字段与 `NewClientWithPath` 应一并移除。
+
+**闸门状态:**
+
+- ✅ `go build ./... && go vet ./... && go test ./...` 全绿(10 个包全 ok)
+- ✅ 计划点名的 D1 回归护栏 `TestDocChat_PersistsChatSessionIDOnInit` 通过(0.17s,预算放宽到 8s 后不再贴近边界),api 包 7 个 docchat 用例全过
+- ❌ **`pytest tests/e2e/test_chat_streaming.py`(12 passed)未执行** —— 原因是环境不具备而非跳过:9090 上没有服务,`tests/e2e/.auth/state.json` 不存在,而 `conftest.py:74-75` 的用户名/密码是**空串**(有意留空,否则等于把凭据提交进仓库)。这 12 个用例还会真实调用 claude(断言流式内容、stop 中断、切换会话),需要配额。**需由人在本地起栈并填入凭据后执行。** Go 侧的等价覆盖是那 7 个 docchat 用例(用假 claude 脚本走完整 SSE + resume 链路)。
+
 ## Task 6: 沙箱 extension `backend/scripts/pi-path-validator.ts`
 
 - [ ] `pi.on("tool_call", ...)` 四步:白名单外一律 block(文件工具 ∪ env `PI_WEB_TOOLS`);文件工具提路径→realpath→必须落在 `ALLOWED_DIR` 内(**分隔符边界比较**,防 `/u/1` 匹配 `/u/10`)+ 敏感路径正则 block;`fetch_content` 校验 `url` 与 `urls[]` **全部元素**(仅 `http:`/`https:`,拒绝绝对/相对本地路径与 `file:`/`data:`/`gopher:`/`ftp:` 等);`ALLOWED_DIR` 未设置→文件工具全拒(fail-closed)
