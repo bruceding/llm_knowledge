@@ -1,0 +1,18 @@
+{
+  "allowBrowserCookies": false,
+  "ssrf": {
+    "allowRanges": [],
+    "trustEnvProxy": false
+  },
+  "tools": {
+    "sourceCheck": {
+      "enabled": false
+    }
+  },
+  "fetchContent": {
+    "domainPolicy": {
+      "allow": [],
+      "deny": []
+    }
+  }
+}
