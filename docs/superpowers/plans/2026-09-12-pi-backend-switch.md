@@ -288,8 +288,44 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 - [ ] 新增 TS 用例(以 shell 驱动,参照既有 `TestPathValidator_WebFetchSSRF` 的手法):路径边界 5 条 + `fetch_content` URL 校验 8 条(含 `urls[]` 任一非法即整体 block、空 `url`/空 `urls` 拒绝)
 - [ ] 配置一致性测试已在 Task 1 随产物落地(`backend/scripts/web-search.json.sample`),本任务只需复核其仍然通过
 
-**闸门:** 全局闸门 + `npx tsc --noEmit scripts/pi-path-validator.ts`(或等价的类型检查;若引入 TS 工具链需先确认不污染前端 `package.json`)
+**闸门:** 全局闸门 + 类型检查。**实测可用的命令**(原计划的 `npx tsc --noEmit scripts/pi-path-validator.ts` 有四个问题:路径已改为 `backend/scripts/`;`npx` 会联网下载而本机 `frontend` 已有 tsc;**TS 6.0 起在 `frontend/` 下跑会报 `TS5112`** —— cwd 有 `tsconfig.json` 时命令行不能指定文件,故必须从仓库根跑;**必须显式 `--types node`**,否则 `@types/node` 不加载、出 15 个 TS2591 并级联一个假的 TS2534):
+
+```
+frontend/node_modules/.bin/tsc --noEmit --strict --target es2022 --module esnext \
+  --moduleResolution bundler --typeRoots frontend/node_modules/@types --types node \
+  backend/scripts/pi-path-validator.ts
+```
+
+不引入任何需要 `npm install` 的依赖,`frontend/package.json` 不动
 **提交:** `feat(security): pi 沙箱 extension 与三语言同步测试`
+
+### ✅ Task 6 已完成(`acadd70`,2026-09-13)
+
+交付:`backend/scripts/pi-path-validator.ts`(463 行,导出纯函数 `validateToolCall`,hook 与 CLI 入口共用)、`backend/claude/security_test.go`(+375:三语言同步 + 路径边界 17 例 + `fetch_content` URL 校验 19 例)、`backend/scripts/SECURITY_DEPLOYMENT.md`(+18/-6:目录树、cp 步骤、env 表补 `PI_WEB_TOOLS`、Dockerfile COPY)、运行时副本 `scripts/pi-path-validator.ts`(未跟踪,与 tracked 源 `diff -q` 一致)。
+
+**控制方独立复核:** 44 条敏感路径正则 Python ↔ TS **逐条且同序相同**(程序化提取比对,不是手抄;TS 侧用 `String.raw` 而非普通字符串,因为 JS 普通字符串会吃掉未知转义的反斜杠、`'\.' === '.'`,正则语义就不再与 Python 的 `r'...'` 一致);pi hook API 引用属实(`docs/extensions.md:798-806` 的 `event.input` 可读可改、`types.d.ts:818-828` 的 `{block?,reason?,terminate?}`,与规格的 `{block:true,reason}` 一致);tsc 闸门退出码 0;`ok claude/config/agent`;全量 `go test ./...` 仅 3 个已知环境性失败。测试**有牙**(变异检验:删一条 TS 正则 → `count drift: Python=44 TS=43`;往拒绝集合注入 `read` → 两条断言同时报错;改一条 Python 正则 → 双向报错)。
+
+**已核实的 pi 侧事实(后续任务可直接引用):**
+
+| 事实 | 依据 |
+|---|---|
+| 六个文件工具的路径字段都叫 `path`:`read`/`write`/`edit` 必填,`grep`/`find`/`ls` 可选(缺省即 cwd) | `core/tools/*.d.ts` 的 schema;`types.d.ts:678-724`(自定义工具走 `CustomToolCallEvent.input: Record<string, unknown>`) |
+| `find`/`grep` 的 `pattern`/`glob` **不需要**校验:只作为已校验根目录**内部**的匹配模式传给 fd/rg | `core/tools/find.js:78`、`grep.js:100` |
+| `tool_call` hook 抛错即 block(fail-safe) | `docs/extensions.md:2925` |
+| `fetch_content` 入参是 `url` + `urls[]`,两者都要校验 | `pi-web-access/index.ts:2492-2494` |
+| `ctx.cwd` 可用于解析相对路径 | `types.d.ts:217`;`find.js:65`、`grep.js:57` 的 `resolveToCwd(..., ctx?.cwd \|\| cwd)` |
+
+**比规格描述更严重的一条:** `video-extract.ts:337` 的 `readFile(info.absolutePath)` 紧接 `:338-341` 会把内容 **PUT 上传到 Gemini** —— 不只是「任意绝对路径读取」,是读取 + 外泄。`:211-214` 的 `execFileSync("ffmpeg", ...)` 与规格一致(规格写 `:213`,实际调用跨 211-214)。这正是本设计新增 URL 校验的理由。
+
+**4 处偏离(均为更强或必要,已复核):**
+1. **URL 校验按入参键名而非工具名** —— 任何被放行的工具凡带 `url`/`urls` 就校验。理由:工具名可被 `toolNames` 改写,硬编码名字会在运维改名后**静默失效**;顺带覆盖 `get_search_content`(它也有 `url` 参数,`index.ts:2840`,但其 `execute` 只从缓存取、不发起抓取,故不构成第二条文件向量)。有用例 `改名后的工具_仍被校验` 钉住
+2. **`ALLOWED_DIR` 未设置时拒绝一切**(含 web 工具),比任务书的「文件工具全部 block」更强,与 Python 版 `main()` 在分派到具体工具之前就 deny 一致
+3. **相对路径以 `ctx.cwd` 为基准**(Python 版以 `ALLOWED_DIR` 为基准)。生产布局下等价(`cmd.Dir = userDir` 且 `ALLOWED_DIR = realpath(userDir)`);不一致时以 cwd 为准才不会放行 pi 真会访问的路径。有用例 `cwd在目录外_省略path_拒绝` 验证 fail-closed
+4. **不用 `import type { ExtensionAPI }`** —— 该包在 `/opt/homebrew/lib/node_modules`,不在仓库解析链上,`tsc` 会 TS2307;加 tsconfig paths 或装依赖都会污染前端工程。改为最小结构化声明 + 引用权威行号;运行时类型全被擦除,不影响行为
+
+**本任务最大的未验证面(留给 Task 11):** 未验证「pi 真的会加载 `-e` 指定的 extension 并调用该 hook」。CLI 入口与 hook 共用同一纯函数,校验逻辑已被 36 个用例覆盖,但真实 spawn 下的拦截行为属集成测试范围。
+
+**已知非缺陷:** TOCTOU(hook 校验 realpath 与工具实际执行之间有时间窗,Python 版同样存在,未加剧);不做 IP/DNS 级 SSRF(规格分工),故 `http://127.0.0.1:6379/` 在本层**放行**、由 `pi-web-access/ssrf-protection.ts` 拦,测试里有显式用例与注释以免后人误判为漏洞。
 
 ## Task 7: DB 字段 + Admin API 开关与探测
 
@@ -334,7 +370,7 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 
 ## Task 11: 集成测试、e2e 回归与验收
 
-- [ ] Go 集成测试:spawn 真实 `pi --mode rpc`,发 prompt 要求读 `ALLOWED_DIR` 外文件,断言工具调用被 block;`pi` 不在 PATH 时 `t.Skip`
+- [ ] Go 集成测试:spawn 真实 `pi --mode rpc`,发 prompt 要求读 `ALLOWED_DIR` 外文件,断言工具调用被 block;`pi` 不在 PATH 时 `t.Skip`。**并必须证明 extension 确实被加载**(而不是因文件缺失/路径写错被静默跳过)—— 这是 Task 6 明确留下的最大未验证面:一个静默未加载的沙箱与一个正常工作的沙箱,在「没有越界访问发生」时看起来完全一样
 - [ ] **本地文件向量集成测试**(本次新增控制的核心验证;`pi-web-access` 未装时 `t.Skip`):诱导 `fetch_content` 取 `ALLOWED_DIR` 外的本地路径(绝对路径视频 / `/etc/passwd`),断言被 hook block,且 `video-extract.ts` 的 `readFile(absolutePath)` 与 `execFileSync("ffmpeg", ...)` 未被触达
 - [ ] e2e 回归:`pytest tests/e2e/test_chat_streaming.py`(12)、`test_chat_view.py`、`test_mobile_chat_view.py`、`test_desktop_no_mobile_dom.py`
 - [ ] 留意既有脆弱用例 `api.TestDocChat_PersistsChatSessionIDOnInit`:`api/docchat_test.go:17-29` 的假 claude 脚本 `printf` init 事件后 `sleep 5`,而测试等 `onRealSessionID` 的预算只有 `3 * time.Second`(`:71-78`),`go test ./...` 多包并行时 spawn `/bin/sh` + 调度即可超时(Task 1 修复轮实测到一次,单独跑与连跑 10 次均 PASS,且基线同样偶发)。**它恰好是 D1「把 pi 的 `get_state` 响应归一化成 `system/init`」最直接的回归护栏**,Task 5 必须保持它绿;本任务顺手把预算放宽到 8s
