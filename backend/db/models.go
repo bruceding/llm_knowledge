@@ -70,13 +70,19 @@ type UserSettings struct {
 }
 
 type GlobalSettings struct {
-	ID                 uint      `gorm:"primaryKey" json:"id"`
-	TranslationEnabled bool      `gorm:"default:false" json:"translationEnabled"`
-	TranslationApiBase string    `gorm:"default:https://dashscope.aliyuncs.com/compatible-mode/v1" json:"translationApiBase"`
-	TranslationApiKey  string    `gorm:"" json:"-"` // never expose in API responses
-	TranslationModel   string    `gorm:"default:deepseek-v4-flash" json:"translationModel"`
-	CreatedAt          time.Time `json:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt"`
+	ID                 uint   `gorm:"primaryKey" json:"id"`
+	TranslationEnabled bool   `gorm:"default:false" json:"translationEnabled"`
+	TranslationApiBase string `gorm:"default:https://dashscope.aliyuncs.com/compatible-mode/v1" json:"translationApiBase"`
+	TranslationApiKey  string `gorm:"" json:"-"` // never expose in API responses
+	TranslationModel   string `gorm:"default:deepseek-v4-flash" json:"translationModel"`
+	// LLMBackend 选择 agent 后端:"claude"(默认) 或 "pi"。
+	// AutoMigrate 自动加列,无需数据迁移;存量行拿到默认值 claude,即改造前的行为。
+	// 读取方是 agent.Current()(5s TTL 缓存),写入方是 PUT /api/admin/settings。
+	// 取值校验与探测在 API 层(Task 7),本字段本身不加 CHECK 约束 ——
+	// agent.normalizeBackendName 对未知值一律回退 claude,故写坏也不会让链路全挂。
+	LLMBackend string    `gorm:"default:claude" json:"llmBackend"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
 type RSSFeed struct {

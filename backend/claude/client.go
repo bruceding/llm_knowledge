@@ -17,12 +17,25 @@ type Client struct {
 	Proto   agent.Protocol // 协议实现;nil 时按 BinPath 惰性构造 ClaudeProtocol
 }
 
-// protocol 返回生效的 Protocol,nil 时按 BinPath 惰性构造。
-func (c *Client) protocol() agent.Protocol {
+// protocol 返回生效的 Protocol。
+//
+// c.Proto 非空时用它(显式注入;Task 8 之后 ingest 与 api 都走这条路)。否则向
+// resolver 取当前后端 —— **不得**在此直接 agent.NewClaudeProtocol(c.BinPath, ...):
+// 那是 Plan 1 遗留的硬编码构造点,留着就等于后端开关对 Client 这条路径无效
+// (Settings 切到 pi,而摘要/分节/翻译/PDF 转换依旧 spawn claude,且不报错)。
+// agent/invariant_test.go 会把这种泄漏判红。
+//
+// 代价:BinPath 字段自此不再决定 spawn 哪个二进制,它只是 NewClientWithPath 的
+// 遗留入参。Task 8 删掉那 5 个调用点后,该字段与 NewClientWithPath 应一并移除。
+func (c *Client) protocol() (agent.Protocol, error) {
 	if c.Proto != nil {
-		return c.Proto
+		return c.Proto, nil
 	}
-	return agent.NewClaudeProtocol(c.BinPath, GetSettingsPath())
+	proto, err := agent.Current()
+	if err != nil {
+		return nil, fmt.Errorf("resolve agent backend: %w", err)
+	}
+	return proto, nil
 }
 
 // 以下类型已上移到 agent 包(见 docs/superpowers/specs/2026-09-12-pi-backend-switch-design.md)。
@@ -40,7 +53,7 @@ type RawEvent struct {
 	Result  string          `json:"result"`
 	IsError bool            `json:"is_error"`
 	Message json.RawMessage `json:"message"`
-	Event   json.RawMessage `json:"event"`   // stream_event sub-event payload
+	Event   json.RawMessage `json:"event"` // stream_event sub-event payload
 }
 
 // Send executes the Claude CLI with streaming JSON output.
@@ -48,14 +61,18 @@ type RawEvent struct {
 // The caller should close the channel after Send returns.
 // If workDir is non-empty, the command runs in that directory.
 func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamEvent, workDir string) error {
-	args, err := c.protocol().OnceArgs("", []string{"Read", "Write", "Edit"}, true, "")
+	proto, err := c.protocol()
+	if err != nil {
+		return err
+	}
+	args, err := proto.OnceArgs("", []string{"Read", "Write", "Edit"}, true, "")
 	if err != nil {
 		return fmt.Errorf("build once args: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, c.BinPath, args...)
+	cmd := exec.CommandContext(ctx, proto.Bin(), args...)
 	if workDir != "" {
 		cmd.Dir = workDir
-		if env := c.protocol().Env(workDir); len(env) > 0 {
+		if env := proto.Env(workDir); len(env) > 0 {
 			cmd.Env = env
 		}
 	}
@@ -139,10 +156,28 @@ func (c *Client) Send(ctx context.Context, prompt string, eventCh chan<- StreamE
 	return nil
 }
 
-// SendSimple executes the Claude CLI with a simple prompt and returns the response as a string.
+// SendSimple executes the agent CLI with a simple prompt and returns the response as a string.
 // This is a convenience method for non-streaming use cases.
+//
+// D2:prompt 走 stdin 而不是 argv。旗标集因此发生变化 —— 原本只有裸的 `-p`,
+// 现在走 OnceArgs 会带上 secure 旗标(--disallowedTools / --dangerously-skip-permissions /
+// --settings)。这是必需的:不走 OnceArgs 就拿不到 pi 的硬化旗标,pi 会以**全部
+// 内置工具(含 bash)**启动。代价是 claude 侧从「无权限绕过、工具需授权」变成
+// 「绕过权限但 Bash/Task 等被硬阻断、文件工具过 path-validator hook」。
+//
+// 本函数在**生产代码里零调用点**(只有两个错误路径的单测),所以上述变化不影响
+// 现有行为;若将来要启用它,应先重新评估是否需要收紧工具面。
 func (c *Client) SendSimple(ctx context.Context, prompt string) (string, error) {
-	cmd := exec.CommandContext(ctx, c.BinPath, "-p", prompt)
+	proto, err := c.protocol()
+	if err != nil {
+		return "", err
+	}
+	args, err := proto.OnceArgs("", nil, false, "")
+	if err != nil {
+		return "", fmt.Errorf("build once args: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, proto.Bin(), args...)
+	cmd.Stdin = strings.NewReader(prompt)
 	out, err := cmd.Output()
 	if err != nil {
 		// Include stderr in the error message if available
@@ -158,20 +193,28 @@ func (c *Client) SendSimple(ctx context.Context, prompt string) (string, error) 
 // This is faster than stream-json mode for simple tasks like generating summaries.
 // If workDir is non-empty, the command runs in that directory.
 func (c *Client) SendSimpleWithRead(ctx context.Context, prompt string, workDir string) (string, error) {
-	args, err := c.protocol().OnceArgs("", []string{"Read"}, false, "")
+	proto, err := c.protocol()
+	if err != nil {
+		return "", err
+	}
+	args, err := proto.OnceArgs("", []string{"Read"}, false, "")
 	if err != nil {
 		return "", fmt.Errorf("build once args: %w", err)
 	}
-	args = append(args, prompt)
 
-	cmd := exec.CommandContext(ctx, c.BinPath, args...)
+	cmd := exec.CommandContext(ctx, proto.Bin(), args...)
 	if workDir != "" {
 		cmd.Dir = workDir
 		// Set ALLOWED_DIR environment for security hooks
-		if env := c.protocol().Env(workDir); len(env) > 0 {
+		if env := proto.Env(workDir); len(env) > 0 {
 			cmd.Env = env
 		}
 	}
+	// D2:prompt 从 argv 改为 stdin。原先这里的 `args = append(args, prompt)` 是
+	// Plan 1 遗留的最后一处 argv prompt:对 ps 可见(而 ingest 的 prompt 里含用户
+	// 文档内容),且受 ARG_MAX 限制。pi 侧更不能放 argv —— 它的 `-p` 是「读管道
+	// stdin 并合并进初始 prompt」,两边都给会被拼接成一段。
+	cmd.Stdin = strings.NewReader(prompt)
 	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
@@ -211,10 +254,21 @@ func (c *Client) SendWithTools(ctx context.Context, prompt string, workDir strin
 	return result.String(), nil
 }
 
-// SendWithOutput executes the Claude CLI and writes output to the provided writer.
+// SendWithOutput executes the agent CLI and writes output to the provided writer.
 // This is useful for capturing output directly to a file or buffer.
+//
+// 同 SendSimple:生产代码里**零调用点**,且 D2 改造同时修正了一个既有怪癖 ——
+// 原实现把 prompt 同时放进了 argv(`-p prompt`)**和** stdin,两遗都送。
 func (c *Client) SendWithOutput(ctx context.Context, prompt string, output io.Writer) error {
-	cmd := exec.CommandContext(ctx, c.BinPath, "-p", prompt)
+	proto, err := c.protocol()
+	if err != nil {
+		return err
+	}
+	args, err := proto.OnceArgs("", nil, false, "")
+	if err != nil {
+		return fmt.Errorf("build once args: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, proto.Bin(), args...)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Stdout = output
 

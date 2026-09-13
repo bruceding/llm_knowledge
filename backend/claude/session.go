@@ -44,20 +44,21 @@ type InteractiveSession struct {
 
 // SessionPool manages all active sessions
 type SessionPool struct {
-	sessions  map[string]*InteractiveSession
-	mu        sync.RWMutex
-	dataDir   string
-	claudeBin string
-	done      chan struct{}
+	sessions map[string]*InteractiveSession
+	mu       sync.RWMutex
+	dataDir  string
+	done     chan struct{}
 }
 
-// NewSessionPool creates a new session pool
-func NewSessionPool(dataDir, claudeBin string) *SessionPool {
+// NewSessionPool creates a new session pool.
+//
+// 不再接受 claudeBin:后端与二进制路径统一由 agent.Current() 在每次 spawn 前解析,
+// 否则管理员在 Settings 里切换后端对文档问答这条链路无效。
+func NewSessionPool(dataDir string) *SessionPool {
 	p := &SessionPool{
-		sessions:  make(map[string]*InteractiveSession),
-		dataDir:   dataDir,
-		claudeBin: claudeBin,
-		done:      make(chan struct{}),
+		sessions: make(map[string]*InteractiveSession),
+		dataDir:  dataDir,
+		done:     make(chan struct{}),
 	}
 	go p.cleanupLoop()
 	return p
@@ -103,21 +104,58 @@ func (p *SessionPool) cleanupLoop() {
 
 // Helper functions for creating interactive sessions
 
-func buildCmd(ctx context.Context, claudeBin string, args []string, dataDir string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, claudeBin, args...)
+// buildCmd 构造一个不带定制环境的命令。
+//
+// 形参叫 bin 而不是 claudeBin:它现在可能是任何后端。本函数在**生产代码里零
+// 调用点**(生产路径一律走 buildCmdWithEnv,因为沙箱需要 Env 注入 ALLOWED_DIR),
+// 只有两个用例用它 spawn /bin/sleep 来测试超时与清理行为 —— 那里要求它接受一个
+// 任意二进制,所以保留 bin 形参而不是改收 Protocol(否则测试得为一个 sleep 造一个
+// 假 Protocol,纯属仪式)。生产侧的「spawn 必走 proto.Bin()」由 buildCmdWithEnv 保证。
+func buildCmd(ctx context.Context, bin string, args []string, dataDir string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dataDir
 	return cmd
 }
 
 // buildCmdWithEnv builds a command with a pre-filtered environment.
 // extraEnv 应来自 Protocol.Env,它已过滤重复的 ALLOWED_DIR。
-func buildCmdWithEnv(ctx context.Context, claudeBin string, args []string, dataDir string, extraEnv []string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, claudeBin, args...)
+//
+// 收 Protocol 而不是 bin 字符串,是为了让「二进制路径必走 proto.Bin()」在类型上
+// 成立 —— 传字符串的话,调用方完全可能再把一个硬编码的 "claude" 递进来。
+func buildCmdWithEnv(ctx context.Context, proto agent.Protocol, args []string, dataDir string, extraEnv []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, proto.Bin(), args...)
 	cmd.Dir = dataDir
 	if len(extraEnv) > 0 {
 		cmd.Env = extraEnv
 	}
 	return cmd
+}
+
+// writeInitCommands 把 Protocol 声明的握手命令写进子进程 stdin(计划 D1)。
+//
+// Claude 返回 nil,所以本函数对 claude 路径是 **no-op** —— 既有行为逐字不变。
+// pi 返回 get_state:pi 在 rpc 模式下启动后不主动输出任何行(实测 spawn 后 2s 内
+// 0 行),也不发 --mode json 那个 {"type":"session",...} 头行,所以 sessionId 只能
+// 主动去取。PiProtocol.ParseLine 会把它的 response 归一化成 system/init,于是
+// waitForInit、local-<UnixNano> fallback ID、onSessionID 别名注册与 onResumeFailed
+// 降级链全部无需改动,两个后端走完全相同的路径。
+//
+// 调用时机必须在 cmd.Start() 之后、go readEvents() 之前:写早了管道还没建好,
+// 写晚了响应可能没人读(query_pool 的两个 Start* 是先 readEvents 再 waitForInit,
+// 而 waitForInit 正是在等这个响应)。
+//
+// 写失败意味着子进程已经死了(例如 --session 指向一个对当前后端无意义的存量 ID,
+// 即规格「旧 session ID 处理」里切换后端那一刻的情形)。此时快失败比带着
+// fallback ID 苟延残喘好 —— 后者会让上层以为会话已建立,而实际永远等不到真实 ID。
+//
+// 本函数不得引入 `if backend == pi` 分支:差异全在 Protocol 实现内。
+func writeInitCommands(proto agent.Protocol, stdin io.Writer) error {
+	for _, line := range proto.InitCommands() {
+		if _, err := stdin.Write(line); err != nil {
+			return fmt.Errorf("failed to send agent init command: %w", err)
+		}
+	}
+	return nil
 }
 
 func createPipes(cmd *exec.Cmd) (io.Writer, io.Reader, io.Reader, error) {
@@ -172,14 +210,16 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 	}
 	workDir := userDir
 
-	proto := agent.NewClaudeProtocol(p.claudeBin, GetSettingsPath())
+	proto, err := agent.Current()
+	if err != nil {
+		return nil, fmt.Errorf("resolve agent backend: %w", err)
+	}
 
 	// Add system prompt with document context
 	systemPrompt := fmt.Sprintf("用户正在询问文档相关问题。%s 请使用 Read 工具读取相关文件回答。如果文件内容不足以回答，可以使用你自己的知识补充。", docInfo)
 
 	resuming := prevSessionID != "" && !strings.HasPrefix(prevSessionID, "local-")
 	var args []string
-	var err error
 	if resuming {
 		args, err = proto.ResumeArgs(prevSessionID, systemPrompt, []string{"Read"})
 	} else {
@@ -193,7 +233,7 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 	env := proto.Env(workDir)
 
 	ctx, cancel := context.WithCancel(ctx)
-	cmd := buildCmdWithEnv(ctx, p.claudeBin, args, workDir, env)
+	cmd := buildCmdWithEnv(ctx, proto, args, workDir, env)
 
 	stdinPipe, stdoutPipe, stderrPipe, err := createPipes(cmd)
 	if err != nil {
@@ -216,14 +256,14 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return nil, fmt.Errorf("failed to start claude: %w", err)
+		return nil, fmt.Errorf("failed to start agent process: %w", err)
 	}
 
 	// Start goroutine to log stderr output (helps debug Claude CLI crashes)
 	go func() {
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
-			log.Printf("[session] Claude stderr: %s", scanner.Text())
+			log.Printf("[session] agent stderr: %s", scanner.Text())
 		}
 		if scanner.Err() != nil {
 			log.Printf("[session] stderr scanner error: %v", scanner.Err())
@@ -254,6 +294,14 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 	}
 	sessionID := session.SessionID
 	session.mu.Unlock()
+
+	// D1:把 Protocol 声明的握手命令写进 stdin。放在回调接线之后、readEvents
+	// 之前是故意的:保证响应被读到时 onSessionID 已经就位(上方注释已说明为何
+	// 不能让它落在 nil 回调上)。具体理由见 writeInitCommands。
+	if err := writeInitCommands(proto, stdinPipe); err != nil {
+		cancel()
+		return nil, err
+	}
 
 	// In interactive mode (no --print), system.init only fires after the first
 	// user message, so don't block waiting for it. Use a fallback ID immediately;

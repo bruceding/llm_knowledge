@@ -255,7 +255,7 @@ func main() {
 	apiGroup.GET("/documents/:id/pages-status", pagesH.CheckPages)
 
 	// Query API (SSE streaming with session pool) (protected)
-	querySessionPool := claude.NewQuerySessionPool(cfg.DataDir, cfg.ClaudeBin)
+	querySessionPool := claude.NewQuerySessionPool(cfg.DataDir)
 	queryH := &api.QueryHandler{
 		DataDir:   cfg.DataDir,
 		ClaudeBin: cfg.ClaudeBin,
@@ -310,7 +310,7 @@ func main() {
 	apiGroup.POST("/images/upload", imagesH.Upload, middleware.BodyLimit("15M"))
 
 	// Document Chat API (SSE streaming with session pool) (protected)
-	sessionPool := claude.NewSessionPool(cfg.DataDir, cfg.ClaudeBin)
+	sessionPool := claude.NewSessionPool(cfg.DataDir)
 	docChatH := &api.DocChatHandler{
 		Pool:    sessionPool,
 		DataDir: cfg.DataDir,

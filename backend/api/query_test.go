@@ -38,7 +38,8 @@ func setupQueryHandler(t *testing.T) *QueryHandler {
 	t.Cleanup(func() { cleanupQueryTestDB(t) })
 
 	dataDir := t.TempDir()
-	pool := claude.NewQuerySessionPool(dataDir, "/nonexistent/claude")
+	initTestBackend(t, "/nonexistent/claude")
+	pool := claude.NewQuerySessionPool(dataDir)
 	t.Cleanup(func() { pool.Close() })
 
 	return &QueryHandler{
