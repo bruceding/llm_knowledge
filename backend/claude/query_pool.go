@@ -3,6 +3,7 @@ package claude
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"llm-knowledge/db"
 	"log"
@@ -11,6 +12,11 @@ import (
 	"time"
 )
 
+// ErrTurnInProgress is returned by Ask when the session already has a turn in
+// flight. It is not a dead-session error: the Claude process is healthy, so
+// callers must wait or reject instead of replacing the session.
+var ErrTurnInProgress = errors.New("another question is already in progress")
+
 // QuerySession wraps an InteractiveSession with turn-based event routing.
 // It continuously consumes events from the underlying session and routes
 // them to per-question channels and any stream subscribers.
@@ -18,10 +24,11 @@ type QuerySession struct {
 	session          *InteractiveSession
 	convID           uint
 	turnCh           chan StreamEvent // active turn's event channel (nil when idle)
+	turnDone         chan struct{}    // closed when the active turn ends (nil when idle)
 	currentMessageID uint             // user message ID for current turn (for saving assistant reply)
 	currentContent   strings.Builder  // accumulated assistant content for current turn
 	hasStreamDeltas  bool             // true if stream_event text deltas received this turn (prevents double accumulation)
-	mu               sync.Mutex       // protects turnCh, currentMessageID, currentContent, streamChs
+	mu               sync.Mutex       // protects turnCh, turnDone, currentMessageID, currentContent, streamChs
 	streamChs        []chan StreamEvent
 	lastAsk          time.Time // last time a question was asked
 }
@@ -35,6 +42,18 @@ func newQuerySession(session *InteractiveSession, convID uint) *QuerySession {
 	}
 	go qs.routeEvents()
 	return qs
+}
+
+// endTurnLocked closes the active turn's channels. Caller must hold qs.mu.
+func (qs *QuerySession) endTurnLocked() {
+	if qs.turnCh != nil {
+		close(qs.turnCh)
+		qs.turnCh = nil
+	}
+	if qs.turnDone != nil {
+		close(qs.turnDone)
+		qs.turnDone = nil
+	}
 }
 
 // routeEvents continuously reads from the underlying session's event channel
@@ -88,8 +107,7 @@ func (qs *QuerySession) routeEvents() {
 				}
 			}
 			if evt.Type == "result" || evt.Type == "error" {
-				close(qs.turnCh)
-				qs.turnCh = nil
+				qs.endTurnLocked()
 			}
 		}
 
@@ -130,6 +148,19 @@ func (qs *QuerySession) routeEvents() {
 		close(ch)
 	}
 	qs.streamChs = nil
+	// The Claude process is gone. End any in-flight turn: without this the
+	// session kept reporting "another question is already in progress" for the
+	// rest of its pooled life, and /message kept failing on a corpse.
+	if qs.turnCh != nil {
+		select {
+		case qs.turnCh <- StreamEvent{Type: "error", Error: "claude process exited", ResultMessageID: qs.currentMessageID}:
+		default:
+		}
+	}
+	qs.endTurnLocked()
+	qs.currentMessageID = 0
+	qs.currentContent.Reset()
+	qs.hasStreamDeltas = false
 	qs.mu.Unlock()
 }
 
@@ -141,34 +172,51 @@ func (qs *QuerySession) Ask(content string, messageID uint, images []ImageData) 
 	qs.mu.Lock()
 	if qs.turnCh != nil {
 		qs.mu.Unlock()
-		return nil, fmt.Errorf("another question is already in progress")
+		return nil, ErrTurnInProgress
 	}
 	ch := make(chan StreamEvent, 100)
 	qs.turnCh = ch
+	qs.turnDone = make(chan struct{})
 	qs.currentMessageID = messageID
 	qs.currentContent.Reset()
 	qs.lastAsk = time.Now()
 	qs.mu.Unlock()
 
+	var sendErr error
 	if len(images) > 0 {
-		if err := qs.session.SendUserMessageWithImages(content, images); err != nil {
-			qs.mu.Lock()
-			qs.turnCh = nil
-			qs.currentMessageID = 0
-			qs.mu.Unlock()
-			return nil, err
-		}
+		sendErr = qs.session.SendUserMessageWithImages(content, images)
 	} else {
-		if err := qs.session.SendUserMessage(content); err != nil {
-			qs.mu.Lock()
-			qs.turnCh = nil
-			qs.currentMessageID = 0
-			qs.mu.Unlock()
-			return nil, err
-		}
+		sendErr = qs.session.SendUserMessage(content)
+	}
+	if sendErr != nil {
+		qs.mu.Lock()
+		qs.endTurnLocked()
+		qs.currentMessageID = 0
+		qs.mu.Unlock()
+		return nil, sendErr
 	}
 
 	return ch, nil
+}
+
+// WaitIdle blocks until the in-flight turn ends (result/error, or the Claude
+// process exiting) and reports whether that happened within the timeout.
+// It lets callers absorb the interrupt→send race — the frontend re-enables the
+// input as soon as Stop is clicked, before Claude's result event arrives —
+// without discarding a healthy session.
+func (qs *QuerySession) WaitIdle(timeout time.Duration) bool {
+	qs.mu.Lock()
+	done := qs.turnDone
+	qs.mu.Unlock()
+	if done == nil {
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // Close terminates the underlying session.
@@ -259,23 +307,38 @@ func (qs *QuerySession) SSEState() (int, time.Time) {
 	return qs.session.SSEState()
 }
 
-// QuerySessionPool manages interactive sessions for the Query system,
-// keyed by conversation ID. Sessions expire after 30 seconds of SSE disconnect.
-type QuerySessionPool struct {
-	sessions  map[uint]*QuerySession
-	mu        sync.RWMutex
-	dataDir   string
-	claudeBin string
-	done      chan struct{}
+// IdleSince returns when the underlying session last did something.
+func (qs *QuerySession) IdleSince() time.Time {
+	return qs.session.IdleSince()
 }
 
-// NewQuerySessionPool creates a new pool with 30s SSE-disconnect cleanup timeout.
+// QuerySessionPool manages interactive sessions for the Query system,
+// keyed by conversation ID. Sessions are recycled once they have been idle
+// (no SSE subscriber, no activity) for the pool's idle timeout.
+type QuerySessionPool struct {
+	sessions    map[uint]*QuerySession
+	mu          sync.RWMutex
+	dataDir     string
+	claudeBin   string
+	idleTimeout time.Duration
+	done        chan struct{}
+}
+
+// NewQuerySessionPool creates a new pool that recycles sessions idle for
+// defaultSessionIdleTimeout.
 func NewQuerySessionPool(dataDir, claudeBin string) *QuerySessionPool {
+	return newQuerySessionPool(dataDir, claudeBin, defaultSessionIdleTimeout)
+}
+
+// newQuerySessionPool is NewQuerySessionPool with an explicit idle timeout, so
+// tests can observe a sweep without waiting out the production default.
+func newQuerySessionPool(dataDir, claudeBin string, idleTimeout time.Duration) *QuerySessionPool {
 	p := &QuerySessionPool{
-		sessions:  make(map[uint]*QuerySession),
-		dataDir:   dataDir,
-		claudeBin: claudeBin,
-		done:      make(chan struct{}),
+		sessions:    make(map[uint]*QuerySession),
+		dataDir:     dataDir,
+		claudeBin:   claudeBin,
+		idleTimeout: idleTimeout,
+		done:        make(chan struct{}),
 	}
 	go p.cleanupLoop()
 	return p
@@ -285,42 +348,77 @@ func NewQuerySessionPool(dataDir, claudeBin string) *QuerySessionPool {
 func (p *QuerySessionPool) Close() {
 	close(p.done)
 	p.mu.Lock()
+	var toClose []*QuerySession
 	for convID, qs := range p.sessions {
-		qs.Close()
+		toClose = append(toClose, qs)
 		delete(p.sessions, convID)
 	}
 	p.mu.Unlock()
+	// Kill outside the lock: a dying process wakes routeEvents, which may still
+	// need qs.mu.
+	for _, qs := range toClose {
+		qs.Close()
+	}
 	log.Printf("[query-pool] QuerySessionPool closed, all sessions terminated")
 }
 
-// cleanupLoop closes sessions after 120 seconds of no active SSE connections.
+// cleanupLoop recycles sessions idle past the pool's idle timeout: no SSE
+// subscriber and no activity since the deadline.
+// The previous rule required a recorded SSE disconnect, so any session created
+// without one (POST /query/message before the stream connects, or a stream that
+// died before SSEConnect) was never recycled — its Claude process lived until
+// server shutdown and e2e rounds piled up orphans.
 func (p *QuerySessionPool) cleanupLoop() {
+	tick := cleanupTick(p.idleTimeout)
 	for {
 		select {
 		case <-p.done:
 			return
-		case <-time.After(10 * time.Second):
+		case <-time.After(tick):
 		}
+		var toClose []*QuerySession
 		p.mu.Lock()
 		for convID, qs := range p.sessions {
-			sseCount, lastDisconnect := qs.SSEState()
-			if sseCount == 0 && !lastDisconnect.IsZero() &&
-				lastDisconnect.Add(120*time.Second).Before(time.Now()) {
-				log.Printf("[query-pool] Closing session for conversation %d after 120s SSE disconnect", convID)
-				qs.Close()
-				delete(p.sessions, convID)
+			if sseCount, _ := qs.SSEState(); sseCount > 0 {
+				continue
 			}
+			idleFor := time.Since(qs.IdleSince())
+			if idleFor < p.idleTimeout {
+				continue
+			}
+			log.Printf("[query-pool] Closing session for conversation %d after %s idle", convID, idleFor.Round(time.Second))
+			toClose = append(toClose, qs)
+			delete(p.sessions, convID)
 		}
 		p.mu.Unlock()
+		for _, qs := range toClose {
+			qs.Close()
+		}
 	}
 }
 
-// Get returns an existing session from the pool without creating a new one.
-// Returns nil if no session exists for the given conversation ID.
+// Get returns a live session from the pool without creating a new one.
+// Returns nil if the conversation has no session, or its Claude process already
+// exited (the stale entry is evicted here).
 func (p *QuerySessionPool) Get(convID uint) *QuerySession {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.sessions[convID]
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.liveLocked(convID)
+}
+
+// liveLocked returns the pooled session for convID only if its Claude process is
+// still running. Caller must hold p.mu for writing.
+func (p *QuerySessionPool) liveLocked(convID uint) *QuerySession {
+	qs := p.sessions[convID]
+	if qs == nil {
+		return nil
+	}
+	if !qs.session.Exited() {
+		return qs
+	}
+	delete(p.sessions, convID)
+	log.Printf("[query-pool] Evicted exited session for conversation %d", convID)
+	return nil
 }
 
 // SessionSource indicates how a session was obtained by the pool.
@@ -339,11 +437,7 @@ const (
 // session_id arrives asynchronously.
 // userDir is the user's directory for Claude session isolation.
 func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSessionID string, systemPrompt string, userDir string, onRealSessionID func(convID uint, newSID string)) (*QuerySession, SessionSource, error) {
-	p.mu.RLock()
-	qs, exists := p.sessions[convID]
-	p.mu.RUnlock()
-
-	if exists {
+	if qs := p.Get(convID); qs != nil {
 		return qs, SourceExisting, nil
 	}
 
@@ -351,10 +445,11 @@ func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSes
 	defer p.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if qs, exists = p.sessions[convID]; exists {
-		return qs, SourceExisting, nil
+	if existing := p.liveLocked(convID); existing != nil {
+		return existing, SourceExisting, nil
 	}
 
+	var qs *QuerySession
 	var session *InteractiveSession
 	var err error
 	source := SourceCreated
@@ -378,7 +473,8 @@ func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSes
 	}
 
 	// Register callback to update the database when real session_id arrives.
-	// This handles the case where waitForInit timed out and a fallback ID was used.
+	// Sessions always start with a local-xxx fallback ID; the real one shows up
+	// with system.init after the first user message.
 	session.onSessionID = func(oldID, newID string) {
 		log.Printf("[query-pool] session_id updated for conversation %d: %s -> %s", convID, oldID, newID)
 		if onRealSessionID != nil {
@@ -396,11 +492,7 @@ func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSes
 // Prefer GetOrResume which also tries --resume when a previous session exists.
 // userDir is the user's directory for Claude session isolation.
 func (p *QuerySessionPool) GetOrCreate(ctx context.Context, convID uint, systemPrompt string, userDir string) (*QuerySession, error) {
-	p.mu.RLock()
-	qs, exists := p.sessions[convID]
-	p.mu.RUnlock()
-
-	if exists {
+	if qs := p.Get(convID); qs != nil {
 		return qs, nil
 	}
 
@@ -408,10 +500,11 @@ func (p *QuerySessionPool) GetOrCreate(ctx context.Context, convID uint, systemP
 	defer p.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if qs, exists = p.sessions[convID]; exists {
-		return qs, nil
+	if existing := p.liveLocked(convID); existing != nil {
+		return existing, nil
 	}
 
+	var qs *QuerySession
 	session, err := StartSession(ctx, p.claudeBin, userDir, systemPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start session: %w", err)
@@ -533,17 +626,18 @@ func StartSession(ctx context.Context, claudeBin string, userDir string, systemP
 	// when the first real user message is sent via Ask(). No init message needed.
 	go session.readEvents()
 
-	// Wait briefly for session_id from system.init event.
-	// If the first user message hasn't been sent yet, this will timeout and
-	// a fallback ID is used; the real ID will be captured later by readEvents.
-	if err := waitForInit(session, 5*time.Second); err != nil {
-		log.Printf("[session] Warning: %v, using fallback ID", err)
-		session.mu.Lock()
-		if session.SessionID == "" {
-			session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
-		}
-		session.mu.Unlock()
+	// Interactive mode (no --print) emits system.init only after the first user
+	// message, so waiting for it here can never succeed. It burned 5s per session
+	// while GetOrResume held the pool's write lock — stalling every other
+	// Get/Status/Message call behind it — and logged "timed out waiting for init
+	// event" on every single creation. Use a fallback ID; readEvents swaps in the
+	// real one via onSessionID once the first message is sent.
+	session.mu.Lock()
+	if session.SessionID == "" {
+		session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
 	}
+	session.lastActivity = time.Now() // idle sweeps count from creation, not from first use
+	session.mu.Unlock()
 
 	return session, nil
 }
@@ -606,18 +700,15 @@ func StartResumedSession(ctx context.Context, claudeBin string, userDir string, 
 	// Start reading events — session_id will be auto-captured from system.init
 	go session.readEvents()
 
-	// Wait briefly for session_id. For resumed sessions, system.init typically
-	// hasn't fired yet (it arrives when the first user message is sent), so
-	// timeout here is the expected path — a local-xxx fallback ID is used and
-	// updated later via the onSessionID callback.
-	if err := waitForInit(session, 5*time.Second); err != nil {
-		log.Printf("[session] Warning: %v, using fallback ID", err)
-		session.mu.Lock()
-		if session.SessionID == "" {
-			session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
-		}
-		session.mu.Unlock()
+	// Same as StartSession: system.init only arrives with the first user message,
+	// so don't block on it. The local-xxx fallback ID is replaced later through
+	// the onSessionID callback.
+	session.mu.Lock()
+	if session.SessionID == "" {
+		session.SessionID = fmt.Sprintf("local-%d", time.Now().UnixNano())
 	}
+	session.lastActivity = time.Now()
+	session.mu.Unlock()
 
 	return session, nil
 }

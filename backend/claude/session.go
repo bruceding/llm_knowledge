@@ -32,7 +32,9 @@ type InteractiveSession struct {
 	streamingContent strings.Builder    // accumulated text for SSE reconnect recovery
 	hasStreamDeltas  bool               // true if stream_event text deltas received this turn
 	lastDisconnect   time.Time
-	sseCount         int // active SSE connections
+	lastActivity     time.Time // last create/send/event; idle sweeps use it when SSE never connected
+	exited           bool      // true once the Claude process has been reaped
+	sseCount         int       // active SSE connections
 	mu               sync.Mutex
 	closeOnce        sync.Once // protects Close() from double channel close
 	ctx              context.Context
@@ -44,22 +46,47 @@ type InteractiveSession struct {
 	closedExplicitly bool                      // set by Close(); suppresses onResumeFailed (the id may still be valid)
 }
 
+// defaultSessionIdleTimeout is how long a session with no SSE subscriber and no
+// activity is kept before the cleanup sweep kills its Claude process.
+const defaultSessionIdleTimeout = 120 * time.Second
+
+// cleanupTick derives the sweep interval from the idle timeout so a short
+// (test-injected) timeout is still honored without busy-looping in production.
+func cleanupTick(idleTimeout time.Duration) time.Duration {
+	tick := idleTimeout / 4
+	if tick > 10*time.Second {
+		tick = 10 * time.Second
+	}
+	if tick < 50*time.Millisecond {
+		tick = 50 * time.Millisecond
+	}
+	return tick
+}
+
 // SessionPool manages all active sessions
 type SessionPool struct {
-	sessions  map[string]*InteractiveSession
-	mu        sync.RWMutex
-	dataDir   string
-	claudeBin string
-	done      chan struct{}
+	sessions    map[string]*InteractiveSession
+	mu          sync.RWMutex
+	dataDir     string
+	claudeBin   string
+	idleTimeout time.Duration
+	done        chan struct{}
 }
 
 // NewSessionPool creates a new session pool
 func NewSessionPool(dataDir, claudeBin string) *SessionPool {
+	return newSessionPool(dataDir, claudeBin, defaultSessionIdleTimeout)
+}
+
+// newSessionPool is NewSessionPool with an explicit idle timeout, so tests can
+// observe a sweep without waiting out the production default.
+func newSessionPool(dataDir, claudeBin string, idleTimeout time.Duration) *SessionPool {
 	p := &SessionPool{
-		sessions:  make(map[string]*InteractiveSession),
-		dataDir:   dataDir,
-		claudeBin: claudeBin,
-		done:      make(chan struct{}),
+		sessions:    make(map[string]*InteractiveSession),
+		dataDir:     dataDir,
+		claudeBin:   claudeBin,
+		idleTimeout: idleTimeout,
+		done:        make(chan struct{}),
 	}
 	go p.cleanupLoop()
 	return p
@@ -77,24 +104,34 @@ func (p *SessionPool) Close() {
 	log.Printf("[session] SessionPool closed, all sessions terminated")
 }
 
-// cleanupLoop closes sessions after 120 seconds of no active SSE connections
+// cleanupLoop recycles sessions that have been idle past the pool's idle
+// timeout. Idle means no SSE subscriber and no activity (message sent or event
+// received) since the deadline.
+// Keying the sweep off lastDisconnect alone — as this loop used to — leaked
+// every session that never had an SSE connection (zero lastDisconnect): its
+// Claude process stayed alive until server shutdown, so a full e2e round left
+// a pile of orphans behind.
 func (p *SessionPool) cleanupLoop() {
+	tick := cleanupTick(p.idleTimeout)
 	for {
 		select {
 		case <-p.done:
 			return
-		case <-time.After(10 * time.Second):
+		case <-time.After(tick):
 		}
 		var toClose []*InteractiveSession
 		p.mu.Lock()
 		for sid, session := range p.sessions {
-			sseCount, lastDisconnect := session.SSEState()
-			if sseCount == 0 && !lastDisconnect.IsZero() &&
-				lastDisconnect.Add(120*time.Second).Before(time.Now()) {
-				log.Printf("[session] Closing session %s after 120s timeout", sid)
-				toClose = append(toClose, session)
-				delete(p.sessions, sid)
+			if sseCount, _ := session.SSEState(); sseCount > 0 {
+				continue
 			}
+			idleFor := time.Since(session.IdleSince())
+			if idleFor < p.idleTimeout {
+				continue
+			}
+			log.Printf("[session] Closing session %s after %s idle", sid, idleFor.Round(time.Second))
+			toClose = append(toClose, session)
+			delete(p.sessions, sid)
 		}
 		p.mu.Unlock()
 		for _, session := range toClose {
@@ -146,15 +183,6 @@ func newScanner(r io.Reader) *bufio.Scanner {
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 	return scanner
-}
-
-func waitForInit(session *InteractiveSession, timeout time.Duration) error {
-	select {
-	case <-session.initDone:
-		return nil
-	case <-time.After(timeout):
-		return fmt.Errorf("timed out waiting for init event")
-	}
 }
 
 // StartSession creates a new Claude session with user/document ownership.
@@ -216,6 +244,7 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 		ctx:           ctx,
 		cancel:        cancel,
 		initDone:      make(chan struct{}),
+		lastActivity:  time.Now(),
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -262,11 +291,13 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 	// In interactive mode (no --print), system.init only fires after the first
 	// user message, so don't block waiting for it. Use a fallback ID immediately;
 	// the real session_id will be captured by readEvents via onSessionID callback.
-	go session.readEvents()
-
+	// Publish into the map before readEvents starts so a process that dies
+	// instantly is already visible to the Exited() check in GetSession.
 	p.mu.Lock()
 	p.sessions[sessionID] = session
 	p.mu.Unlock()
+
+	go session.readEvents()
 
 	if resuming {
 		log.Printf("[session] Started resumed session from prev=%s (fallback id=%s)", prevSessionID, session.SessionID)
@@ -276,12 +307,25 @@ func (p *SessionPool) StartSession(ctx context.Context, docInfo string, userID u
 	return session, nil
 }
 
-// GetSession retrieves an existing session
+// GetSession retrieves an existing live session. A session whose Claude process
+// already exited is evicted instead of being handed back: reusing a corpse makes
+// /message write to a dead stdin and /reconnect subscribe to a channel that will
+// never receive another event.
 func (p *SessionPool) GetSession(sessionId string) *InteractiveSession {
-	p.mu.RLock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	session := p.sessions[sessionId]
-	p.mu.RUnlock()
-	return session
+	if session == nil || !session.Exited() {
+		return session
+	}
+	// system.init registers an alias key, so the same session can sit under two ids.
+	for sid, s := range p.sessions {
+		if s == session {
+			delete(p.sessions, sid)
+		}
+	}
+	log.Printf("[session] Evicted exited session %s", sessionId)
+	return nil
 }
 
 // CloseByDocID closes and removes all sessions owned by the given docID.
@@ -312,6 +356,7 @@ func (p *SessionPool) HasSession(sessionId string) bool {
 func (s *InteractiveSession) SendUserMessage(content string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastActivity = time.Now()
 
 	msg := map[string]interface{}{
 		"type": "user",
@@ -343,6 +388,7 @@ func (s *InteractiveSession) SendUserMessage(content string) error {
 func (s *InteractiveSession) SendUserMessageWithImages(content string, images []ImageData) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastActivity = time.Now()
 
 	// Build content array
 	msgContent := []map[string]interface{}{}
@@ -470,6 +516,33 @@ func (s *InteractiveSession) SSEState() (sseCount int, lastDisconnect time.Time)
 	return s.sseCount, s.lastDisconnect
 }
 
+// touch records activity so the idle sweep doesn't recycle a session that is
+// still working (e.g. streaming a long answer with no SSE subscriber attached).
+func (s *InteractiveSession) touch() {
+	s.mu.Lock()
+	s.lastActivity = time.Now()
+	s.mu.Unlock()
+}
+
+// IdleSince returns the later of last activity and last SSE disconnect.
+// A session whose SSE never connected has a zero lastDisconnect, so falling
+// back to lastActivity is what makes it recyclable instead of immortal.
+func (s *InteractiveSession) IdleSince() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastDisconnect.After(s.lastActivity) {
+		return s.lastDisconnect
+	}
+	return s.lastActivity
+}
+
+// Exited reports whether the Claude process has finished and been reaped.
+func (s *InteractiveSession) Exited() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.exited
+}
+
 // Events returns the event channel (for direct access, prefer Subscribe for fan-out)
 func (s *InteractiveSession) Events() <-chan StreamEvent {
 	return s.eventCh
@@ -553,6 +626,8 @@ func (s *InteractiveSession) readEvents() {
 		if err := json.Unmarshal(line, &rawEvent); err != nil {
 			continue
 		}
+
+		s.touch()
 
 		event := StreamEvent{
 			Type:      rawEvent.Type,
@@ -677,6 +752,7 @@ func (s *InteractiveSession) readEvents() {
 	// can be cleared — otherwise every reconnect loops on the same broken
 	// resume forever.
 	s.mu.Lock()
+	s.exited = true // before any callback, so pool lookups already see a dead session
 	resumeFailed := false
 	// Only treat a missing init as a resume failure when the process was NOT
 	// killed by Close(). An explicit Close (idle timeout, navigate-away,

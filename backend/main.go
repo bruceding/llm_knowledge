@@ -311,6 +311,7 @@ func main() {
 
 	// Document Chat API (SSE streaming with session pool) (protected)
 	sessionPool := claude.NewSessionPool(cfg.DataDir, cfg.ClaudeBin)
+	docH.Pool = sessionPool // deleting a document must also kill its chat session
 	docChatH := &api.DocChatHandler{
 		Pool:    sessionPool,
 		DataDir: cfg.DataDir,

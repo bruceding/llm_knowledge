@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"llm-knowledge/claude"
 	"llm-knowledge/db"
@@ -23,6 +24,12 @@ type QueryHandler struct {
 	ClaudeBin string
 	Pool      *claude.QuerySessionPool
 }
+
+// turnSettleTimeout is how long a message waits for an in-flight turn to end
+// before being rejected. Interrupts are asynchronous: the frontend re-enables
+// the input the moment Stop is clicked, so the next send can land a few hundred
+// milliseconds before Claude's result event does.
+const turnSettleTimeout = 3 * time.Second
 
 // CreateConversationRequest represents the request for creating a new conversation
 type CreateConversationRequest struct {
@@ -193,6 +200,18 @@ func (h *QueryHandler) Message(c echo.Context) error {
 
 	// Send question to session with message ID for saving assistant reply
 	_, err := qs.Ask(messageToSend, userMsg.ID, imageData)
+	if errors.Is(err, claude.ErrTurnInProgress) {
+		// Give the previous turn a moment to finish rather than treating the
+		// session as broken: it is alive, and dropping it costs a Claude process
+		// kill + respawn (plus the conversation context).
+		if qs.WaitIdle(turnSettleTimeout) {
+			_, err = qs.Ask(messageToSend, userMsg.ID, imageData)
+		}
+		if errors.Is(err, claude.ErrTurnInProgress) {
+			log.Printf("[query] Conversation %d still busy after %s, rejecting message", req.ConversationID, turnSettleTimeout)
+			return c.JSON(http.StatusConflict, echo.Map{"error": "previous question is still in progress"})
+		}
+	}
 	if err != nil {
 		log.Printf("[query] Failed to ask question: %v", err)
 		// Session might be dead, try to recreate

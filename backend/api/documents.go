@@ -23,6 +23,7 @@ import (
 type DocHandler struct {
 	DataDir   string
 	ClaudeBin string
+	Pool      *claude.SessionPool // doc-chat sessions; nil in unit tests
 }
 
 // ListInbox returns all documents with status "inbox"
@@ -235,6 +236,13 @@ func (h *DocHandler) DeleteDoc(c echo.Context) error {
 
 	log.Printf("[delete] Deleting document id=%d title=%q sourceType=%s rawPath=%q wikiPath=%q userId=%d remoteAddr=%s",
 		doc.ID, doc.Title, doc.SourceType, doc.RawPath, doc.WikiPath, userId, c.RealIP())
+
+	// Kill any doc-chat session belonging to this document: once the document is
+	// gone the session can only answer about deleted files, and its Claude
+	// process would otherwise sit in the pool until the idle sweep.
+	if h.Pool != nil {
+		h.Pool.CloseByDocID(uint(idUint))
+	}
 
 	userDir := GetUserDir(c)
 
