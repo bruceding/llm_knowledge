@@ -707,3 +707,88 @@ frontend/node_modules/.bin/tsc --noEmit --strict --target es2022 --module esnext
 2. SSE 重连恢复简化(用 `get_messages` 取代 `streamingContent` 累积 + `sseReconnectContent` 去重)——留作 pi 路径稳定后的独立简化项
 3. `backend/dependencies` 的孤儿状态(前端至今未消费 `/api/dependencies/status`)——仅复用其探测手法,不扩大范围
 4. `config.Load()` 不可测:它内部 `flag.String` + `flag.Parse()`,二次调用即 panic,导致 `PiBin`/`ClaudeBin` 的 env 解析无法单测。应拆成「纯函数解析(可注入 env/args)」+「薄壳 `Load()`」。**本计划不做**(属既有结构问题,与后端切换无关)
+
+## 分支整体 review(2026-09-13 20:20,合并前,5 lane 并行)
+
+**方法:** 5 条 fresh-context **只读** reviewer lane(`reviewer` agent:无 bash、无写权限),diff 按目录切片导出后分派,`comm` 比对确认 68 个改动文件**无一落在 lane 之外**。每条 lane 被要求只报有代码证据的缺陷、给 `文件:行`、并以 `Merge verdict` 收尾;无法自行验证的疑虑单列「需要父进程验证」,由父进程逐条实测(结果见本节末)。
+
+| lane | 范围 | 判决 |
+|---|---|---|
+| A | `backend/agent/`:argv/env 安全约束、ParseLine 事件映射、编码逃逸、I1 不变式、fail-closed、resolver、测试是否「空洞的绿」 | OK with notes |
+| B | 沙箱 extension 与安全配置:TS↔Python 等价性、URL 绕过候选逐个否定、config 回退方向、三语言同步测试是否有牙 | OK with notes |
+| C | 接线层:spawn 点收口、prompt 入 stdin、ingest 是否跟随开关、DB 迁移、resume/会话池、错误是否静默降级 | **BLOCK** |
+| D | 前端 + `start.sh` + README + e2e:权限门控、fail-open 通路、部署文档与代码一致性 | OK with notes |
+| E | 文档声称 vs 代码实际:完成定义、Task 11 完成记录点名的每个产物、25+ 处第三方行号抽查 | OK with notes |
+
+**唯一的 BLOCK 理由就是下面那条 P0,已修并变异验证。** 其余 P1/P2 按维护者指示(「不是阻塞合并的就先不修」)**全部未修**,逐条留档在此。
+
+### P0(已修,`backend/claude/client.go` 的 `Send`)—— 两个独立的洞,同一类后果
+
+**洞 1:解析没跟着 spawn 走。** `Send` 的 spawn 已经跟随 resolver(`proto.OnceArgs` + `proto.Bin()`),解析却仍用 claude 的 `RawEvent`(`assistant`/`result`/`system`)。pi 的 `--mode json` 词表与它**没有交集**(`session`/`message_update`/`message_end`/`agent_settled`/`response`),于是切到 pi 之后每个事件都落到 switch 之外:`Content`/`Result` 恒空、`Message` 恒 nil,而 `err` 也恒 nil。后果不是「少一段文本」:`api/translate.go:214-216` 会拿这个空串**无条件覆盖已有的 `paper_<lang>.md` 并回 `complete`**;`ingest/pipeline.go:165-188` 的进度与错误日志一起消失。是本分支引入的 —— 改造前 `protocol()` 返回硬编码的 `ClaudeProtocol`,claude-only 解析是正确的。
+
+修法:解析改走 `proto.ParseLine`,并在 `Send` 内保留 claude 的两条既有语义(`system` 非 error 不下发;`result` 的 `Content=Result`、`is_error` → `error`)。`RawEvent` 随之只剩本函数一个使用者,一并删除(`encoding/json` 的 import 也随之移除)。一处**有意的行为差异**:多 text 块的 assistant 消息,`Content` 从「最后一个块」变成「第一个块」(与两个 Protocol 的既有约定一致),仅在多块时可观测。
+
+**洞 2(父进程复核时实测新发现,5 条 lane 都没报):`pi --mode json` 在凭据/模型不可用时退出码是 0。** 实测(pi 0.85.1,临时 agent 目录无 `auth.json`):stdout 只有一行 `{"type":"session","version":3,...}`(被 ParseLine 正确跳过),真正的原因 `No API key found for the selected model.` 只写在 stderr,而 `Send` **没有接管 stderr**(`cmd.Stderr` 为 nil → os/exec 接到 /dev/null),`cmd.Wait()` 返回 nil。于是「洞 1 修好之后」这条路径仍然是:零事件 + nil error → translate 照样用空串覆盖已有译文并回 200。切换探测拦不住它 —— `ProbePi` 只跑 `pi --version` + `SessionArgs` + `web-search.json` 静态预检,**不验凭据**。
+
+修法:`Send` 接管 stderr;统计下发过的事件数;`Wait()` 无错但**零事件且 stderr 非空**时返回带 stderr 首行的错误。claude 侧同理成立(成功的 `--print --output-format stream-json` 至少有一个 `result` 事件)。
+
+**护栏与变异验证**(`claude/client_test.go`,均用假二进制,零配额):
+- `TestSend_ParsesEachBackendWireFormat`:pi 侧必须解析出内容(洞 1 的回归护栏)、claude 侧逐条等价(完成定义「claude 行为与改造前逐条等价」)。变异:把解析钉死回 `agent.NewClaudeProtocol(...).ParseLine` → pi 子用例判红,打印出的四个事件 `Content` 全空,与 P0 症状逐字一致。
+- `TestSend_ZeroEventsWithStderrIsAnError`:零事件 + stderr → 必须报错且错误里带上原因;**并带反向对照**(有正常事件 + stderr 噪音 → 不得报错),否则「只要 stderr 非空就报错」也能让前一腿变绿,而那会把所有带告警输出的正常回合一起打成失败。变异:去掉该判定 → 判红。
+
+### P1(未修,7 条)
+
+| # | 位置 | 问题与后果 | 修法 |
+|---|---|---|---|
+| 1 | `agent/pi_parse.go:51-53`、`:112-129` | pi 把回合失败当 **assistant 消息**下发(`createSetupErrorMessage`,`stopReason:"error"`,content 为空),而 `piMessage` 没有 `stopReason`/`errorMessage` 字段 → 归一化成一条空 assistant,随后 `agent_settled`→`result`→SSE `done`。API key 失效、限流重试耗尽、compaction 失败时,用户看到**空回答 + 正常结束**,Go 侧零日志;claude 同场景经 `session.go:533-538` 变成 SSE `error` | `piMessage` 加两字段,`message_end` 的 role 过滤之后插一支 `stopReason=="error" && errorMessage!="" → {Type:"error"}`。**注意**这会产生 `error` 后紧跟 `done` 的顺序(claude 是 error **取代** done),动手前需确认前端不会把错误提示清掉 |
+| 2 | `scripts/pi-path-validator.ts:210`(`URL_INPUT_KEYS` 只有 `url`/`urls`) | **`proxy` 是第二条 SSRF 通路**:`fetch_content`(`index.ts:2525-2528`)与 `web_search`(`:1817`)都接受它;`normalizeProxyUrl`(`utils.ts:209-223`)只校验 scheme 与 hostname、**不做私网/环回检查**,`ssrf-protection.ts` 的 `assertPublicAddress` 又只管**目标 URL**、代理地址从不进入它;`fetchViaCurl` 会 `spawn("curl",[...,"-x",proxy,...])` 真建连。模型可用「合法公网 url + `proxy:"http://127.0.0.1:6379"`」让子进程连本机/内网任意端口并把响应带回 —— 正是 Python 版 `is_blocked_ip` 拦的那一类,与「强度不低于 Python 版」相悖 | `validateToolCall` 增一个「拒绝型键名」检查:`proxy` 非空即 deny(部署不需要模型自选代理,要代理就写进 `web-search.json` 的 `proxy` 键由运维控制)。约 6 行 TS + 6 条 Go 用例(本轮实现过一版并按指示回退) |
+| 3 | `agent/pi_args.go:362-374`(`Env()` 只剔除 4 个键) | **模板里钉死的 `allowBrowserCookies:false` 可被继承的环境变量静默推翻**:`gemini-web-config.ts:86-100` 的 `isBrowserCookieAccessAllowed()` 在读配置文件**之前**就看 `PI_ALLOW_BROWSER_COOKIES` / `FEYNMAN_ALLOW_BROWSER_COOKIES`,命中即 true;它被 `gemini-url-context.ts:85`(`fetch_content` 抓任意 http(s) 的兜底)、`gemini-search.ts:835`、`youtube-extract.ts:236` 调用,**不需要** authFetch profile。服务与运维同账号同机器时(shell profile / systemd drop-in 里留过这个变量),任一用户的文档问答都能让模型以运维者本人的 Google 会话 cookie 发请求,而模板与 `TestWebSearchSample_PinsSecurityKeys` 都看不见这条旁路 | `Env()` 的剔除列表加这两个键(**只剔除、不注入**)+ 一条断言它们在子进程环境里缺席的用例;`SECURITY_DEPLOYMENT.md` 注明「JSON 的 false 不足以保证」 |
+| 4 | `api/documents.go:429` vs `:445-454` | `LLMExtract` 在**新增的** backend 解析早退之前就 `os.Create(mdPath)` 截断了 `paper.md`。pi 侧 `OnceArgs` 有真实失败模式(沙箱文件缺失 → R6 的 fail-closed),于是 500 + `paper.md` 变 **0 字节**,而 `Sectionize`(`api/sections.go:93-97`)与 markdown 翻译都依赖它 | 把三行请求级代码(`agent.Current()` / `OnceArgs` / `Env`)上移到 `os.Create(mdPath)` 之前 —— `:435-438` 的注释本来就说这是「请求级错误而非逐页错误」 |
+| 5 | `ingest/sections_integration_test.go:27`、`:49` | 该文件仍按**三参**调 `Sectionize`,而签名已改两参(`ingest/sections.go:59`)。它是 `backend/` 里唯一带 `//go:build integration` 的文件,所以默认闸门看不见,而文件头 `:6` 自己写的命令 `go test ./ingest/ -tags=integration` **实测编译失败**(`too many arguments in call to Sectionize`)。Task 8 明确要求「连带修正所有调用点签名」 | 删掉 `claudeBin` 变量与 `SECTIONIZE_CLAUDE_BIN` 读取(`:19-22`),两处调用去掉第三个实参(留着变量会触发 declared and not used) |
+| 6 | 计划 `:609-628` vs `:669`、`:685-686` | **Task 9 / Task 10 没有完成记录段**(`### ✅` 只出现在 Task 1–8),但完成定义的两条却被勾掉并声称「已由前序任务满足并实测」。而 R1/R6/R8/R9 的缓解措施**全部挂在 Task 10 上**,于是文档层面无法证明这条安全控制存在(实体已由父进程逐个验明:`start.sh:115-141` 与 `:180-190`、README 警示①~⑤、`SECURITY_DEPLOYMENT.md` 的 cp + Dockerfile COPY) | 补 Task 9/10 的完成记录(`45ff47c` / `1ccf5c5`)+ 逐项勾选,并贴出 start.sh 三处实际行号 |
+| 7 | 计划 Task 2 完成记录的「已核实的 pi 0.85.1 事实」表 | **第三方行号引用错**:「`-p` 会贪婪吞掉紧随其后那个不以 `-` 开头的实参」的依据写成 `cli/args.js:172-176`,实际在 **`:124-130`**(`:172-176` 是 `--no-context-files` / `--list-models`,完全无关)。这条引用是 D2「once 调用的 prompt 绝不能进 argv」与「`-p` 必须放末尾」的唯一源码依据 | 改成 `cli/args.js:124-130` |
+
+### P2(未修,14 条)
+
+| # | 位置 | 一句话 |
+|---|---|---|
+| 1 | `agent/pi_parse.go:91`、`pi_args.go:120-124` | `extension_ui_request` 的 dialog 方法(`select`/`confirm`/`input`/`editor`)在 rpc 下**阻塞到客户端回应**(`rpc.md:1206-1208`,且 `input`/`editor` 的示例不带 timeout),而我方从不回 `extension_ui_response` → R9 误配状态下回合**永久挂住**(无 `agent_settled`、无 error),SSE 一直挂到前端断开再由清理循环收进程。R9 告警文本没提这个后果 |
+| 2 | `agent/pi_sandbox_integration_test.go:124-176` | 超时分支(`<-deadline` / `<-ctx.Done()`)不等读取协程结束就读 `lines`/`blocked`/`leaked` → `-race` 下竞争报告会盖掉真正需要的诊断,而那正是最需要诊断的分支。同目录 `pi_command_gate_integration_test.go:412-421` 是正确写法(Kill → `<-readDone` → 再取用) |
+| 3 | `scripts/pi-path-validator.ts:250-263` | `realpathBestEffort` 对**悬空软链**放行:`ALLOWED_DIR` 内有 `link -> /etc/x`(目标不存在)时,写 `link/pwn` 会过边界检查,随后内核跟随软链实际写到 `/etc/x/pwn`;Python 的 `os.path.realpath` 会拒。沙箱内无法自建软链(无 bash、`write` 不能建 symlink),需带外路径(归档解包/挂载卷)才可达 |
+| 4 | `config/config.go:308-315` | Go 的 `strings.TrimSpace` 剥 U+0085(NEL)而 JS 的 `trim()` **不剥** → `{"toolNames":{"webSearch":"\u0085my_search"}}` 时 Go 采纳且不告警、pi 却 exit 1(R8 的盲区在这条输入上重现)。`:308-312` 那句「不构成安全问题」的论证不成立 |
+| 5 | `config/config.go:248-273` | `toolEnabled` 未镜像 `isToolEnabled`(`index.ts:271-275`)的 legacy 分支:根级 `webSearch.enabled:false` 会同时关掉 `webSearch` 与 `sourceCheck`,Go 侧没有这一支 → 窄配置下误报「重名」、把一次**合法**切换拦成 400(fail-closed 方向) |
+| 6 | `claude/security_test.go` 的 `pythonRawStringArray` | 三语言同步测试的 Python 侧只认单引号 `r'...'`:若有人往 `path-validator.py` 加一条双引号写的 `r"^/snap/"`,两侧计数仍相等、包含断言全过 → **假绿**,而 pi 沙箱实际少一条 Claude 侧在拦的敏感路径。修法:正则同时接受两种引号,并对 list 块内 `r'`/`r"` 的出现次数与提取条数做相等断言 |
+| 7 | `claude/session.go:298-302`、`query_pool.go:526-530`、`:597-601` | `writeInitCommands` 的失败分支在 `cmd.Start()` **之后**裸返回:`cmd.Wait()` 只在 `readEvents` 里、而它没被启动 → 子进程未收割 + 三个父侧管道 fd 泄漏;`StartSession` 还因此跳过 `onResumeFailed`,陈旧 `chat_session_id` 永不清除(每次重试重复同一失败,直到用户按 Clear Chat)。触发需写管道时子进程已死(EPIPE),概率低 |
+| 8 | `api/query.go:140-143`、`:263-266`、`:335-345` | 三处把 resolver/start 错误压成 `"failed to create session"` 且**无服务端日志**(`api/docchat.go:132-134` 有,不对称)。本分支新增了流入这里的错误类(`resolve agent backend: %w`),而 Task 5 的事后记录正好把「handler 吞细节、日志里既无 `[session]` 行也无 resolve 错误」列为难查的原因 |
+| 9 | `api/web.go:2128`、`api/rss.go:365`、`agent/invariant_test.go:210-217` | 注释与被删代码脱节:两处 `if ClaudeBin is configured` 现在描述的是**无条件** `go func()`;`invariant_test` 里「`BinPath` 字段仍保留」的注释已失效,且那条检查永远不会触发(`Client.BinPath` 已删) |
+| 10 | `README.md:138`、`README_ZH.md:137`、`start.sh:129` | 三处写「Go 侧**启动时**校验 `web-search.json` 并告警」,实际只在 pi 被选中/探测时才校验(`NewPiProtocol` 是唯一非测试调用点;`main.go:104-109` 只调 `agent.Init`,不构造 Protocol);且 `commands.*` **只告警不拦截**(`ValidatePiWebConfig` 不解析 commands),默认 claude 的部署对 R9 漏配零信号 |
+| 11 | `README.md:85-88`(+ ZH 同处) | 未列出必须固化的安全键(Task 10 明确要求「尤其 `allowBrowserCookies:false`」)。运维若在既有文件上**合并/手写**(而不是整份 copy 模板),README 层面没有一句话告诉他 `allowBrowserCookies`/`ssrf.*`/`sourceCheck` 不能放宽 |
+| 12 | `tests/e2e/test_settings_llm_backend.py::test_normal_user_does_not_see_switch` | 「普通用户看不到开关」缺**正向对照**:唯一的前提断言是 URL,若 SettingsPage 对非 admin 渲染抛异常/bundle 未 hydrate,两个 `to_have_count(0)` 与 403 仍成立 → 因**错误的原因**变绿(admin 用例反而有对照,钉住了 `values == ["claude","pi"]`)。修法:加一条非 admin 必然可见元素的断言(如 IMAP 区块) |
+| 13 | `tests/e2e/make_auth_state.py`、`tests/e2e/README.md` | `KEEP` 分支不打印账号身份(`session_valid` 不 join users),而 README 说共享态「comes from the `role='user'` session」只在**写入**分支成立 → 一旦某个用例断言到用户数据,排障者会按错误账号去查 |
+| 14 | 计划文档 5 处 | ①「e2e … **均零配额**」与 Task 5 记录矛盾(`test_chat_streaming.py` 的 12 passed 是 11 次真实 claude 回合 / 198s),按它复跑会静默消耗配额;②R8 处置列过期(「11 个子用例」实为 13;「留给 Task 7 决定」已由 D6 决定);③`agent.Init(claudeBin, piBin)` 的签名与实际 `ResolverOptions` 结构体漂移(计划 `:198`/`:573` 与规格),照文本写新调用点编译不过;④完成定义的验证命令用了裸 `ChatView.tsx`,从仓库根执行**恒返回空**(结论本身为真,已用全路径复验);⑤`rpc.md` 三处引用漂移 1–3 行(`:990`→`:988`、`:992-993`→`:991-992`、`:1052-1054`→`:1055`);⑥D4 的「零配额实证」只有一次性人工观测 —— 注入侧有断言(`pi_args_test.go:478-486`),但「`get_state` 的 `sessionFile` 落在该目录下」没有自动化护栏 |
+
+### 父进程对「需要父进程验证」的逐条实测
+
+| 项 | 结果 |
+|---|---|
+| `go test ./...` | 全绿(10 个包);P0 修复后复跑仍全绿 |
+| gated 真实 spawn 测试(`LLM_KNOWLEDGE_PI_INTEGRATION=1`,`-race`) | 两个都 PASS(6.8s),`pgrep "pi --mode rpc"` 无残留(R5) |
+| PDF 逐页用例是 PASS 还是 SKIP | **PASS**(0.51s);`pdfinfo`/`pdftoppm`/`pdfunite`/`pdftotext` 齐全 → Task 11 那条 ✅ 成立 |
+| 全路径聊天 diff | `git diff --stat main -- frontend/src/components/ChatView.tsx frontend/src/hooks` 为空 |
+| e2e | 19 passed / 4 skipped(三个 DOM 文件 + settings 开关);`test_chat_view.py` 的 `pytest.mark.skip` 恰为 4 |
+| tsc 闸门 / 前端构建 / `bash -n start.sh` | exit 0 / exit 0 / 语法 OK(构建产物 `backend/fs/dist` 已 gitignore,工作区未污染) |
+| Task 10 实体是否真存在 | ✓ `start.sh:115-141`(pi / pi-web-access / web-search.json 三处检查)、`:180-190`(沙箱脚本**总是覆盖**复制,比计划要求的「缺则复制」更强且写明了理由)、README 警示①~⑤、`SECURITY_DEPLOYMENT.md` 的 cp + Dockerfile COPY |
+| 第三方行号抽查 | pi-web-access 6/6 精确命中;pi 侧 25+ 处抽查绝大多数命中(唯一错的是 P1-7 那条) |
+| `prepareToolCall` 咽喉点声称(剩余项第 1 条的论证基础) | ✓ 成立:`currentContext.tools` 统一注册表 → `config.beforeToolCall` → `block` 时 `createErrorToolResult` 直接返回、**不调用** `tool.execute` |
+| `pi --mode json` 的实际词表与失败行为 | ✓ 实测(零配额,无凭据的临时 agent 目录):stdout 只有 `{"type":"session","version":3,...}` 头行,失败原因在 stderr,**退出码 0** → 即 P0 的洞 2 |
+| **仍未实测(需配额或人)** | ①claude 的 `-p` + 管道 stdin 在 once 链路上的真跑(若 claude 的 `-p` 不读管道 stdin,摘要/分节/讲解/PDF 会全部静默返回空串且 `err == nil` —— 这是 D2 最重要的未验证假设);②pi 侧 `--mode json` 成功回合的完整事件序列(本节的词表来自规格 `:261` 与 rpc 模式实测,json 模式的成功路径未实机 dump 过);③`translate.go` 是否**既有**就把 `Content` 与全部 text 块重复写入(claude 真跑一次即可判定,与本分支无关);④pi 的 resume ID 稳定性(`--session` 后 `get_state` 的 `sessionId` 是否等于存量值,决定 `api/docchat.go:107-109` 的守卫能否命中);⑤切到 pi 后对存量 claude 会话发消息的代价(预期:5s `waitForInit` 超时 → EPIPE → `query.go:194-213` 静默重建) |
+
+### review 的正面结论(有证据,不只是「没发现问题」)
+
+- **沙箱强度**:44 条敏感路径正则 Python↔TS **逐字节相同且同序**;fail-closed、目录边界(`path.sep`)、白名单优先级(危险工具**先于**白名单)、`realpathBestEffort` 的方向性(不可能把目录外算成目录内)均成立;`grep`/`find` 的 pattern/glob 在 `--` 之后且是独立 argv 元素,**无法注入** `rg --pre` / `fd --exec`。
+- **URL 校验的绕过候选被逐个否定**:`FILE:///`(scheme 小写化)、`http:///`(空 authority)、前导空格、NBSP、NUL、`urls` 内非字符串、`urls` 为字符串 —— 全部拒绝;并证明了一个更强的性质:**不存在**任何能通过 `validateUrl` 却被 `video-extract.ts` 的 `isFilePath` 当本地路径的字符串。
+- **`-na` 与 `--tools` 的实际效果**(不只是旗标在不在)在 pi 的 dist 里找到了因果证据:`--tools` 同时过滤**扩展注册的工具**(`agent-session.js:2111-2118`),空白名单 fail-closed;`-na` → `projectTrusted=false` → 跳过项目 `.pi/` 的 extensions/skills/prompts 与项目 settings。
+- **没有任何 fail-open 通路**:`start.sh` 与 `Makefile` 都是「总是覆盖」地复制沙箱脚本,且两处 `cp` 都在启动二进制/kill 旧进程**之前**,失败即中止;服务端 `requireSandbox` + `ProbePi` 把缺失提前成切换时的 400。
+- **接线收口彻底**:`grep exec.Command|CommandContext backend/` 的 LLM spawn 点只剩 6 处且全部 `proto.Bin()`;无残留 `ClaudeBin` 字段/形参、无 `BuildSecureArgs`/`BuildSecureEnv`/`NewClientWithPath`/`agent.NewClaudeProtocol` 的包外调用。
+- **ingest 确实跟随开关**(此前的疑问):`claude.NewClient()` 的 `Proto == nil`,`protocol()` 惰性走 `agent.Current()`,由 `TestClientProtocol_FollowsResolver` 对两个后端各钉一次。
+- **测试普遍带对照腿**,没有发现「因错误的原因变绿」的断言;`invariant_test.go` 还防自身的假绿(扫描下限 `scanned < 20` 硬失败、`assertAllowlistStillNeeded` 强制删掉不再命中的豁免)。
