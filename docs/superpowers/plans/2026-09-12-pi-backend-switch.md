@@ -653,12 +653,14 @@ frontend/node_modules/.bin/tsc --noEmit --strict --target es2022 --module esnext
 - ✅ 顺带零配额实证 **D4**:`get_state` 的 `sessionFile` 落在 `Env()` 注入的 `PI_CODING_AGENT_SESSION_DIR` 之下。同时确认 `get_state` **不返回已加载扩展列表**,所以「证明扩展被加载」没有零配额捷径。
 - ✅ 完成定义中的两条已由前序任务满足并实测:「前端聊天代码 diff 为空」(Task 9)、`Settings 切到不可用的 pi 时被 400 拦住`(Task 9 的 e2e 移走沙箱文件实跑过,错误文案原样透到 UI)。
 
-**查出一个既有 bug(不在 Plan 2 范围,未修):** `api/documents.go` 的 `LLMExtract` 与 `pdftoppm` 对页码补零的约定不一致 —— pdftoppm 按**总页数**决定补零宽度(10 页→`page-01.png`,1 页→`page-1.png`),handler 却硬编码 `page-%02d.png`。后果:**任何少于 10 页的 PDF 都静默产出空 `paper.md`,却返回 200 与 "PDF extracted with LLM successfully"**。arXiv 论文通常 ≥10 页,这解释了它为何一直没被发现。不在这里修是因为修它会改变 claude 路径行为、违背本计划验收项之一;修法建议:pdftoppm 之后 glob `page-*.png` 并按数字后缀映射,而不是猜补零宽度。**待维护者决定是否单开一个 commit 修。**
+**查出一个既有 bug(不在 Plan 2 范围,未修,已开 issue #93 —— https://github.com/bruceding/llm_knowledge/issues/93):** `api/documents.go` 的 `LLMExtract` 与 `pdftoppm` 对页码补零的约定不一致 —— pdftoppm 按**总页数**决定补零宽度(10 页→`page-01.png`,1 页→`page-1.png`),handler 却硬编码 `page-%02d.png`。后果:**任何少于 10 页的 PDF 都静默产出空 `paper.md`,却返回 200 与 "PDF extracted with LLM successfully"**。arXiv 论文通常 ≥10 页,这解释了它为何一直没被发现。不在这里修是因为修它会改变 claude 路径行为、违背本计划验收项之一;修法建议:pdftoppm 之后 glob `page-*.png` 并按数字后缀映射,而不是猜补零宽度。**待维护者决定是否单开一个 commit 修。**
 
 **剩余项(需要配额或需要人执行,故未做):**
 
 - ⬜ **本地文件向量集成测试**(`fetch_content` 取 ALLOWED_DIR 外的绝对路径视频 / `/etc/passwd`,断言被 hook block 且 `video-extract.ts` 的 `readFile`/`execFileSync("ffmpeg")` 未触达)。需要 `pi-web-access` 真实联网工具 + LLM 回合。
-- ⬜ **R9 扩展命令注入面验证**(发 `/curator hello` 与 `/search foo`,断言无扩展命令被执行;**并需对照组**把 `commands.curator.enabled` 改成 true 断言命令确实会执行)。对照组会拉起浏览器,需人确认时机。
+- ⬜ **R9 扩展命令注入面验证**
+  - **2026-09-13 尝试过一次廉价路径,结论不确定,未采信**:本想用 rpc 的 `get_commands` 做零 LLM 回合的判据(对照组:同一份配置只改 `commands.*.enabled`)。实测两组都只返回 1 条命令、都不含那四个 —— 原因是把 `PI_CODING_AGENT_DIR` 指到空临时目录会让 pi 读不到 `settings.json`,于是 **`pi-web-access` 根本没被加载**,两组自然都没有命令。**要做这个对照,必须把真实的 `settings.json` 一并复制进临时 agent 目录**(且 R1 提醒我们:那份 settings.json 里还有 betterwright / pi-subagents 等包,复制过去等于让它们也加载并执行加载期代码)。因此本项仍待做,不得视为已验证。
+(发 `/curator hello` 与 `/search foo`,断言无扩展命令被执行;**并需对照组**把 `commands.curator.enabled` 改成 true 断言命令确实会执行)。对照组会拉起浏览器,需人确认时机。
 - ⬜ e2e 回归的另外三个文件(`test_chat_view.py`、`test_mobile_chat_view.py`、`test_desktop_no_mobile_dom.py`)。`test_chat_streaming.py` 的 12 个已在 Task 5/8 各跑过一次全绿。**阻塞点**:`tests/e2e/.auth/state.json` 里的 token 已过期(是 `bruceding` 的),而 conftest 的刷新流程需要人手输凭据+验证码。
 - ⬜ `LLMBackend=pi` 时切到 pi 重跑聊天 e2e(验证前端零改动即可工作)。消耗配额。
 - ⬜ **手工验收**(计划明确「由人执行,不消耗配额的自动化不得替代」):两种后端各跑一遍 —— 文档问答多轮 + SSE 断线重连、自由问答带图片、中途 interrupt、ingest 摘要与分节、PDF 逐页转 Markdown。
