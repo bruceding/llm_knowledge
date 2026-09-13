@@ -3,6 +3,8 @@ package config
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -105,30 +107,84 @@ var piToolNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,63}$`)
 
 // PiWebSearchConfigPath 返回 pi-web-access 读取的 web-search.json 路径。
 //
-// 对齐 pi-web-access 的 getWebSearchConfigDir()(utils.ts:10-26):优先
-// PI_CODING_AGENT_DIR,否则回退 ~/.pi/agent。utils.ts 里那条 XDG_CONFIG_HOME
-// 分支故意不镜像 —— 设计文档要求 Env() 显式注入 PI_CODING_AGENT_DIR(「显式
-// 钉死,使安全配置位置确定化」),pi 路径下第一分支必然命中,XDG 分支不可达。
+// 只镜像 getWebSearchConfigDir()(utils.ts:10-26)四级回退里的第 1 级
+// (PI_CODING_AGENT_DIR)与第 4 级(~/.pi/agent),中间的 XDG_CONFIG_HOME 与
+// legacy ~/.pi 两级**有意不实现**,理由两条:
+//
+//   - 那两级是 pi-web-access 独有的怪癖。pi 本体的 getAgentDir()
+//     (config.js:421-427)只有「PI_CODING_AGENT_DIR(经 expandTildePath 展开)
+//     否则 ~/.pi/agent」,没有 XDG 回退,所以两级实现与 pi 本体语义一致。
+//   - 只要下面的不变式 I1 成立,子进程内第 2、3 级就不可达(utils.ts:13-14 在
+//     PI_CODING_AGENT_DIR 非空时直接返回它),Go 与 pi-web-access 必读同一文件。
+//
+// **I1(对 Task 2 的书面约束,尚未实现)**:每一次 pi spawn,PiProtocol.Env()
+// 注入的 PI_CODING_AGENT_DIR 必须逐字等于 filepath.Dir(PiWebSearchConfigPath())
+// 在 Go 进程内解析出的目录,且必须是「派生」而不是重算 ——
+// "PI_CODING_AGENT_DIR=" + filepath.Dir(config.PiWebSearchConfigPath());
+// 禁止重新读 env、禁止硬编码 ~/.pi/agent、禁止用 Settings/DB 里的另一个路径。
+// 该值还必须非空、绝对、不含 ~:utils.ts:13-14 不做 tilde 展开,而 pi 的
+// getAgentDir() 会做(config.js:408-409、:422-425),含 ~ 会让两者读到不同目录。
+//
+// 在 I1 落地之前:若 PI_CODING_AGENT_DIR 未设置而 XDG_CONFIG_HOME 已设置,
+// pi-web-access 会去读 $XDG_CONFIG_HOME/pi/web-search.json,而本函数读
+// ~/.pi/agent/web-search.json —— 两者可能不是同一个文件。另:本函数不校验
+// PI_CODING_AGENT_DIR 是否为绝对路径(相对值会让 Go 按服务进程 CWD 解析,而
+// pi 子进程的 cwd 是 userDir,两边必然不一致);这属 I1 的「必须绝对」一支,
+// 由 Task 2 在注入前把关。
+//
+// home 取不到时返回 ""(而不是 "." 之类的相对路径):本函数决定的是**读**哪个
+// 文件,相对路径会让它落到服务进程的 CWD,而 CWD 在部署里常常可写(systemd
+// DynamicUser、容器),植入一份 web-search.json 就能改写工具名、同时击穿
+// --tools 白名单与沙箱 extension 两道 source_check 防线。调用方见空串即用默认名。
+// Load()(:36-40)里那个 home 回退不适用于此处:那里 home 用于算 dataDir
+// (写入目标),语义不同。
 func PiWebSearchConfigPath() string {
 	if dir := os.Getenv("PI_CODING_AGENT_DIR"); dir != "" {
 		return filepath.Join(dir, "web-search.json")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		// 与 Load() 一致:取不到 home 时退回当前目录,让调用方按「文件不存在」处理
-		home = "."
+		return ""
 	}
 	return filepath.Join(home, ".pi", "agent", "web-search.json")
 }
 
-// LoadPiWebToolNames 解析联网工具名。文件缺失、JSON 非法、toolNames 不是对象、
-// 某个值不是合式字符串 —— 一律静默回退默认名,不返回 error。
+// LoadPiWebToolNames 解析联网工具名。任何异常一律回退默认名,不返回 error
+// (规格要求:配置缺失或解析失败不报错,与 pi-web-access 的 loadSsrfConfig 的
+// 宽容行为一致)。
 //
-// 宽容是刻意的,且与 pi 侧的严格不矛盾:pi-web-access 对这些情况是抛错的
-// (index.ts:288-313 的 resolveToolNames),配置写错时扩展加载即失败、联网工具
-// 整体不可用;Go 侧回退默认名只会让白名单里的名字与真实注册名不符,而 --tools
-// 是 fail-closed 的(名字不匹配 = 工具调不到),最坏结果是联网功能不可用,
-// 不会放行未预期的工具。
+// 但「回退默认名」在 pi 侧的后果分两类,不能混为一谈:
+//
+//	pi 吞掉(Go 与 pi 都落到默认名,行为一致 —— 属正常状态,不打日志):
+//	  - 文件不存在             → loadConfig()(index.ts:210-213)返回 {}
+//	  - JSON 非法 / 根不是对象  → parseConfigRoot(:196-208)抛,但被
+//	                              loadConfigForExtensionInit(:315-322)catch 成 {}
+//	pi 抛错(Go 回退默认名,而 pi 会整体拒绝启动 —— 必须给运维留信号):
+//	  - toolNames 不是对象 / 为 null、某个值不是字符串或不合 TOOL_NAME_PATTERN、
+//	    已注册键重名 → resolveToolNames(index.ts:288-313)抛错
+//
+// 第二类的后果不是「联网功能不可用」,而是「整个 pi 后端不可用」:
+// resolveToolNames 在 index.ts:1068 被调用,位于 loadConfigForExtensionInit 的
+// try/catch **之外**,而四个工具的注册都在其后(:1789 web_search、
+// :2387 source_check、:2486 fetch_content、:2830 get_search_content),所以抛错
+// 即一个工具都不注册;pi 把它记为扩展加载错误(core/extensions/loader.js:483-486
+// → dist/main.js:631-634 转成 type:"error" 诊断),而 main.js:722 的
+// hasRuntimeErrors 一旦为真就在 :726-731 直接 process.exit(1)。这段在所有 mode
+// 的公共启动路径上(含 --mode rpc),连不用 web 工具的 ingest 链路一起死。
+//
+// 2026-09-13 实测(pi 0.85.1;临时 PI_CODING_AGENT_DIR,auth.json/settings.json/
+// npm/bin 均为指向真实目录的只读 symlink,两组唯一差异是 web-search.json):
+//
+//	{"allowBrowserCookies":false}     → 退出码 0,stderr 为空,rpc 模式正常输出事件
+//	{"toolNames":{"webSearch":42}}    → 退出码 1,stderr:
+//	  Error: Failed to load extension ".../pi-web-access/index.ts": Failed to
+//	  load extension: toolNames.webSearch in ".../web-search.json" must be a string
+//	  Hint: Start without extensions using "pi -ne".
+//
+// 更麻烦的是它**探测不到**:pi --version 在 dist/main.js:483-486 提前 exit(0),
+// 根本不加载扩展,所以 Task 2 的 Probe 与 Task 7 的切换探测都会通过,随后每个
+// 请求才失败、Go 侧零日志。因此第二类在此打一条 log —— 规格禁止的是返回
+// error,不禁止日志;第一类保持静默,否则每次调用都会刷屏。
 func LoadPiWebToolNames() PiWebToolNames {
 	names := PiWebToolNames{
 		WebSearch:        piDefaultWebSearchTool,
@@ -136,37 +192,85 @@ func LoadPiWebToolNames() PiWebToolNames {
 		GetSearchContent: piDefaultGetSearchContentTool,
 	}
 
-	data, err := os.ReadFile(PiWebSearchConfigPath())
+	path := PiWebSearchConfigPath()
+	if path == "" {
+		// 配置位置不可解析(PI_CODING_AGENT_DIR 未设置且 home 取不到)。
+		// 显式判空,不依赖 os.ReadFile("") 报错 —— 尤其不能退化成读 CWD。
+		return names
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return names
+		return names // 文件不存在或不可读:pi 侧同样当作 {} 处理,属正常状态
 	}
 
+	// 两级解析,以便区分「根不是对象」(pi 吞掉)与「toolNames 非法」(pi 抛错)。
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		return names // JSON 非法或根不是对象:pi 的 parseConfigRoot 抛后被 catch 成 {}
+	}
+	rawToolNames, present := root["toolNames"]
+	if !present {
+		return names // 键缺席:pi 用 DEFAULT_TOOL_NAMES,与 Go 一致,无需告警
+	}
+
+	// 到这里 toolNames 键存在。它一旦非法,pi 会 exit 1(见函数注释),所以本函数
+	// 往下的每条非法分支都必须留下日志。
+	warnInvalid := func(reason string) {
+		log.Printf("[config] %s: %s —— Go 侧对该键沿用默认工具名;但 pi-web-access 会在同一处配置上抛错(resolveToolNames, index.ts:288-313),导致扩展加载失败、pi 以退出码 1 退出,整个 pi 后端不可用(含不用 web 工具的 ingest 链路),而 pi --version 探测不到。请修正该文件", path, reason)
+	}
+
+	if string(rawToolNames) == "null" {
+		// pi 侧:`config.toolNames !== undefined && !config.toolNames` → 抛错。
+		// Go 侧 json.Unmarshal(null) 到 map 不报错,故必须显式拦下。
+		warnInvalid("toolNames 为 null")
+		return names
+	}
 	// 键名是驼峰,与 pi-web-access 的 ToolNames 类型一致(index.ts:227-232)。
-	// 用 RawMessage 区分「键缺席」与「值非法」:两者都保持默认名。
-	var parsed struct {
-		ToolNames struct {
-			WebSearch        json.RawMessage `json:"webSearch"`
-			FetchContent     json.RawMessage `json:"fetchContent"`
-			GetSearchContent json.RawMessage `json:"getSearchContent"`
-		} `json:"toolNames"`
-	}
-	if err := json.Unmarshal(data, &parsed); err != nil {
+	var toolNames map[string]json.RawMessage
+	if err := json.Unmarshal(rawToolNames, &toolNames); err != nil {
+		warnInvalid("toolNames 不是 JSON 对象")
 		return names
 	}
 
-	apply := func(raw json.RawMessage, current *string) {
+	// valid 返回某个键的合法工具名;键缺席或非法都返回 nil(即沿用默认名),
+	// 区别只在于非法时留下告警 —— 那正是 pi 会 exit 1 的情形。
+	valid := func(key string) *string {
+		raw, ok := toolNames[key]
+		if !ok {
+			return nil
+		}
 		var value string
 		if err := json.Unmarshal(raw, &value); err != nil {
-			return
+			warnInvalid(fmt.Sprintf("toolNames.%s 不是字符串", key))
+			return nil
 		}
-		// pi 侧同样先 trim 再校验(index.ts:297-301)
-		if trimmed := strings.TrimSpace(value); piToolNamePattern.MatchString(trimmed) {
-			*current = trimmed
+		// pi 侧同样先 trim 再校验(index.ts:297-301)。注意 strings.TrimSpace 与
+		// JS 的 String.prototype.trim() 字符集不同:Go 剥 U+0085(NEL) 但不剥
+		// U+FEFF(BOM),JS 相反。两个方向的后果都只是名字与 pi 实际注册名不符,
+		// 而 --tools 是 fail-closed 的(名字不匹配 = 工具调不到),不构成安全问题,
+		// 故不为此引入逐字符对齐。
+		trimmed := strings.TrimSpace(value)
+		if !piToolNamePattern.MatchString(trimmed) {
+			warnInvalid(fmt.Sprintf("toolNames.%s = %q 不合 %s", key, value, piToolNamePattern))
+			return nil
 		}
+		return &trimmed
 	}
-	apply(parsed.ToolNames.WebSearch, &names.WebSearch)
-	apply(parsed.ToolNames.FetchContent, &names.FetchContent)
-	apply(parsed.ToolNames.GetSearchContent, &names.GetSearchContent)
+
+	if v := valid("webSearch"); v != nil {
+		names.WebSearch = *v
+	}
+	if v := valid("fetchContent"); v != nil {
+		names.FetchContent = *v
+	}
+	if v := valid("getSearchContent"); v != nil {
+		names.GetSearchContent = *v
+	}
+	// sourceCheck 不采纳(本设计不授予该工具),但它非法同样会让 pi exit 1,
+	// 校验一次只为留下告警。pi 的 resolveToolNames 也只校验 ToolNames 的四个
+	// 已知键(index.ts:293 遍历 DEFAULT_TOOL_NAMES 的键),未知键被忽略不抛错,
+	// 所以这里同样不校验未知键 —— 否则会产生 pi 侧根本不会失败的假告警。
+	_ = valid("sourceCheck")
 	return names
 }
 
