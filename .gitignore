@@ -10,6 +10,7 @@ backend/fs/dist/
 llm-knowledge
 llm-knowledge-test
 .claude/
+.pi/
 .playwright-mcp/
 .venv/
 .vscode/
