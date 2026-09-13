@@ -321,7 +321,14 @@ export async function updateGlobalSettings(settings: Partial<GlobalSettings>): P
     headers: getHeaders(),
     body: JSON.stringify(settings),
   })
-  if (!res.ok) throw new Error('Failed to update global settings')
+  if (!res.ok) {
+    // 把服务端的具体原因透出来,而不是统一替换成一句笼统文案。切换 LLM 后端失败时
+    // 后端返回的是可操作的诊断(pi 未安装 + 安装命令 / web-search.json 会让 pi 拒绝
+    // 启动 / 沙箱 extension 缺哪个文件),吞掉它就等于让管理员对着"保存失败"猜。
+    // 解析不出来时仍退回原文案,所以这条改动不会让任何既有失败变得更糟。
+    const body = await res.json().catch(() => null)
+    throw new Error((body && typeof body.error === 'string' && body.error) || 'Failed to update global settings')
+  }
   return res.json()
 }
 

@@ -81,6 +81,8 @@
     "english": "English",
     "chinese": "中文",
     "saved": "设置已保存",
+    "llmBackend": "LLM 后端",
+    "llmBackendHint": "选择由哪个编码代理承载文档问答、自由问答与 ingest。保存前服务端会先探测 pi，因此未安装或配置有误会在这里被拒，而不是等到之后每个请求都失败。",
     "pdfTranslation": "PDF 翻译",
     "pdfTranslationHint": "配置排版保留的 PDF 翻译功能，使用 OpenAI 兼容 API。",
     "enableTranslation": "启用 PDF 翻译",
