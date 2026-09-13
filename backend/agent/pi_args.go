@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"llm-knowledge/config"
@@ -70,11 +71,56 @@ var piToolNameByClaude = map[string]string{
 // scriptsDir 来自 main.go 的 LLM_SCRIPTS_DIR,由 agent.Init 传入 —— 与
 // ClaudeProtocol 的 settingsPath 对称,**不在 agent 包里自己读 env**。
 func NewPiProtocol(bin, scriptsDir string) *PiProtocol {
+	warnPiWebCommandsEnabled()
 	return &PiProtocol{
 		bin:            bin,
 		sandboxExtPath: piSandboxExtensionPath(scriptsDir),
 		webTools:       resolvePiWebTools(),
 	}
+}
+
+// piCommandWarned 记录已告警过的「配置路径 + 仍启用的命令集合」组合。
+//
+// **与 Task 1 的 warnInvalid 有意不同:那边不去重,这边必须去重。** 差别在触发频率:
+// warnInvalid 只在 toolNames 非法时才响(罕见、且后果是整个 pi 后端 exit 1);
+// 而本告警在**默认状态**下就会响 —— web-search.json 不存在时四个命令全开。
+// NewPiProtocol 由 resolver 构造,带 5s TTL,于是流量期间不去重就是每 5s 一行、
+// 一天上万行 —— 那不叫信号,叫噪声,而噪声会被运维直接忽略。
+//
+// 代价:同一组合只告警一次,所以「修好 → 又改坏成同一样子」不会再次告警。
+// 取这个取舍是因为本告警的目的是「部署时提醒一次」,不是持续监控。
+var (
+	piCommandWarnMu sync.Mutex
+	piCommandWarned = map[string]bool{}
+)
+
+// warnPiWebCommandsEnabled 在部署的 web-search.json 没关掉 pi-web-access 的扩展
+// 命令时留一条告警(计划 R9 的开放项,选定方案 b:只告警,不阻止启动)。
+//
+// 不采用 fail-closed(直接报错拒绝启动)的理由:那会把部署脆弱性转移到可用性上 ——
+// 运维漏一个键就让整个 pi 后端起不来,而这个键与工具名不同,它不影响功能正确性。
+// 与 Task 1 对 toolNames 的处置一致:规格禁止的是返回 error,不禁止日志。
+func warnPiWebCommandsEnabled() {
+	enabled := config.PiWebCommandsEnabled()
+	if len(enabled) == 0 {
+		return
+	}
+	path := config.PiWebSearchConfigPath()
+	key := path + "|" + strings.Join(enabled, ",")
+
+	piCommandWarnMu.Lock()
+	defer piCommandWarnMu.Unlock()
+	if piCommandWarned[key] {
+		return
+	}
+	piCommandWarned[key] = true
+
+	cmds := make([]string, 0, len(enabled))
+	for _, name := range enabled {
+		cmds = append(cmds, "/"+name)
+	}
+	log.Printf("[agent] %s 没有关掉 pi-web-access 的扩展命令 %s —— rpc 模式下**任何用户发一条以该名字开头的文档问答消息**,就会直接执行扩展代码而不进 LLM。`--tools` 白名单、`--no-skills`/`--no-prompt-templates`、沙箱 extension 的 input hook 全拦不住它(链路见 config.PiWebCommandsEnabled 的注释)。其中 /curator 会拉起浏览器,且扩展命令自行驱动 LLM、绕过我们注入的 --system-prompt。修法:在该文件里把 commands.%s 均写成 {\"enabled\": false}(可参考仓库里的 backend/scripts/web-search.json.sample)。注:本告警只覆盖 pi-web-access 自己的命令;其他已加载包(如 pi-subagents 的 /run,它会 spawn 一个不带沙箱 extension 的子进程)只能靠运维隔离:生产的 PI_CODING_AGENT_DIR 里 settings.json 的 packages 只保留 pin 过的 pi-web-access",
+		path, strings.Join(cmds, ", "), strings.Join(enabled, "/commands."))
 }
 
 func (p *PiProtocol) Backend() Backend { return BackendPi }

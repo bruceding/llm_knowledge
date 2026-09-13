@@ -279,3 +279,83 @@ func LoadPiWebToolNames() PiWebToolNames {
 func (n PiWebToolNames) Names() []string {
 	return []string{n.WebSearch, n.FetchContent, n.GetSearchContent}
 }
+
+// piWebCommandNames 是 pi-web-access 注册的四个扩展命令名。
+// 取自 index.ts:277 的 isCommandEnabled 形参类型
+// ("websearch" | "curator" | "search" | "google-account"),与 :3164/:3427/:3517/:3469
+// 四处 pi.registerCommand 一一对应。
+var piWebCommandNames = []string{"websearch", "curator", "search", "google-account"}
+
+// PiWebCommandsEnabled 返回部署的 web-search.json 里**仍然启用**的 pi-web-access
+// 扩展命令名。与 LoadPiWebToolNames 一样不返回 error。
+//
+// 判定完全镜像 isCommandEnabled(index.ts:277-279)的 `config.commands?.[name]?.enabled
+// !== false`,因此下列情形**全部算开着**:整个文件不存在、JSON 非法、根不是对象、
+// commands 段缺席、commands 为 null/非对象、某个命令键缺席、enabled 不是布尔、
+// enabled 为 true。只有显式的 `"enabled": false` 才算关。
+//
+// 为什么这件事需要 Go 侧留信号:rpc 模式下以 `/` 开头的用户消息会被 pi 当扩展
+// 命令派发执行并直接跑那段 JS —— 链路是 modes/rpc/rpc-mode.js:301-304 调
+// session.prompt() 时**没传** expandPromptTemplates,core/agent-session.js:822 的
+// 默认值是 true,:828-834 一命中就调 _tryExecuteExtensionCommand(:954-961)。
+// 四道既有防线全拦不住:`--tools` 只管工具调用(命令不是工具)、
+// `--no-skills`/`--no-prompt-templates` 只关 skill 与模板、沙箱 extension 的
+// `input` hook 在 :839-851(位于命令派发**之后**)、`-na` 与此无关。
+// Claude 侧的对应物 SlashCommand 早就在 ClaudeDangerousDisallowedTools 里硬阻断,
+// 所以这是追平两个后端的安全强度。
+//
+// 而唯一的收口就是这份配置文件,它在运维手里、不在仓库里:漏配时服务照常启动、
+// 文档问答照常工作、零信号,属静默 fail-open。本函数只负责**检测**,
+// 告警由 agent 包在构造 PiProtocol 时发出。
+//
+// 注意本函数**盖不到其他包**:web-search.json 只有 pi-web-access 读,所以它只能
+// 关 pi-web-access 自己的命令。其他已加载包(例如 pi-subagents 注册的 /run,它
+// 会 spawn 一个不带我们沙箱 extension 的子进程)只能靠运维隔离 ——
+// 生产用独立 PI_CODING_AGENT_DIR,其 settings.json 的 packages 只含 pin 过的
+// pi-web-access。详见计划的风险登记 R9 与 R1。
+func PiWebCommandsEnabled() []string {
+	allOn := func() []string { return append([]string(nil), piWebCommandNames...) }
+
+	path := PiWebSearchConfigPath()
+	if path == "" {
+		return allOn() // home 取不到:无从判定,按最不安全的一侧报
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return allOn() // 文件不存在/不可读:pi 的 loadConfig 返回 {},全部走默认(开)
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		// JSON 非法或根不是对象(数组/标量):pi 的 parseConfigRoot 抛后被
+		// loadConfigForExtensionInit catch 成 {},同样等于全开。
+		return allOn()
+	}
+	rawCommands, ok := root["commands"]
+	if !ok {
+		return allOn()
+	}
+	var commands map[string]json.RawMessage
+	if err := json.Unmarshal(rawCommands, &commands); err != nil {
+		return allOn() // commands 为 null / 数组 / 标量:pi 的 ?. 链同样走到 undefined
+	}
+
+	enabled := make([]string, 0, len(piWebCommandNames))
+	for _, name := range piWebCommandNames {
+		raw, ok := commands[name]
+		if !ok {
+			enabled = append(enabled, name)
+			continue
+		}
+		var entry struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			enabled = append(enabled, name) // entry 不是对象:?.enabled 得 undefined
+			continue
+		}
+		if entry.Enabled == nil || *entry.Enabled {
+			enabled = append(enabled, name)
+		}
+	}
+	return enabled
+}

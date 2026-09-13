@@ -368,6 +368,67 @@ func TestLoadPiWebToolNames_WarnsOnlyWhenPiWouldRejectConfig(t *testing.T) {
 	}
 }
 
+// TestPiWebCommandsEnabled 钉住 PiWebCommandsEnabled 必须逐条镜像
+// isCommandEnabled(index.ts:277-279)的 `config.commands?.[name]?.enabled !== false`。
+//
+// 关键是那些「看上去像关了、其实没关」的情形必须被归为开着 —— 本函数的用途就是
+// 给运维留信号,假阴性(把开着的报成关了的)等于没有这个告警。
+func TestPiWebCommandsEnabled(t *testing.T) {
+	all := []string{"websearch", "curator", "search", "google-account"}
+
+	cases := []struct {
+		name    string
+		content string // 空串表示目录里不放文件
+		want    []string
+	}{
+		{"文件缺失:pi 的 loadConfig 返回 {},全开", "", all},
+		{"JSON 非法:parseConfigRoot 抛后被 catch 成 {},全开", `{"commands": {`, all},
+		{"根是数组:同上,全开", `["websearch"]`, all},
+		{"根是标量:同上,全开", `42`, all},
+		{"commands 段缺席:?. 链得 undefined,全开", `{"allowBrowserCookies":false}`, all},
+		{"commands 为 null:同上,全开", `{"commands":null}`, all},
+		{"commands 是数组:不是对象,全开", `{"commands":["websearch"]}`, all},
+		{"四个都显式关:唯一的安全状态", `{"commands":{"websearch":{"enabled":false},"curator":{"enabled":false},"search":{"enabled":false},"google-account":{"enabled":false}}}`, nil},
+		{"只关了 curator:剩下三个仍开着", `{"commands":{"curator":{"enabled":false}}}`, []string{"websearch", "search", "google-account"}},
+		{"enabled 为 true:显式开", `{"commands":{"curator":{"enabled":true}}}`, all},
+		// JS 的 `!== false` 对字符串 "false" 也为真,所以这仍然算开着。
+		// 这是运维最容易犯的错(把 JSON 当 YAML/字符串写),必须报出来。
+		{"enabled 是字符串 \"false\":JS 的 !== false 仍为真,全开", `{"commands":{"websearch":{"enabled":"false"},"curator":{"enabled":"false"},"search":{"enabled":"false"},"google-account":{"enabled":"false"}}}`, all},
+		{"entry 不是对象:?.enabled 得 undefined,全开", `{"commands":{"websearch":false,"curator":false,"search":false,"google-account":false}}`, all},
+		{"entry 是空对象:enabled 缺席,全开", `{"commands":{"websearch":{},"curator":{},"search":{},"google-account":{}}}`, all},
+		// 未知键不影响四个已知键的判定(pi 也只查这四个)
+		{"未知命令键不干扰", `{"commands":{"newcmd":{"enabled":false},"curator":{"enabled":false}}}`, []string{"websearch", "search", "google-account"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.content == "" {
+				t.Setenv("PI_CODING_AGENT_DIR", t.TempDir()) // 目录存在但没有文件
+			} else {
+				writePiWebSearchConfig(t, tc.content)
+			}
+			got := PiWebCommandsEnabled()
+			if !reflect.DeepEqual(got, tc.want) && !(len(got) == 0 && len(tc.want) == 0) {
+				t.Errorf("PiWebCommandsEnabled() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPiWebCommandsEnabled_MatchesSample 把部署模板与本函数接上:模板必须让
+// 本函数返回空。否则模板自己就是个 fail-open 的例子 —— 运维照它部署完,
+// 告警依旧会响。
+func TestPiWebCommandsEnabled_MatchesSample(t *testing.T) {
+	data, err := os.ReadFile("../scripts/web-search.json.sample")
+	if err != nil {
+		t.Fatalf("读取部署模板: %v", err)
+	}
+	writePiWebSearchConfig(t, string(data))
+	if got := PiWebCommandsEnabled(); len(got) != 0 {
+		t.Errorf("部署模板应当关掉全部四个命令,但本函数仍报开着: %v", got)
+	}
+}
+
 // TestWebSearchSample_PinsSecurityKeys 断言部署模板把设计要求的安全键显式钉死。
 //
 // 计划文档原本把这条列在 Task 6,但模板由 Task 1 产出,测试跟着产物走,否则模板

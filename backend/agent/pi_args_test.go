@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -716,4 +718,113 @@ func TestPiWebTools_RenamedByConfig(t *testing.T) {
 	if want := "read,ws,fc,gsc"; toolsFlagValue(t, args) != want {
 		t.Errorf("--tools = %q, want %q", toolsFlagValue(t, args), want)
 	}
+}
+
+// captureAgentLog 把 log 输出临时改到缓冲区,返回取内容的闭包。
+// 与 config 包测试里的 captureConfigLog 同手法。
+func captureAgentLog(t *testing.T) func() string {
+	t.Helper()
+	var buf bytes.Buffer
+	orig := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(orig) })
+	return buf.String
+}
+
+// writeAgentDirWebSearchConfig 在当前 PI_CODING_AGENT_DIR 里写一份 web-search.json。
+func writeAgentDirWebSearchConfig(t *testing.T, content string) {
+	t.Helper()
+	path := config.PiWebSearchConfigPath()
+	if path == "" {
+		t.Fatal("PI_CODING_AGENT_DIR 未生效,拿不到配置路径")
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("写入 web-search.json: %v", err)
+	}
+}
+
+// piAllCommandsDisabled 是部署模板里那段 commands 配置(四个全关)。
+const piAllCommandsDisabled = `{"commands":{"websearch":{"enabled":false},"curator":{"enabled":false},"search":{"enabled":false},"google-account":{"enabled":false}}}`
+
+// TestNewPiProtocol_WarnsWhenWebCommandsEnabled 断言 R9 开放项选定的方案 (b) 落地:
+// 构造 PiProtocol 时若部署的 web-search.json 没关掉 pi-web-access 的扩展命令,
+// 服务日志里必须留一行;关掉了就不该响(否则告警会被运维当噪声忽略)。
+func TestNewPiProtocol_WarnsWhenWebCommandsEnabled(t *testing.T) {
+	t.Run("命令仍开着时必须告警", func(t *testing.T) {
+		getLog := captureAgentLog(t)
+		scripts := newPiTestScriptsDirOnly(t)
+		agentDir := t.TempDir()
+		t.Setenv("PI_CODING_AGENT_DIR", agentDir) // 目录里没有 web-search.json → 四个命令全开
+
+		NewPiProtocol("pi", scripts)
+
+		logged := getLog()
+		if logged == "" {
+			t.Fatal("web-search.json 缺失时四个扩展命令默认全开,用户发一条 /curator 就能执行扩展代码,必须留下告警")
+		}
+		// 告警必须可操作:指出是哪个文件、哪些命令、怎么修
+		for _, want := range []string{
+			filepath.Join(agentDir, "web-search.json"), // 配置路径,便于定位
+			"/curator", // 命令名带斜杠,与用户实际输入一致
+			"/websearch",
+			"enabled",                // 修法
+			"web-search.json.sample", // 仓库里的模板
+			"--system-prompt",        // 后果之一:绕过我们注入的系统提示
+		} {
+			if !strings.Contains(logged, want) {
+				t.Errorf("告警缺少 %q,运维无法据此定位或修复。实际: %s", want, logged)
+			}
+		}
+	})
+
+	t.Run("模板配置下不告警", func(t *testing.T) {
+		getLog := captureAgentLog(t)
+		scripts := newPiTestScriptsDirOnly(t)
+		t.Setenv("PI_CODING_AGENT_DIR", t.TempDir())
+		writeAgentDirWebSearchConfig(t, piAllCommandsDisabled)
+
+		NewPiProtocol("pi", scripts)
+
+		// 注意 resolvePiWebTools 的重名告警不应触发(这份配置没有 toolNames)
+		if logged := getLog(); logged != "" {
+			t.Errorf("四个命令都已显式关闭,不应告警以免噪声淹没真信号。实际: %s", logged)
+		}
+	})
+
+	t.Run("只关一部分时告警且只报没关的", func(t *testing.T) {
+		getLog := captureAgentLog(t)
+		scripts := newPiTestScriptsDirOnly(t)
+		t.Setenv("PI_CODING_AGENT_DIR", t.TempDir())
+		writeAgentDirWebSearchConfig(t, `{"commands":{"curator":{"enabled":false},"search":{"enabled":false}}}`)
+
+		NewPiProtocol("pi", scripts)
+
+		logged := getLog()
+		// 必须断言**命令清单那一段**而不是整条消息:正文里另有一句解释性的
+		// 「其中 /curator 会拉起浏览器」,它对任何告警都在,用 Contains 判
+		// "/curator" 会命中那句解释而不是清单,断言就失去判别力(实测踩过)。
+		const wantList = "扩展命令 /websearch, /google-account ——"
+		if !strings.Contains(logged, wantList) {
+			t.Errorf("告警的命令清单必须只列仍开着的两个。期望含 %q,实际: %s", wantList, logged)
+		}
+		const wantFix = "commands.websearch/commands.google-account"
+		if !strings.Contains(logged, wantFix) {
+			t.Errorf("修法提示也必须只列仍开着的两个。期望含 %q,实际: %s", wantFix, logged)
+		}
+	})
+
+	t.Run("同一发现不随 resolver 刷新重复刷屏", func(t *testing.T) {
+		getLog := captureAgentLog(t)
+		scripts := newPiTestScriptsDirOnly(t)
+		t.Setenv("PI_CODING_AGENT_DIR", t.TempDir())
+
+		// resolver 的 5s TTL 会反复构造 PiProtocol;同一条发现只该响一次
+		for i := 0; i < 3; i++ {
+			NewPiProtocol("pi", scripts)
+		}
+
+		if n := strings.Count(getLog(), "没有关掉 pi-web-access 的扩展命令"); n != 1 {
+			t.Errorf("同一条发现应只告警 1 次(否则流量期间每 5s 一行、一天上万行,运维会直接忽略),实际 %d 次", n)
+		}
+	})
 }
