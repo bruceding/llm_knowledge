@@ -65,6 +65,21 @@ func TestParseLine_ToolInputDelta(t *testing.T) {
 	}
 }
 
+func TestParseLine_EmptyInputJSONDeltaProducesNoDelta(t *testing.T) {
+	p := &ClaudeProtocol{}
+	// 空 partial_json 不得产出 Delta:Process 对空 ToolInput 不再二次守卫,
+	// 若此处放行会发出携带上一条累积输入的重复 tool_input 事件。
+	// 判别力自检:把 claude_parse.go 的 `if sub.Delta.PartialJSON == ""` 守卫
+	// 删掉后本用例变红(得到 DeltaToolInput)。
+	evt, ok := p.ParseLine(wrap(t, `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}}`))
+	if !ok {
+		t.Fatal("expected ok (line is parseable, just carries no delta)")
+	}
+	if evt.Delta != nil {
+		t.Fatalf("empty partial_json must not produce a Delta, got: %+v", evt.Delta)
+	}
+}
+
 func TestParseLine_ContentBlockStop(t *testing.T) {
 	p := &ClaudeProtocol{}
 	evt, _ := p.ParseLine(wrap(t, `{"type":"content_block_stop","index":1}`))

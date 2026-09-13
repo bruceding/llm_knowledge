@@ -74,7 +74,7 @@ type StreamEvent struct {
 	ToolName  string   `json:"toolName,omitempty"`   // 既有字段,当前生产代码未赋值,保留以免波及调用点
 	ToolInput string   `json:"toolInput,omitempty"`  // 同上
 	Message   *Message `json:"message,omitempty"`    // Message for type "assistant"
-	Delta     *Delta   `json:"delta,omitempty"`
+	Delta     *Delta   `json:"-"`                    // 内部归一化增量,非 wire 字段;绝不序列化进 SSE/JSON
 
 	ResultIsError bool `json:"resultIsError,omitempty"` // Claude 的 result.is_error;上层据此把事件转成 error
 

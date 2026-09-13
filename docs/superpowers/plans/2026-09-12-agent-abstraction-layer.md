@@ -163,7 +163,7 @@ type Protocol interface {
 	// 旗标与环境
 	SessionArgs(sysPrompt string, tools []string) ([]string, error)
 	ResumeArgs(prevSessionID, sysPrompt string, tools []string) ([]string, error)
-	OnceArgs(tools []string, print bool) ([]string, error)
+	OnceArgs(sysPrompt string, tools []string, print bool) ([]string, error)
 	Env(allowedDir string) []string
 
 	// stdin 编码
@@ -476,7 +476,7 @@ func (p *ClaudeProtocol) Env(allowedDir string) []string {
 // OnceArgs 构造一次性调用的旗标。
 // print=true 时用 --print + stream-json(Claude 的 Send 路径);
 // print=false 时只用 -p(纯文本输出,对应 SendSimpleWithRead)。
-func (p *ClaudeProtocol) OnceArgs(tools []string, print bool) ([]string, error) {
+func (p *ClaudeProtocol) OnceArgs(sysPrompt string, tools []string, print bool) ([]string, error) {
 	secure, err := p.SecureArgs(tools)
 	if err != nil {
 		return nil, err
@@ -1435,7 +1435,7 @@ func (c *Client) protocol() agent.Protocol {
 `Send`(65-160)里把 `BuildSecureArgs([]string{"Read","Write","Edit"})` 与手写的 `--print`/`--output-format`/`--verbose` 旗标替换为:
 
 ```go
-	args, err := c.protocol().OnceArgs([]string{"Read", "Write", "Edit"}, true)
+	args, err := c.protocol().OnceArgs("", []string{"Read", "Write", "Edit"}, true)
 	if err != nil {
 		return fmt.Errorf("build once args: %w", err)
 	}
@@ -1443,7 +1443,7 @@ func (c *Client) protocol() agent.Protocol {
 
 `OnceArgs` 已在 Task 2 Step 3 写入 `agent/claude_args.go` 并列入 `Protocol` 接口(Task 1 Step 1),本步只需调用。
 
-`SendSimpleWithRead`(181-208)改用 `c.protocol().OnceArgs([]string{"Read"}, false)`。
+`SendSimpleWithRead`(181-208)改用 `c.protocol().OnceArgs("", []string{"Read"}, false)`。
 `SendSimple`(165-179)与 `SendWithOutput`(239-250)保持 `-p` 字面量不变 —— 它们不带任何安全旗标,这是既有行为,不在本次重构范围内改动。
 
 `Send` 里 `cmd.Env` 的设置改为 `if env := c.protocol().Env(workDir); len(env) > 0 { cmd.Env = env }`。
