@@ -642,6 +642,29 @@ frontend/node_modules/.bin/tsc --noEmit --strict --target es2022 --module esnext
 
 **完成定义(规格原文,逐条勾)**
 
+### ⏳ Task 11 部分完成(`aa73189`,2026-09-13)—— 零配额与单回合可做的部分已做完,其余见下方「剩余项」
+
+**已完成:**
+
+- ✅ **沙箱 extension 确实被加载并拦截**(Task 6 留下的最大未验证面):`agent/pi_sandbox_integration_test.go` 用生产路径的 argv/env spawn 真实 pi、诱导越界读 `/etc/passwd`、断言被拦。锚点是 extension 自己产出的理由文本,它只可能来自被加载执行了的 extension,因此**同时就是加载证明**;并反向断言 `/etc/passwd` 内容未泄漏。实跑 PASS(3.07s)。gated 在 `LLM_KNOWLEDGE_PI_INTEGRATION=1` 之后,默认 SKIP(已验证),所以计划闸门 `go test ./...` 保持零配额。
+  - **断言收紧过一次**:最初只匹配 `"Access denied:"` 前缀,但「工具不在白名单」与「ALLOWED_DIR 未配置」也用这个前缀 —— 拿它当通过条件会让用例因**错误的原因**变绿。改为只认 `path outside allowed directory` / `sensitive file`,并对 `ALLOWED_DIR not configured` 直接判失败。收紧后仍 PASS,证明拦下它的确实是路径校验本身。
+- ✅ **PDF 逐页转 Markdown 的覆盖缺口**(Task 8 遗留):`api/documents_llmextract_test.go` 用假二进制断言 prompt 走 stdin(D2)、用的是 Protocol 给的二进制、`--model sonnet` 在 argv(D3)、安全旗标未丢失、产物链路通。变异验证:prompt 塞回 argv → 判红。
+- ✅ **R10 新发现与护栏**(见风险登记):rpc `bash` 命令绕过沙箱,`TestPiEncodeUserMessage_CannotInjectRpcCommands` 钉住唯一屏障。
+- ✅ 顺带零配额实证 **D4**:`get_state` 的 `sessionFile` 落在 `Env()` 注入的 `PI_CODING_AGENT_SESSION_DIR` 之下。同时确认 `get_state` **不返回已加载扩展列表**,所以「证明扩展被加载」没有零配额捷径。
+- ✅ 完成定义中的两条已由前序任务满足并实测:「前端聊天代码 diff 为空」(Task 9)、`Settings 切到不可用的 pi 时被 400 拦住`(Task 9 的 e2e 移走沙箱文件实跑过,错误文案原样透到 UI)。
+
+**查出一个既有 bug(不在 Plan 2 范围,未修):** `api/documents.go` 的 `LLMExtract` 与 `pdftoppm` 对页码补零的约定不一致 —— pdftoppm 按**总页数**决定补零宽度(10 页→`page-01.png`,1 页→`page-1.png`),handler 却硬编码 `page-%02d.png`。后果:**任何少于 10 页的 PDF 都静默产出空 `paper.md`,却返回 200 与 "PDF extracted with LLM successfully"**。arXiv 论文通常 ≥10 页,这解释了它为何一直没被发现。不在这里修是因为修它会改变 claude 路径行为、违背本计划验收项之一;修法建议:pdftoppm 之后 glob `page-*.png` 并按数字后缀映射,而不是猜补零宽度。**待维护者决定是否单开一个 commit 修。**
+
+**剩余项(需要配额或需要人执行,故未做):**
+
+- ⬜ **本地文件向量集成测试**(`fetch_content` 取 ALLOWED_DIR 外的绝对路径视频 / `/etc/passwd`,断言被 hook block 且 `video-extract.ts` 的 `readFile`/`execFileSync("ffmpeg")` 未触达)。需要 `pi-web-access` 真实联网工具 + LLM 回合。
+- ⬜ **R9 扩展命令注入面验证**(发 `/curator hello` 与 `/search foo`,断言无扩展命令被执行;**并需对照组**把 `commands.curator.enabled` 改成 true 断言命令确实会执行)。对照组会拉起浏览器,需人确认时机。
+- ⬜ e2e 回归的另外三个文件(`test_chat_view.py`、`test_mobile_chat_view.py`、`test_desktop_no_mobile_dom.py`)。`test_chat_streaming.py` 的 12 个已在 Task 5/8 各跑过一次全绿。**阻塞点**:`tests/e2e/.auth/state.json` 里的 token 已过期(是 `bruceding` 的),而 conftest 的刷新流程需要人手输凭据+验证码。
+- ⬜ `LLMBackend=pi` 时切到 pi 重跑聊天 e2e(验证前端零改动即可工作)。消耗配额。
+- ⬜ **手工验收**(计划明确「由人执行,不消耗配额的自动化不得替代」):两种后端各跑一遍 —— 文档问答多轮 + SSE 断线重连、自由问答带图片、中途 interrupt、ingest 摘要与分节、PDF 逐页转 Markdown。
+- ⬜ **resume 往返验收**(两种后端各一遍):确认 DB 里写入的是该后端自己的 ID 格式,重启或等 30s 清理后再提问能续接。
+- ⬜ 完成定义中的「`LLMBackend=pi` 时手工验收全部通过」依赖上面两条人工项。
+
 - [ ] `LLMBackend=claude` 时 `go test ./...` 全绿且行为与改造前逐条等价
 - [ ] `LLMBackend=pi` 时手工验收全部通过
 - [ ] pi 路径沙箱强度不低于 Python 版(fail-closed + 边界 + 敏感路径三项全过),**且 `fetch_content` 本地文件向量被堵住**
@@ -661,6 +684,8 @@ frontend/node_modules/.bin/tsc --noEmit --strict --target es2022 --module esnext
 | R7 | `source_check` 在 pi-web-access 里**默认注册且启用**(`index.ts:271-274`),`--tools` 白名单只决定「不授予调用」 | 两道防线:白名单不含它 + `web-search.json` 里 `tools.sourceCheck.enabled=false`(Task 1 的 sample 已固化,并由 `config_test.go` 的一致性测试守护) |
 | R8 | `web-search.json` 的 `toolNames` 写错 → pi-web-access 扩展加载失败 → **`pi` 以退出码 1 退出**(`main.js:723-731`),整个 pi 后端不可用;而切换探测跑 `pi --version` 不加载扩展,**探测不到**(Task 1 已实测:对照组退出 0、实验组退出 1) | Go 侧在该支 `log.Printf` 告警并由 11 个子用例钉住;Task 10 写入运维警示;Task 7 的探测**不能**只靠 `pi --version`(可考虑追加一次带扩展的最小 spawn,代价是探测变慢——留给 Task 7 决定) |
 | R9 | **扩展命令注入面(Task 3 对 pi 0.85.1 源码核实时发现,规格与本计划都未覆盖)**:rpc 模式下以 `/` 开头的用户消息会被当成扩展命令派发执行 —— `modes/rpc/rpc-mode.js:301-304` 调 `session.prompt()` 时**没传** `expandPromptTemplates`,而 `core/agent-session.js:822` 的默认值是 `true`,`:828-834` 一旦 `text.startsWith("/")` 就调 `_tryExecuteExtensionCommand`(`:954-961`,`getCommand` 命中即执行)。**四道既有防线全拦不住**:`--tools` 只管工具调用(命令是扩展自己的 JS)、`--no-skills`/`--no-prompt-templates` 只关 skill 与模板、沙箱 extension 的 `input` hook 在 `:839-851`(位于 `:828` 的命令派发**之后**)。已实测的可利用面:`pi-web-access` 自己注册 4 个命令(`index.ts:3164` websearch、`:3427` curator、`:3469` google-account、`:3517` search),本机的 `pi-subagents` 也注册;`/curator` 会拉起浏览器,且扩展命令自行驱动 LLM、绕过我们注入的 `--system-prompt`。**Claude 侧的对应物是 `SlashCommand` 工具,它早就在 `ClaudeDangerousDisallowedTools` 里被硬阻断** —— 所以堵住它是追平两个后端的安全强度,不是额外收紧 | 部署模板显式关掉 `pi-web-access` 的 4 个命令(`commands.*.enabled=false`;`isCommandEnabled` 在 `index.ts:277-279` 是 `!== false`,**默认开**),由 `config_test.go` 的 `TestWebSearchSample_PinsSecurityKeys` 守护(4 处变异均被抓,含「模板里多出未知的 `enabled:true` 命令」)。**残留:其他已加载包的命令不在覆盖范围内**,只能靠 R1 的运维隔离。故意**不**在 `EncodeUserMessage` 里改写以 `/` 开头的用户文本(会污染 LLM 输入与 DB 历史,且与 claude 后端的「/ 就是普通文本」不一致)。Task 10 写第四条运维警示;Task 11 需带对照组验证 |
+
+| R10 | **rpc `bash` 命令完全绕过沙箱 extension(Task 11 实测新增)**:用我们的硬化 argv 启动 pi、发 `{"type":"bash","command":"touch <ALLOWED_DIR>/x && echo BASH_RAN"}`,shell **真的执行了**、文件真的建了、`tool_call` hook 一次都没触发。它是 pi 的直接 shell 执行路径(`docs/rpc.md:479-485`)而非工具调用,且 `pi --help` 里**没有任何旗标能关掉它**(`--tools` 白名单不含 bash 也照跑;`-nt/--no-tools` 关的是工具;`-na` 是 `--no-approve`)。因此唯一屏障是「只有 Go 进程能写 pi stdin,用户文本一律经 `EncodeUserMessage` 变成一条 `prompt` 的字符串字段」 | `json.Marshal` 按构造即可挡住结构逃逸与行逃逸(pi 的 rpc 按行分隔)。新增 `TestPiEncodeUserMessage_CannotInjectRpcCommands` 把两条逃逸路径都钉住(变异验证:改成手工拼接 → 三个子用例全红)。**残留:若将来有改动让用户内容流向裸 rpc 命令构造,该屏障即失效** —— 那条测试是唯一护栏,不得为了"少一次转义"而放松 |
 
 ## 开放项(承规格,本计划不做)
 
