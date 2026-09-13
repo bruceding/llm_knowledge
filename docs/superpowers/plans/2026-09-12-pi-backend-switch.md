@@ -30,6 +30,7 @@
 
 - **claude 路径行为不变**(除「决策点 D3」记录的 once-call prompt 传递方式):所有既有 API/SSE 形状、既有 30+ `stream_test.go` 用例、既有 e2e 全绿
 - **前端聊天组件 diff 必须为空**:`SSEEvent` 的 JSON tag 一字不改。前端只允许改 `types.ts`、`SettingsPage.tsx`、i18n 资源
+- **`StreamEvent.Delta` 是 `json:"-"`**(自 main 的 `89c3862` 起):它是内部归一化增量,**绝不**序列化进 SSE/JSON。Plan 2 新增的任何路径都不得让它变成 wire 字段 —— 注意 `api/translate.go` 是「直接 marshal `StreamEvent`」的既有先例,这条 tag 正是为了防御未来某条路径泄露内部字段
 - **不在 `claude`/`api`/`ingest` 包里出现后端分支**:禁止 `if proto.Backend() == agent.BackendPi` 这类判断。后端差异只能落在 `agent` 包的两个 Protocol 实现内。这是 Plan 1 建立的核心不变式,Plan 2 最容易破坏它
 - **不动** `CLAUDE.md`、`path-validator.py`(tracked 源 `backend/scripts/path-validator.py` 与运行时副本 `scripts/path-validator.py` 都不动)、`backend/dependencies/`(规格明确:不把 pi 加进 checker,不改前端对 `/api/dependencies/status` 的消费)
 - **不新增 Go 第三方依赖**,不改 `go.mod`
@@ -250,6 +251,7 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 **这是 Plan 2 风险最高的任务。** 规格的「解析器后端差异」表与「实测确认的三条 pi 专有约束」是唯一权威,实现者必须逐行对照。
 
 - [ ] 事件映射:`message_update`→`assistantMessageEvent` 的 `text_delta`(→`DeltaText`)/`toolcall_start`(→`DeltaToolStart`,带 `id`/`toolName`)/`toolcall_delta`(→`DeltaToolInput`)/`toolcall_end` 或 `tool_execution_end`(→`DeltaToolEnd`);`contentIndex` 填 `Delta.Index`
+- [ ] **空增量守卫(承 main 的 `89c3862`,pi 侧不可重犯 claude 侧曾有的疏漏)**:`toolcall_delta` 的 `delta` 为空串时**不得**产出 `DeltaToolInput`;`text_delta` 同理。依据:`Process`(`claude/stream.go:159-168`)对空 `ToolInput` **不再二次守卫**,放行就会发出携带上一条累积输入的重复 `tool_input` 事件。claude 侧的空 `partial_json` 守卫(`claude_parse.go:106`)是 Plan 1 重构孤立出来的唯一防线,且此前无测试覆盖,`89c3862` 才补上 `TestParseLine_EmptyInputJSONDeltaProducesNoDelta`(并用变异验证过判别力)。pi 侧必须有对应用例:喂空 `delta` 断言 `ok=false` 或 `Delta.Kind == DeltaNone`
 - [ ] **`text_end.content` 必须忽略**(否则与 delta 重复)
 - [ ] `message_end` → 完整消息,**且必须 `message.role == "assistant"`** 才产出(否则用户提问会被回推前端)
 - [ ] `agent_settled` → 轮次结束(映射到既有 `result` 语义,驱动 SSE `done`);**不是 `agent_end`**
