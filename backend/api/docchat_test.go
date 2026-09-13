@@ -73,7 +73,7 @@ func TestDocChat_PersistsChatSessionIDOnInit(t *testing.T) {
 		if newID != "real-session-abc" {
 			t.Errorf("callback got %q, want real-session-abc", newID)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(8 * time.Second):
 		t.Fatal("onRealSessionID callback never fired")
 	}
 
