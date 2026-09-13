@@ -89,7 +89,7 @@ func TestClaudeResumeArgs_ContainsResumeID(t *testing.T) {
 // byte-identical to claude.Client.Send (--print + stream-json + secure flags).
 func TestClaudeOnceArgs_PrintModeMatchesClientSend(t *testing.T) {
 	p := &ClaudeProtocol{bin: "claude"}
-	args, err := p.OnceArgs("", []string{"Read", "Write", "Edit"}, true)
+	args, err := p.OnceArgs("", []string{"Read", "Write", "Edit"}, true, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestClaudeOnceArgs_PrintModeMatchesClientSend(t *testing.T) {
 // the caller).
 func TestClaudeOnceArgs_TextModeMatchesSendSimpleWithRead(t *testing.T) {
 	p := &ClaudeProtocol{bin: "claude"}
-	args, err := p.OnceArgs("", []string{"Read"}, false)
+	args, err := p.OnceArgs("", []string{"Read"}, false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestClaudeOnceArgs_TextModeMatchesSendSimpleWithRead(t *testing.T) {
 // after the secure flags, so it can never displace the security flag block.
 func TestClaudeOnceArgs_SystemPromptAppended(t *testing.T) {
 	p := &ClaudeProtocol{bin: "claude"}
-	args, err := p.OnceArgs("sys prompt", []string{"Read"}, true)
+	args, err := p.OnceArgs("sys prompt", []string{"Read"}, true, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -160,6 +160,34 @@ func TestClaudeOnceArgs_SystemPromptAppended(t *testing.T) {
 	secure := slices.Index(args, "--dangerously-skip-permissions")
 	if secure < 0 || i < secure {
 		t.Errorf("expected --system-prompt (idx %d) after secure flags (idx %d): %v", i, secure, args)
+	}
+}
+
+// TestClaudeOnceArgs_ModelHint pins 计划 D3:model 非空时追加 --model <model>,
+// 且位于 secure 旗标之后(原 api/documents.go 把 --model 放在 secureArgs 之前,
+// 旗标集合不变、只有顺序变化);空串时绝不出现 --model,以保证摘要/分节/翻译
+// 继续走 claude 默认模型而不被一并改成 sonnet。
+func TestClaudeOnceArgs_ModelHint(t *testing.T) {
+	p := &ClaudeProtocol{bin: "claude"}
+
+	args, err := p.OnceArgs("", []string{"Read"}, true, "sonnet")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	i := slices.Index(args, "--model")
+	if i < 0 || i == len(args)-1 || args[i+1] != "sonnet" {
+		t.Fatalf("expected adjacent --model sonnet in args: %v", args)
+	}
+	if secure := slices.Index(args, "--dangerously-skip-permissions"); secure < 0 || i < secure {
+		t.Errorf("expected --model (idx %d) after secure flags (idx %d): %v", i, secure, args)
+	}
+
+	noModel, err := p.OnceArgs("", []string{"Read"}, true, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if slices.Contains(noModel, "--model") {
+		t.Errorf("empty model hint must not add --model: %v", noModel)
 	}
 }
 
@@ -195,5 +223,47 @@ func TestClaudeEnv_EmptyDirReturnsNil(t *testing.T) {
 	p := &ClaudeProtocol{bin: "claude"}
 	if env := p.Env(""); env != nil {
 		t.Fatalf("expected nil env for empty allowedDir, got: %v", env)
+	}
+}
+
+// 以下三个用例原先住在 claude/security_test.go,测的是兼容垫片 BuildSecureArgs 与
+// DangerousDisallowedTools 别名。Task 8 删掉垫片后把它们搬到这里:它们钉住的是
+// SecureArgs 与危险工具清单**本身**的行为,与「由哪个包暴露」无关,不该随垫片消失。
+
+func TestClaudeSecureArgs_EmptyAllowedToolsOmitsFlag(t *testing.T) {
+	// 调用方不传任何 allowed tool 时(少见但合法,例如纯文本 prompt),
+	// --allowedTools 不该出现;但 --disallowedTools 必须仍在,否则危险工具就放开了。
+	p := &ClaudeProtocol{bin: "claude"}
+	args, err := p.SecureArgs(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if slices.Contains(args, "--allowedTools") {
+		t.Errorf("expected --allowedTools to be omitted when input is nil, got %v", args)
+	}
+	if !slices.Contains(args, "--disallowedTools") {
+		t.Errorf("expected --disallowedTools to remain, got %v", args)
+	}
+}
+
+func TestClaudeSecureArgs_BypassFlagPresent(t *testing.T) {
+	p := &ClaudeProtocol{bin: "claude"}
+	args, err := p.SecureArgs([]string{"Read"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !slices.Contains(args, "--dangerously-skip-permissions") {
+		t.Errorf("expected --dangerously-skip-permissions flag, got %v", args)
+	}
+}
+
+// TestClaudeDangerousDisallowedTools_CoversKnownAttackVectors 锁定「绝不能可达」的
+// 工具最小集合。产品里新增危险工具时,这里也要跟着加。
+func TestClaudeDangerousDisallowedTools_CoversKnownAttackVectors(t *testing.T) {
+	required := []string{"Bash", "Task", "NotebookEdit", "KillShell", "BashOutput", "SlashCommand"}
+	for _, tool := range required {
+		if !slices.Contains(ClaudeDangerousDisallowedTools, tool) {
+			t.Errorf("ClaudeDangerousDisallowedTools missing required tool %q", tool)
+		}
 	}
 }

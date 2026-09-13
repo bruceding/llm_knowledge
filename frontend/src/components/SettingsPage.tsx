@@ -27,6 +27,13 @@ export default function SettingsPage() {
   const [globalSuccess, setGlobalSuccess] = useState(false)
   const [globalError, setGlobalError] = useState<string | null>(null)
 
+  // LLM 后端开关。独立于翻译那组 state:保存后端可能因探测失败返回 400,
+  // 它的成功/错误提示不该和翻译设置混在一条横幅里。
+  const [llmBackend, setLlmBackend] = useState('claude')
+  const [backendSaving, setBackendSaving] = useState(false)
+  const [backendSuccess, setBackendSuccess] = useState(false)
+  const [backendError, setBackendError] = useState<string | null>(null)
+
   // IMAP state
   const [imapHost, setImapHost] = useState('')
   const [imapPort, setImapPort] = useState(993)
@@ -66,6 +73,7 @@ export default function SettingsPage() {
           setApiBase(gs.translationApiBase || 'https://dashscope.aliyuncs.com/compatible-mode/v1')
           setApiKey(gs.translationApiKey || '')
           setModelName(gs.translationModel || 'deepseek-v4-flash')
+          setLlmBackend(gs.llmBackend || 'claude')
         } catch (err) {
           console.error('Failed to load global settings:', err)
         }
@@ -132,6 +140,26 @@ export default function SettingsPage() {
       setGlobalError(err instanceof Error ? err.message : 'Failed to save global settings')
     } finally {
       setGlobalSaving(false)
+    }
+  }
+
+  const handleBackendSave = async () => {
+    setBackendSaving(true)
+    setBackendSuccess(false)
+    setBackendError(null)
+    try {
+      // 只发 llmBackend:后端把空串当作"不改",所以这里绝不能顺手带上翻译字段,
+      // 否则点一次"保存后端"会把翻译区块里尚未保存的编辑一并落库。
+      const gs = await updateGlobalSettings({ llmBackend })
+      setLlmBackend(gs.llmBackend || 'claude')
+      setBackendSuccess(true)
+      setTimeout(() => setBackendSuccess(false), 3000)
+    } catch (err) {
+      // 400 的响应体里是服务端给出的具体原因(pi 未安装 / web-search.json 会让 pi
+      // 拒绝启动 / 沙箱 extension 缺失),原样展示 —— 它比任何前端文案都更有用。
+      setBackendError(err instanceof Error ? err.message : 'Failed to save LLM backend')
+    } finally {
+      setBackendSaving(false)
     }
   }
 
@@ -250,6 +278,57 @@ export default function SettingsPage() {
           </button>
         </div>
       </div>
+
+      {/* LLM Backend Section (Admin Only) */}
+      {/* 独立区块而不是塞进下面的翻译区块:翻译区块的配置 UI 只在 translationEnabled
+          为真时渲染,塞进去会让后端开关在翻译关闭时整个不可见。 */}
+      {isAdmin && (
+        <div className="hidden md:block bg-white border border-gray-200 rounded-lg p-6 mb-6" data-testid="advanced-section-llm-backend">
+          <div className="flex items-center gap-2 mb-2">
+            <h3 className="text-lg font-medium text-gray-800">{t('settings.llmBackend')}</h3>
+            <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full">Admin</span>
+          </div>
+          <p className="text-sm text-gray-600 mb-4">{t('settings.llmBackendHint')}</p>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">
+              {t('settings.llmBackend')}
+            </label>
+            <select
+              value={llmBackend}
+              onChange={(e) => setLlmBackend(e.target.value)}
+              data-testid="llm-backend-select"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+            >
+              <option value="claude">Claude Code (claude)</option>
+              <option value="pi">pi (@earendil-works/pi-coding-agent)</option>
+            </select>
+          </div>
+
+          <div className="flex gap-3 pt-4">
+            <button
+              onClick={handleBackendSave}
+              disabled={backendSaving}
+              data-testid="llm-backend-save"
+              className="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors disabled:bg-gray-300 disabled:text-gray-500 text-sm"
+            >
+              {backendSaving ? t('common.loading') : t('common.save')}
+            </button>
+          </div>
+
+          {backendSuccess && (
+            <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm" data-testid="llm-backend-success">
+              {t('settings.saved')}
+            </div>
+          )}
+
+          {backendError && (
+            <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm" data-testid="llm-backend-error">
+              {t('common.error')}: {backendError}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Global Translation Section (Admin Only) */}
       {isAdmin && (

@@ -24,7 +24,8 @@ LLM Knowledge 支持导入 PDF、网页剪藏和 RSS，使用 Claude 提取和�
 
 - **Go** 1.25+
 - **Node.js & npm**（用于构建前端）
-- **[Claude CLI](https://docs.anthropic.com/en/docs/claude-code/overview)** — 需在 PATH 中可用
+- **[Claude CLI](https://docs.anthropic.com/en/docs/claude-code/overview)** — 需在 PATH 中可用（默认 LLM 后端）
+- **[pi](https://github.com/earendil-works/pi-coding-agent)**（可选）— 备选 LLM 后端，`npm install -g @earendil-works/pi-coding-agent`；另需 `pi-web-access` 扩展（pin `0.29.0`）。两者择一生效，由管理员在 Settings 里切换，详见[「LLM 后端切换」](#llm-后端切换claude--pi)
 - **Python 3.12**（可选）— 用于 pdf2zh PDF 翻译（需要 PEP 695 语法支持）
 - **qpdf**（可选）— pdf2zh 的 pikepdf 依赖
 
@@ -41,7 +42,9 @@ cd llm_knowledge
 - 检查并安装 **pdftotext**（poppler）用于 PDF 文本提取
 - 检查 **Python 3.12** 是否可用（缺失时打印警告，PDF 翻译功能禁用）
 - 检查并安装 **qpdf** 用于 pdf2zh 依赖
+- 检查 **pi** 与 **pi-web-access** 是否就位（可选后端，缺失只告警不阻塞）
 - 构建后端和前端
+- 把 `path-validator.py` 与 `pi-path-validator.ts` 部署到运行时 `scripts/`（即 `LLM_SCRIPTS_DIR`）
 - 在端口 9999 启动服务
 
 ```bash
@@ -65,6 +68,80 @@ make dev                 # 后端 :3456，前端 :5173
 | `PORT` | `3456` | 服务端口 |
 | `DATA_DIR` | `~/.llm-knowledge` | 数据和数据库目录 |
 | `PDF2ZH_VENV_DIR` | `$DATA_DIR/.venv` | pdf2zh Python 虚拟环境路径 |
+
+## LLM 后端切换（claude / pi）
+
+服务支持两种 LLM 后端，**同一时刻只有一个生效**，由管理员在 Settings →「LLM 后端」里切换（对应 `GET/PUT /api/admin/settings` 的 `llmBackend` 字段）。文档问答、自由问答、ingest 摘要与分节、PDF 逐页转换全部跟随同一个开关，不需要改代码或重启进程。
+
+- 默认 `claude`；取值只有 `claude` 与 `pi`，其余一律 400
+- 切到 `pi` 时服务端**先探测再保存**，不可用则返回 400 并保持原值
+- 保存成功立即生效（resolver 缓存 5s，保存时主动失效）
+- 切回 `claude` **不做探测**——它是 pi 坏掉时的逃生门，不能被探测堵住
+
+### pi 后端的部署前提
+
+1. `npm install -g @earendil-works/pi-coding-agent`（实测 0.85.1；其 `engines` 要求 **Node.js >= 22.19.0**）
+2. 安装 `pi-web-access` 扩展并 **pin 版本**（实测 0.29.0）
+3. 固化 `web-search.json`：把仓库里的 `backend/scripts/web-search.json.sample` 复制到
+   `$PI_CODING_AGENT_DIR/web-search.json`；未设该环境变量时是
+   `<服务账号 HOME>/.pi/agent/web-search.json`。
+   **不是** `$XDG_CONFIG_HOME/pi/` —— pi 不读那里。
+4. `pi-path-validator.ts` 由 `make build` 与 `start.sh` 自动复制到运行时 `scripts/`
+   （即 `LLM_SCRIPTS_DIR`），无需手工部署。缺这个文件时 pi 后端是 **fail-closed** 的：
+   切换时报 400、spawn 时拒绝启动，不会静默退化成"无沙箱执行"。
+
+`start.sh` 会检查 pi 与 pi-web-access 是否就位并打印结果；缺失只告警不阻塞启动
+（claude 后端不需要 pi）。
+
+### 运维警示
+
+**① 切换后端会作废进行中对话的上下文续接能力，而且是双向的。**
+`chat_session_id` / `session_id` 存的是**该后端自己的** session ID，两种格式不通用。切换后旧对话无法 resume —— 历史消息仍在数据库里、仍可查看，只是接不上上下文。**「切回原后端就能恢复原对话」不成立**：切换期间新产生的消息是在另一个后端下进行的，两边的会话已经分叉。有进行中对话时不要切换。
+
+**② 后端切换仅 `admin` 账号可操作，不要重命名或删除该账号。**
+开关渲染在 `{isAdmin && ...}` 里，而 admin 判定来自 `users.role`。`db/db.go:38` 有一条**无守卫**的迁移：
+
+```sql
+UPDATE users SET role='admin'
+ WHERE username='admin' AND (role IS NULL OR role='' OR role='user')
+```
+
+它只会把**用户名字面为 `admin`** 的行升回 admin。所以一旦把 admin 改名，这条迁移救不回来，UI 里就再没有人能看到后端开关（只能直接改数据库）。
+
+**③ `--tools` 拦不住扩展的加载期代码。**
+pi 的 `--tools` 只约束**工具调用**，而扩展被加载时就会执行其顶层代码。因此必须 pin `pi-web-access` 的版本，并管控 `settings.json` 的 `packages` 列表 —— 任何被加载的包都等于在服务进程里执行了它的代码。
+
+**④ `web-search.json` 必须显式关掉扩展命令，否则任何用户都能执行扩展代码。**
+rpc 模式会把**以 `/` 开头的用户消息当作扩展命令派发**。所以一条普通的文档问答消息（比如 `/search foo`）就能直接触发扩展命令。部署模板已经关掉了这四个：
+
+```json
+"commands": {
+  "websearch":      { "enabled": false },
+  "curator":        { "enabled": false },
+  "search":         { "enabled": false },
+  "google-account": { "enabled": false }
+}
+```
+
+**默认值是全部启用**，所以「没有这个配置文件」不等于安全，恰恰是最危险的状态。
+
+四道既有防线为何都拦不住：
+
+| 防线 | 为什么无效 |
+|---|---|
+| `--tools` | 只管**工具调用**，命令派发不经过它 |
+| `--no-skills` / `--no-prompt-templates` | 只关 skill 与 prompt 模板，与扩展命令无关 |
+| 沙箱 extension 的 `input` hook | 在命令**派发之后**才触发，此时命令已在执行 |
+| 服务端过滤消息内容 | 不能做——那会破坏正常以 `/` 开头的提问 |
+
+其他已加载的包若也注册命令，只能靠 ③ 的运维隔离（pin 版本 + 管控 `packages`）覆盖。Go 侧启动时会校验这份配置并告警，Settings 里切到 pi 时也会拒绝有致命问题的配置。
+
+**⑤ `toolNames` 写错会让整个 pi 后端 `exit 1`，不只是联网功能失效。**
+pi-web-access 会在 `resolveToolNames` 上抛错 → 扩展加载失败 → pi 以退出码 1 退出。于是**连不用 web 工具的 ingest 链路（摘要、分节、PDF 转换）也一起死**。
+
+关于探测能否发现它：`pi --version` **发现不了** —— 它在 pi 的 `main.js:483-486` 提前 `exit 0`，根本不加载扩展。所以服务端的切换探测除了 `pi --version`，还用 Go 侧同一份解析逻辑做**静态预检**（Go 与 pi-web-access 读的是同一个文件，见上面第 3 条），把 `toolNames` 的形状、取值、跨键重名问题在切换时就以 400 拦下。
+
+静态预检**覆盖不到**：`pi-web-access` 根本没装、或**其他**包在加载期抛错。前者由 `start.sh` 提示，后者只能靠 ③ 的运维隔离。
 
 ## 键盘快捷键
 

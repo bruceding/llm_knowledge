@@ -110,12 +110,32 @@ type Protocol interface {
 	// 自己追加,不由调用方传入。
 	SessionArgs(sysPrompt string, tools []string) ([]string, error)
 	ResumeArgs(prevSessionID, sysPrompt string, tools []string) ([]string, error)
-	OnceArgs(sysPrompt string, tools []string, print bool) ([]string, error)
+
+	// OnceArgs 构造一次性调用的旗标。**prompt 不在返回值里**:两个 CLI 在 print
+	// 模式下都把管道 stdin 当作 prompt,由调用方写入子进程 stdin。理由三条(计划 D2):
+	// 不为 prompt 传递方式在后端间分叉;argv 对 ps 可见而 prompt 含用户上传内容;
+	// argv 受 ARG_MAX 限制而 PDF 逐页转换的 prompt 很长。
+	//
+	// model 是 model hint,由各实现自行解释:Claude 非空时追加 --model <model>,
+	// 空串保持现状(不加旗标);pi 一律忽略(沿用其全局配置,计划 D3)。
+	OnceArgs(sysPrompt string, tools []string, print bool, model string) ([]string, error)
 	Env(allowedDir string) []string
 
 	// stdin 编码
 	EncodeUserMessage(content string, images []ImageData) ([]byte, error)
 	EncodeInterrupt() ([]byte, error)
+
+	// InitCommands 返回 spawn 之后、任何用户消息之前要写入 stdin 的 JSONL 行
+	// (每行自带结尾换行,与 Encode* 一致)。
+	//
+	// Claude 返回 nil:它的 system.init 由首条用户消息触发。
+	// pi 返回 get_state 命令 —— pi 在 rpc 模式下启动后不主动输出任何行,也不发
+	// --mode json 那个 session 头行,所以 sessionId 只能主动去取(计划 D1)。
+	// PiProtocol.ParseLine 会把该命令的 response 归一化成
+	// StreamEvent{Type:"system", Subtype:"init"},于是上层既有的 waitForInit、
+	// onSessionID 别名注册与 local-<UnixNano> fallback 一行都不用改,
+	// claude 包也就无需知道后端差异。
+	InitCommands() [][]byte
 
 	// stdout 解析:一行 JSONL → 归一化事件。ok=false 表示该行应跳过。
 	ParseLine(line []byte) (evt StreamEvent, ok bool)

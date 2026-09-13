@@ -18,8 +18,7 @@ import (
 
 // TranslateHandler handles translation operations with SSE streaming
 type TranslateHandler struct {
-	DataDir  string
-	ClaudeBin string
+	DataDir string
 }
 
 // TranslateRequest represents the request body for the Translate endpoint
@@ -167,7 +166,7 @@ func (h *TranslateHandler) Translate(c echo.Context) error {
 	flusher.Flush()
 
 	// Create Claude client and channel for streaming
-	claudeClient := claude.NewClientWithPath(h.ClaudeBin)
+	claudeClient := claude.NewClient()
 	eventCh := make(chan claude.StreamEvent)
 
 	ctx, cancel := context.WithCancel(c.Request().Context())

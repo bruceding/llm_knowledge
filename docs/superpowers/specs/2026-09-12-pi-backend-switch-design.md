@@ -379,8 +379,8 @@ pi.on("tool_call", async (event, ctx) => {
 | `allowBrowserCookies` | `false` | **必须钉死**。`chrome-cookies.ts:179-181` 会将浏览器 cookie SQLite 库 `copyFileSync` 到临时目录再读(含 `-wal`/`-shm` sidecar),配合 `rookie-cookies-darwin-arm64` 原生依赖解密。默认已关(`chrome-cookies.ts:116`),但多租户服务器上一旦开启,任何用户的 doc chat 都能外泄运维者本人的浏览器 cookie |
 | `ssrf.allowRanges` | `[]` | 虽是默认值,显式写出防误配 |
 | `ssrf.trustEnvProxy` | `false` | 同上 |
-| `sourceCheck` 工具开关 | 关 | 与 `--tools` 白名单保持一致 |
-| `fetchContent.deny` / `.allow` | 按运维需求 | 可选的域名级收紧 |
+| `sourceCheck` 工具开关 | 关 | 与 `--tools` 白名单保持一致。**2026-09-13 实测补充**:`isToolEnabled`(`index.ts:271-274`)对 `sourceCheck` 的默认值是**开** —— 表达式 `key !== "webSearch" && key !== "sourceCheck" \|\| config.webSearch?.enabled !== false` 按 `&&` 优先于 `\|\|` 展开后,`sourceCheck` 落到后半句。因此 `tools.sourceCheck.enabled=false` 不是冗余保险,而是真正关掉它的唯一手段;`--tools` 白名单只决定「不授予调用」,工具在 pi 侧仍处于注册状态 |
+| `fetchContent.domainPolicy.deny` / `.allow` | 按运维需求 | 可选的域名级收紧。**2026-09-13 勘误**:本文档原写作 `fetchContent.deny` / `.allow`,少了一层;真实路径见 `ssrf-protection.ts:75` 的 `(fetchContent as { domainPolicy?: unknown }).domainPolicy`(错误消息 `:78`/`:90`/`:94` 亦作 `fetchContent.domainPolicy.*`)。另:`allow` 为空数组 = 不限制(`:265-273` 的 `assertDomainPolicy` 仅在 `allow.length > 0` 时才做白名单),故写 `[]` 与省略等价 |
 
 **该文件读哪里(`pi-web-access/utils.ts:10-26` 的 `getWebSearchConfigDir()`)——必须显式钉死:**
 

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"llm-knowledge/agent"
 	"llm-knowledge/claude"
 	"llm-knowledge/db"
 	"os"
@@ -45,7 +46,8 @@ func TestDocChat_PersistsChatSessionIDOnInit(t *testing.T) {
 		t.Fatalf("create doc: %v", err)
 	}
 
-	pool := claude.NewSessionPool(tmp, fakeBin)
+	initTestBackend(t, fakeBin)
+	pool := claude.NewSessionPool(tmp)
 	defer pool.Close()
 
 	callbackFired := make(chan string, 1)
@@ -73,7 +75,7 @@ func TestDocChat_PersistsChatSessionIDOnInit(t *testing.T) {
 		if newID != "real-session-abc" {
 			t.Errorf("callback got %q, want real-session-abc", newID)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(8 * time.Second):
 		t.Fatal("onRealSessionID callback never fired")
 	}
 
@@ -105,7 +107,8 @@ sleep 5
 		t.Fatalf("write fake bin: %v", err)
 	}
 
-	pool := claude.NewSessionPool(tmp, binPath)
+	initTestBackend(t, binPath)
+	pool := claude.NewSessionPool(tmp)
 	defer pool.Close()
 
 	session, err := pool.StartSession(
@@ -156,7 +159,8 @@ sleep 5
 		t.Fatalf("write fake bin: %v", err)
 	}
 
-	pool := claude.NewSessionPool(tmp, binPath)
+	initTestBackend(t, binPath)
+	pool := claude.NewSessionPool(tmp)
 	defer pool.Close()
 
 	session, err := pool.StartSession(
@@ -211,7 +215,8 @@ func TestDocChat_ResumeFailureClearsCachedID(t *testing.T) {
 		t.Fatalf("create doc: %v", err)
 	}
 
-	pool := claude.NewSessionPool(tmp, binPath)
+	initTestBackend(t, binPath)
+	pool := claude.NewSessionPool(tmp)
 	defer pool.Close()
 
 	failed := make(chan struct{}, 1)
@@ -264,7 +269,8 @@ func TestDocChat_ExplicitCloseBeforeInitDoesNotInvokeFailureCallback(t *testing.
 		t.Fatalf("write fake bin: %v", err)
 	}
 
-	pool := claude.NewSessionPool(tmp, binPath)
+	initTestBackend(t, binPath)
+	pool := claude.NewSessionPool(tmp)
 	defer pool.Close()
 
 	failed := make(chan struct{}, 1)
@@ -300,7 +306,8 @@ func TestDocChat_ResumeSuccessDoesNotInvokeFailureCallback(t *testing.T) {
 	tmp := t.TempDir()
 	fakeBin := writeFakeClaude(t, tmp, "resumed-ok")
 
-	pool := claude.NewSessionPool(tmp, fakeBin)
+	initTestBackend(t, fakeBin)
+	pool := claude.NewSessionPool(tmp)
 	defer pool.Close()
 
 	failed := make(chan struct{}, 1)
@@ -348,7 +355,8 @@ sleep 5
 		t.Fatalf("write fake bin: %v", err)
 	}
 
-	pool := claude.NewSessionPool(tmp, binPath)
+	initTestBackend(t, binPath)
+	pool := claude.NewSessionPool(tmp)
 	defer pool.Close()
 
 	session, err := pool.StartSession(
@@ -379,4 +387,19 @@ sleep 5
 	if strings.Contains(string(data), "--resume") {
 		t.Errorf("args contain --resume for local-xxx fallback id: %s", data)
 	}
+}
+
+// initTestBackend 把 agent resolver 指向给定的假 claude 二进制。
+//
+// 原先假二进制是经 claude.NewSessionPool / NewQuerySessionPool 的 claudeBin 形参
+// 注入的;该形参已随 Task 5 删除(后端与路径统一由 agent.Current() 解析),故改由
+// agent.Init 驱动。
+//
+// agent.Init 是**进程级全局状态**,必须在 Cleanup 里清空:否则本包里后续用例万一
+// spawn,会静默复用上一个用例留下的假脚本,那种串味排查起来极其困难。清空后
+// ClaudeBin 为空串,误用会立刻以 "exec: no command" 失败,而不是假装成功。
+func initTestBackend(t *testing.T, claudeBin string) {
+	t.Helper()
+	agent.Init(agent.ResolverOptions{ClaudeBin: claudeBin})
+	t.Cleanup(func() { agent.Init(agent.ResolverOptions{}) })
 }

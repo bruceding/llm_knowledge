@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
-	"llm-knowledge/claude"
+	"llm-knowledge/agent"
 	"llm-knowledge/db"
 	"llm-knowledge/ingest"
 	"log"
@@ -21,8 +21,7 @@ import (
 
 // DocHandler handles document CRUD operations
 type DocHandler struct {
-	DataDir   string
-	ClaudeBin string
+	DataDir string
 }
 
 // ListInbox returns all documents with status "inbox"
@@ -164,8 +163,12 @@ func (h *DocHandler) Publish(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to publish document"})
 	}
 
-	// Trigger wiki ingest if raw content exists and ClaudeBin is configured
-	if doc.RawPath != "" && h.ClaudeBin != "" {
+	// Trigger wiki ingest if raw content exists.
+	// 这里原先还有 `&& h.ClaudeBin != ""`,但 config.go:46-48 把 ClaudeBin 兜底成
+	// "claude"、永不为空,所以那个条件恒真。字段随后端开关一起删掉,条件随之消失。
+	// 「LLM 到底可不可用」现在由 resolver 在实际调用时判定并返回错误,比在入口处
+	// 靠一个字符串是否为空来猜更准确。
+	if doc.RawPath != "" {
 		userDir := GetUserDir(c)
 		userIdStr := GetUserIdStr(c)
 
@@ -197,7 +200,7 @@ func (h *DocHandler) Publish(c echo.Context) error {
 				docSlug = doc.Title // fallback for legacy records
 			}
 			go func() {
-				p := ingest.NewPipeline(userDir, h.ClaudeBin)
+				p := ingest.NewPipeline(userDir)
 				ctx := context.Background()
 				if err := p.Ingest(ctx, claudeRelPath, docSlug, docID); err != nil {
 					log.Printf("[api] wiki ingest failed for %d: %v", docID, err)
@@ -430,14 +433,26 @@ func (h *DocHandler) LLMExtract(c echo.Context) error {
 	defer mdFile.Close()
 
 	// Hoisted out of the per-page loop — these don't vary by page and the
-	// symlink resolution inside BuildSecureEnv shouldn't run N times. If
-	// BuildSecureArgs ever fails it fails identically for every page, so it's
-	// a request-level error not a per-page one.
-	secureArgs, err := claude.BuildSecureArgs([]string{"Read"})
+	// symlink resolution inside Env shouldn't run N times. If OnceArgs ever
+	// fails it fails identically for every page, so it's a request-level error
+	// not a per-page one.
+	//
+	// Task 8:后端改由 resolver 决定。原先这里是 exec.Command("claude", ...) +
+	// claude.BuildSecureArgs/BuildSecureEnv,是 Plan 1 遗留接缝里最严重的一处 ——
+	// 它绕过 Protocol 直接 spawn,于是 Settings 切到 pi 之后 PDF 转换仍会 spawn
+	// claude,而且**不报错**(只有装了 claude 才恰好能用,没装则静默失败成
+	// "[Error processing page N]")。agent/invariant_test.go 现在守这条。
+	proto, err := agent.Current()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to resolve LLM backend: " + err.Error()})
+	}
+	// D3:model 交给 OnceArgs,不再手工拼在 args 前面。claude 侧会加 --model sonnet
+	// (与原行为一致),pi 侧忽略它 —— pi 的模型由 resolver 决定,不接受每请求覆盖。
+	cmdArgs, err := proto.OnceArgs("", []string{"Read"}, false, "sonnet")
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to build secure args: " + err.Error()})
 	}
-	secureEnv := claude.BuildSecureEnv(tempDir)
+	secureEnv := proto.Env(tempDir)
 
 	for i := start; i <= end; i++ {
 		// Image filename format: page-01.png, page-02.png
@@ -458,14 +473,16 @@ func (h *DocHandler) LLMExtract(c echo.Context) error {
 		// Write page header
 		mdFile.WriteString("\n---\n\n## Page " + strconv.Itoa(i) + "\n\n")
 
-		// Call Claude CLI. Uses the hoisted secure args/env so every page goes
-		// through --disallowedTools + the path-validator hook with ALLOWED_DIR
-		// scoped narrowly to the per-call temp dir.
-		cmdArgs := append([]string{"--model", "sonnet"}, secureArgs...)
-		cmdArgs = append(cmdArgs, "-p",
-			"读取图片 "+pageImg+"，将其转换为 Markdown 格式。保留标题层级、段落结构、表格。如果有图片，用 ![描述](assets/img_"+strconv.Itoa(i)+".png) 标记。如果有公式，用 LaTeX 格式。直接输出内容，不要解释。")
-		claudeCmd := exec.Command("claude", cmdArgs...)
+		// Call the LLM CLI. Uses the hoisted args/env so every page goes through
+		// --disallowedTools + the path-validator hook with ALLOWED_DIR scoped
+		// narrowly to the per-call temp dir.
+		prompt := "读取图片 " + pageImg + "，将其转换为 Markdown 格式。保留标题层级、段落结构、表格。如果有图片，用 ![描述](assets/img_" + strconv.Itoa(i) + ".png) 标记。如果有公式，用 LaTeX 格式。直接输出内容，不要解释。"
+		claudeCmd := exec.Command(proto.Bin(), cmdArgs...)
 		claudeCmd.Env = secureEnv
+		// D2:prompt 从 argv 改走 stdin。原先是 `-p <prompt>`:对 ps 可见,且受
+		// ARG_MAX 限制;pi 侧更不能放 argv —— 它的 `-p` 是「读管道 stdin 并合并进
+		// 初始 prompt」,两边都给会被拼接成一段。
+		claudeCmd.Stdin = strings.NewReader(prompt)
 		output, err := claudeCmd.Output()
 		if err != nil {
 			mdFile.WriteString("[Error processing page " + strconv.Itoa(i) + ": " + err.Error() + "]\n")
@@ -568,12 +585,6 @@ func (h *DocHandler) RegenerateSummary(c echo.Context) error {
 	}
 	userId := GetCurrentUserId(c)
 
-	// Get Claude bin path from environment or default
-	claudeBin := os.Getenv("CLAUDE_BIN")
-	if claudeBin == "" {
-		claudeBin = "claude"
-	}
-
 	// Check if document exists and belongs to user
 	var doc db.Document
 	result := db.DB.Where("id = ? AND user_id = ?", idUint, userId).First(&doc)
@@ -592,7 +603,7 @@ func (h *DocHandler) RegenerateSummary(c echo.Context) error {
 	rawRelPath := StripUserPrefix(doc.RawPath)
 
 	// Generate summary
-	summary, err := ingest.GenerateSummary(userDir, rawRelPath, claudeBin)
+	summary, err := ingest.GenerateSummary(userDir, rawRelPath)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "failed to generate summary: " + err.Error()})
 	}

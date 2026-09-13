@@ -33,7 +33,7 @@ func TestPublish_PDFDocument(t *testing.T) {
 	db.DB.Create(&doc)
 
 	e := setupTestEcho()
-	handler := &DocHandler{DataDir: dataDir, ClaudeBin: ""}
+	handler := &DocHandler{DataDir: dataDir}
 
 	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/documents/%d/publish", doc.ID), nil)
 	rec := httptest.NewRecorder()
@@ -87,7 +87,7 @@ func TestPublish_RSSDocument(t *testing.T) {
 	db.DB.Create(&doc)
 
 	e := setupTestEcho()
-	handler := &DocHandler{DataDir: dataDir, ClaudeBin: ""}
+	handler := &DocHandler{DataDir: dataDir}
 
 	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/documents/%d/publish", doc.ID), nil)
 	rec := httptest.NewRecorder()
@@ -117,7 +117,7 @@ func TestPublish_DocumentNotFound(t *testing.T) {
 	defer cleanupTestDB(t)
 
 	e := setupTestEcho()
-	handler := &DocHandler{DataDir: t.TempDir(), ClaudeBin: ""}
+	handler := &DocHandler{DataDir: t.TempDir()}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/documents/999/publish", nil)
 	rec := httptest.NewRecorder()

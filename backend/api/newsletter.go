@@ -70,8 +70,7 @@ func resolveMailboxName(client *imapclient.Client, folderName string) (canonical
 }
 
 type NewsletterHandler struct {
-	DataDir   string
-	ClaudeBin string
+	DataDir string
 }
 
 type IMAPConfigRequest struct {
@@ -640,20 +639,18 @@ func (h *NewsletterHandler) syncInternal(cfg *db.IMAPConfig) NewsletterSyncResul
 			db.DB.Create(&db.DocumentTag{DocumentID: doc.ID, TagID: tag.ID})
 		}
 
-			if h.ClaudeBin != "" {
-				docID := doc.ID
-				rawPath := doc.RawPath
-				// Extract relative path (e.g., "users/1/raw/newsletter/foo" -> "raw/newsletter/foo")
-				rawRelPath := StripUserPrefix(rawPath)
-				go func() {
-					summary, err := ingest.GenerateSummary(userDir, rawRelPath, h.ClaudeBin)
-					if err != nil {
-						fmt.Printf("[newsletter] summary generation failed for %d: %v\n", docID, err)
-					} else {
-						db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
-					}
-				}()
+		docID := doc.ID
+		rawPath := doc.RawPath
+		// Extract relative path (e.g., "users/1/raw/newsletter/foo" -> "raw/newsletter/foo")
+		rawRelPath := StripUserPrefix(rawPath)
+		go func() {
+			summary, err := ingest.GenerateSummary(userDir, rawRelPath)
+			if err != nil {
+				fmt.Printf("[newsletter] summary generation failed for %d: %v\n", docID, err)
+			} else {
+				db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
 			}
+		}()
 
 		processedUIDs = append(processedUIDs, m.uid)
 		newArticles++

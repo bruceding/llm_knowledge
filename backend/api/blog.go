@@ -37,7 +37,6 @@ const firstSyncTakeRecent = 5
 
 type BlogHandler struct {
 	DataDir     string
-	ClaudeBin   string
 	BrowserPool *browser.Pool
 }
 
@@ -458,20 +457,18 @@ func (h *BlogHandler) syncFeedInternal(feed *db.BlogFeed) BlogSyncResult {
 			continue
 		}
 
-		if h.ClaudeBin != "" {
-			docID := doc.ID
-			rawRelPath := StripUserPrefix(doc.RawPath)
-			userDir := config.GetUserDir(h.DataDir, doc.UserID)
-			go func() {
-				summary, err := ingest.GenerateSummary(userDir, rawRelPath, h.ClaudeBin)
-				if err != nil {
-					log.Printf("[blog] summary generation failed for %d: %v", docID, err)
-				} else {
-					db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
-					log.Printf("[blog] summary generated for %d", docID)
-				}
-			}()
-		}
+		docID := doc.ID
+		rawRelPath := StripUserPrefix(doc.RawPath)
+		userDir := config.GetUserDir(h.DataDir, doc.UserID)
+		go func() {
+			summary, err := ingest.GenerateSummary(userDir, rawRelPath)
+			if err != nil {
+				log.Printf("[blog] summary generation failed for %d: %v", docID, err)
+			} else {
+				db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
+				log.Printf("[blog] summary generated for %d", docID)
+			}
+		}()
 
 		newArticles++
 

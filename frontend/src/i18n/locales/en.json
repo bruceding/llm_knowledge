@@ -81,6 +81,8 @@
     "english": "English",
     "chinese": "中文",
     "saved": "Settings saved successfully",
+    "llmBackend": "LLM Backend",
+    "llmBackendHint": "Choose which coding agent powers document chat, Q&A and ingestion. The server probes pi before saving, so a missing or misconfigured install is rejected here instead of failing every request later.",
     "pdfTranslation": "PDF Translation",
     "pdfTranslationHint": "Configure layout-preserving PDF translation using an OpenAI-compatible API.",
     "enableTranslation": "Enable PDF Translation",

@@ -68,6 +68,30 @@ page.goto("http://localhost:9090/documents/<docId>")
 
 This is what the `conftest.py` `saved_auth_state` fixture does as a one-time manual flow; for ad-hoc bug repros, prefer the programmatic path above.
 
+### Role-specific auth states (`make_auth_state.py`)
+
+The flow above logs in as **whoever's password you have**, and `conftest.py` stores it in a single shared `.auth/state.json`. Some tests need two *specific* roles at once — e.g. `test_settings_llm_backend.py` asserts the admin-only LLM backend switch is visible to an admin **and** absent for a normal user. For those:
+
+```bash
+python3 tests/e2e/make_auth_state.py     # writes .auth/state-admin.json + state-nonadmin.json
+                                        # and refreshes .auth/state.json when it is missing/expired
+```
+
+It picks the newest non-expired session per role (`role='admin'` / `role='user'`) and writes a storage-state file for each. The shared `state.json` that every `authenticated_page` / `mobile_page` fixture loads comes from the `role='user'` session too — which is what makes the DOM-only suites runnable unattended: when that file's token expires, `conftest.py` otherwise deletes it and waits for a human to type credentials **and a captcha**. A `state.json` whose token is still valid is left alone (`KEEP`), so re-running never silently switches which account the suite acts as. Differences from the programmatic login above:
+
+| | programmatic login | `make_auth_state.py` |
+|---|---|---|
+| needs a password | yes | **no** |
+| needs a captcha | no (`clientType: extension`) | no |
+| writes to the DB | yes (new session row) | **no** (opened `mode=ro`) |
+| prerequisite | valid credentials | an existing session for that role |
+
+So: use the programmatic login when you know the password, and `make_auth_state.py` when you only need a role you have already logged in as at least once (sessions last 7 days). If a role has no valid session, log in as that user in the browser once, then re-run.
+
+Tests that need a role skip with an actionable message when its state file is missing, or when the admin still has `must_change_password=1` (the UI's `PrivateRoute` then redirects every page to `/change-password`, so `/settings` is unreachable).
+
+Note `.auth/` is gitignored — these files are machine-local.
+
 ### Run all E2E tests
 
 ```bash

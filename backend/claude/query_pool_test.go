@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"llm-knowledge/agent"
 	"llm-knowledge/db"
 	"os/exec"
 	"syscall"
@@ -204,7 +205,8 @@ func TestQuerySessionPool_GetOrCreate_BackgroundContext(t *testing.T) {
 
 	setupTestDB(t)
 
-	pool := NewQuerySessionPool(t.TempDir(), claudeBin)
+	initTestBackend(t, claudeBin)
+	pool := NewQuerySessionPool(t.TempDir())
 	defer pool.Close()
 
 	ctx := context.Background()
@@ -243,7 +245,8 @@ func TestQuerySessionPool_Remove(t *testing.T) {
 
 	setupTestDB(t)
 
-	pool := NewQuerySessionPool(t.TempDir(), claudeBin)
+	initTestBackend(t, claudeBin)
+	pool := NewQuerySessionPool(t.TempDir())
 	defer pool.Close()
 
 	ctx := context.Background()
@@ -281,7 +284,8 @@ func TestQuerySessionPool_SessionSurvivesRequestCancel(t *testing.T) {
 
 	setupTestDB(t)
 
-	pool := NewQuerySessionPool(t.TempDir(), claudeBin)
+	initTestBackend(t, claudeBin)
+	pool := NewQuerySessionPool(t.TempDir())
 	defer pool.Close()
 
 	// Simulate what the handler does AFTER the fix: context.Background()
@@ -351,7 +355,8 @@ func TestQuerySessionPool_RequestContextKillsSession(t *testing.T) {
 
 	setupTestDB(t)
 
-	pool := NewQuerySessionPool(t.TempDir(), claudeBin)
+	initTestBackend(t, claudeBin)
+	pool := NewQuerySessionPool(t.TempDir())
 	defer pool.Close()
 
 	// Simulate the OLD broken behavior: use a cancellable request context
@@ -398,4 +403,19 @@ func truncateStr(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// initTestBackend 把 agent resolver 指向给定的 claude 二进制。
+//
+// 原先假二进制是经 NewQuerySessionPool 的 claudeBin 形参注入的;该形参已随 Task 5
+// 删除(后端与路径统一由 agent.Current() 解析),所以改由 agent.Init 驱动 —— 这也
+// 正是计划 Task 5 说的「本任务用测试内的 Init 驱动,保证包可独立验证」。
+//
+// agent.Init 是**进程级全局状态**,故必须在 Cleanup 里清空:否则后续用例万一 spawn,
+// 会静默复用上一个用例留下的假二进制,那种串味排查起来极其困难。清空后
+// ClaudeBin 为空串,误用会立刻以 "exec: no command" 失败,而不是假装成功。
+func initTestBackend(t *testing.T, claudeBin string) {
+	t.Helper()
+	agent.Init(agent.ResolverOptions{ClaudeBin: claudeBin})
+	t.Cleanup(func() { agent.Init(agent.ResolverOptions{}) })
 }
