@@ -415,7 +415,57 @@ documents.go 传 `"sonnet"`,其余 once-call 传 `""`。claude 侧 argv 的**旗
 
 - ✅ `go build ./... && go vet ./... && go test ./...` 全绿(10 个包全 ok)
 - ✅ 计划点名的 D1 回归护栏 `TestDocChat_PersistsChatSessionIDOnInit` 通过(0.17s,预算放宽到 8s 后不再贴近边界),api 包 7 个 docchat 用例全过
-- ❌ **`pytest tests/e2e/test_chat_streaming.py`(12 passed)未执行** —— 原因是环境不具备而非跳过:9090 上没有服务,`tests/e2e/.auth/state.json` 不存在,而 `conftest.py:74-75` 的用户名/密码是**空串**(有意留空,否则等于把凭据提交进仓库)。这 12 个用例还会真实调用 claude(断言流式内容、stop 中断、切换会话),需要配额。**需由人在本地起栈并填入凭据后执行。** Go 侧的等价覆盖是那 7 个 docchat 用例(用假 claude 脚本走完整 SSE + resume 链路)。
+- ✅ `pytest tests/e2e/test_chat_streaming.py` —— **12 passed(198s)**,但这一项是分两步才拿到的,过程里查出两个真问题,见下。
+
+#### ⚠️ Task 5 后发现:计划的任务排序会把应用留在坏掉的状态(已修 `b9e99d3`)
+
+第一跑 e2e 是 **9 passed / 3 failed**。排查后确认不是 flaky,而是计划自身的矛盾:
+
+- Task 5 把所有 spawn 点改成经 `agent.Current()` 取 Protocol,而计划把 `agent.Init` 的调用点排在 **Task 8**。两者之间应用是坏的,实测:
+  `POST /api/query/message` → **HTTP 500 `{"error":"failed to create session"}`**。
+  链路:`resolverReady` 为 false → `Current()` 报 "agent.Init was never called" →
+  `StartSession`/`StartResumedSession` 失败 → handler **吞掉细节**只回一句笼统消息,
+  日志里既无 `[session]` 行也无 resolve 错误 —— 这是它难发现的原因。
+- 而 Task 5 的闸门写的正是「pytest ... 12 passed(claude 路径回归)」。**那道闸门在 Task 5 不可能满足。**
+
+处置:把 `agent.Init` 提前到 Task 5(与本任务已提前的 `LLMBackend` 字段同理),Task 8 仍负责其余 8 处 `ClaudeBin` 字段注入的删除与 ingest/api 形参改造。`ClaudeSettingsPath` 传的是**函数**而不是值,故与 `InitSecurityConfig` 的先后顺序无关(传值时顺序写错会把路径固定成空串 → 不加 `--settings` → path-validator hook 整个不生效 → 静默 fail-open)。
+
+修复前后对比(同一套 12 个用例):
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| `POST /api/query/message` | **0 次** | 11 次(全 200) |
+| `POST /api/query/interrupt` | **0 次** | 3 次(全 200) |
+| `[session] Sent message` | **0 条** | 11 条 |
+| e2e | 9 passed / 3 failed | **12 passed** |
+
+三个先前失败的用例(`test_thinking_indicator_shown`、`test_send_blocked_while_switch_in_flight`、`test_stop_preserves_partial_content`)修复后全部通过。另用直接 API 探测做了端到端验证:建会话 → 发消息 → 200 → 助手回复落库。
+
+#### ⚠️ 顺带查出:e2e 套件对「后端坏掉」很不敏感,不能单独当验收依据
+
+修复前那 9 个「通过」是**假绿**:它们的断言是输入框 disabled/enabled
+(`wait_streaming_start`/`wait_streaming_complete`)与用户气泡可见(**乐观 UI**,与后端无关);
+`test_no_*` 那类更是负向断言,在登录页上也照样通过(已实测:`test_desktop_no_mobile_dom.py`
+在登录态失效时 2 passed / 1 failed,前两个就是假绿)。
+
+即:**后端完全不可用时,这道闸门仍能拿到 9 passed。** 本次不改测试(超出范围),但记下给 Task 11:
+拿 e2e 当验收依据时,必须同时核对服务端日志里确有 `[session] Sent message` 与
+`POST /api/query/message` 200,否则可能验收了一个空转的前端。
+
+#### e2e 跑起来的实际前提(供后人参考,计划未记)
+
+1. `./start.sh` 即可起栈(它会 `make build` —— 前端 `npm run build` 产物 embed 进
+   `backend/fs/dist`,后端单二进制同时服务前后端,故 9090 一个端口就够)。
+2. **首次登录必须人在场**:`pytest.ini` 的 `addopts = --headed --browser chromium` 是有头的,
+   `conftest.py:74-75` 把用户名/密码 `fill("")` 是**故意留空**,然后等 90 让人工
+   填账号 + 认 4 位验证码(`api/auth.go` 用 `base64Captcha`)+ 点 Login。
+   默认管理员密码也不是已知值(`db/db.go:49` 是 `generateRandomPassword(12)`,
+   虽然 `:73` 会打进日志,但只在 `userCount == 0` 的首次 bootstrap)。
+3. 登录成功后 `conftest.py:105` 把状态写进 `tests/e2e/.auth/state.json`,之后非交互。
+   **坑:** 该文件过期后,`conftest.py:43-52` 的有效性检查会**误判为仍登录** ——
+   它 `goto("/")` 后立刻看 `page.url.endswith("/login")`,而 SPA 的重定向是异步的
+   (要先打一次 API 才知道 token 失效),于是那一刻 URL 还是 `/`。后果是跳过人工登录、
+   用例在登录页上空转。实测踩过:**删掉 `tests/e2e/.auth/state.json` 再跑**即可。
 
 ## Task 6: 沙箱 extension `backend/scripts/pi-path-validator.ts`
 
@@ -479,7 +529,8 @@ frontend/node_modules/.bin/tsc --noEmit --strict --target es2022 --module esnext
 
 ## Task 8: `main.go` 去注入 + `ingest`/`api` 形参改造
 
-- [ ] `main.go`:启动时 `agent.Init(cfg.ClaudeBin, cfg.PiBin)`;移除 10 处 `ClaudeBin` 注入;`NewSessionPool`/`NewQuerySessionPool` 去掉 `claudeBin` 实参
+- [ ] `main.go`:~~启动时 `agent.Init(cfg.ClaudeBin, cfg.PiBin)`~~(**已由 `b9e99d3` 提前完成**,否则 Task 5 的 e2e 闸门不可能满足);移除 8 处剩下的 `ClaudeBin` 字段注入(214/225/234/261/276/335/348/363;258/313 两处池构造实参已随 Task 5 删除);`NewSessionPool`/`NewQuerySessionPool` 的 `claudeBin` 实参**已删**
+- [ ] 连带处理 Task 5 留下的遗留:`Client.BinPath` 已不再决定 spawn 哪个二进制,仅剩 `NewClientWithPath` 的 5 个生产调用点(`ingest/{pipeline,sections×2,summary}.go`、`api/translate.go`)在用;迁到 `agent.Current()` 后该字段与 `NewClientWithPath` 应一并移除。同理 `claude/security.go` 的两个兼容垫片 `BuildSecureArgs`/`BuildSecureEnv`(它们直接 `agent.NewClaudeProtocol`,已进 `invariant_test` 的豁免清单,迁完应删除并移除豁免)
 - [ ] `api/{documents,query,raw,sections,translate}.go`:删除 `ClaudeBin string` 字段及其构造处
 - [ ] `api/documents.go:440-475` 的 PDF 逐页转换改走 `agent.Current()` + `OnceArgs(..., "sonnet")` + `proto.Bin()` + prompt 入 stdin(D2/D3);`claude.BuildSecureEnv(tempDir)` 改为 `proto.Env(tempDir)`
 - [ ] `ingest/{pipeline,sections,summary}.go`:`claudeBin string` 形参删除,`claude.NewClientWithPath(claudeBin)` 改为用 `agent.Current()` 构造的 Client(设 `Proto` 字段)
