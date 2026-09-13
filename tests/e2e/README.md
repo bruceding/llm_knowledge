@@ -111,14 +111,19 @@ Tests for the main chat interface:
 
 ### DocumentChatPanel Tests (`test_document_chat_panel.py`)
 
-Tests for the document chat panel:
+Tests for the document chat panel and the `/api/doc-chat` SSE path. Each test
+seeds its own document through the web-clip API and deletes it afterwards, so
+the suite never depends on existing user data. The messaging tests drive real
+Claude turns (a few seconds each).
 
-- **Basic Tests**: Panel loading, input field, empty state
-- **Session Tests**: Connection indicator, reconnection
-- **Messaging Tests**: Send message, thinking indicator, streaming
-- **Note Saving Tests**: Save button, modal, save/cancel actions
-- **Clear Tests**: Clear button, conversation clearing
-- **Error Handling Tests**: Error display, session expiration
+- **Connection Tests**: Chat tab opens `GET /api/doc-chat/stream?docId=…`, the
+  SSE `session` id is captured and reused via `/api/doc-chat/reconnect` on tab
+  switch, repeated tab switching stays healthy
+- **Messaging Tests**: `POST /api/doc-chat/message` carries the SSE sessionId and
+  the reply streams back over the same connection; Clear wipes the messages and
+  restarts with `?fresh=1`
+- **Note Saving Tests**: Save-as-note modal flow (the note POST is stubbed, so a
+  run does not write notes into the DB)
 
 ## Notes
 
