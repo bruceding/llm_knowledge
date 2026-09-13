@@ -570,15 +570,41 @@ frontend/node_modules/.bin/tsc --noEmit --strict --target es2022 --module esnext
 
 ## Task 8: `main.go` 去注入 + `ingest`/`api` 形参改造
 
-- [ ] `main.go`:~~启动时 `agent.Init(cfg.ClaudeBin, cfg.PiBin)`~~(**已由 `b9e99d3` 提前完成**,否则 Task 5 的 e2e 闸门不可能满足);移除 8 处剩下的 `ClaudeBin` 字段注入(214/225/234/261/276/335/348/363;258/313 两处池构造实参已随 Task 5 删除);`NewSessionPool`/`NewQuerySessionPool` 的 `claudeBin` 实参**已删**
-- [ ] 连带处理 Task 5 留下的遗留:`Client.BinPath` 已不再决定 spawn 哪个二进制,仅剩 `NewClientWithPath` 的 5 个生产调用点(`ingest/{pipeline,sections×2,summary}.go`、`api/translate.go`)在用;迁到 `agent.Current()` 后该字段与 `NewClientWithPath` 应一并移除。同理 `claude/security.go` 的两个兼容垫片 `BuildSecureArgs`/`BuildSecureEnv`(它们直接 `agent.NewClaudeProtocol`,已进 `invariant_test` 的豁免清单,迁完应删除并移除豁免)
-- [ ] `api/{documents,query,raw,sections,translate}.go`:删除 `ClaudeBin string` 字段及其构造处
-- [ ] `api/documents.go:440-475` 的 PDF 逐页转换改走 `agent.Current()` + `OnceArgs(..., "sonnet")` + `proto.Bin()` + prompt 入 stdin(D2/D3);`claude.BuildSecureEnv(tempDir)` 改为 `proto.Env(tempDir)`
-- [ ] `ingest/{pipeline,sections,summary}.go`:`claudeBin string` 形参删除,`claude.NewClientWithPath(claudeBin)` 改为用 `agent.Current()` 构造的 Client(设 `Proto` 字段)
-- [ ] 连带修正所有调用点签名
+- [x] `main.go`:~~启动时 `agent.Init(cfg.ClaudeBin, cfg.PiBin)`~~(**已由 `b9e99d3` 提前完成**,否则 Task 5 的 e2e 闸门不可能满足);移除 8 处剩下的 `ClaudeBin` 字段注入;`NewSessionPool`/`NewQuerySessionPool` 的 `claudeBin` 实参**已删**
+- [x] 连带处理 Task 5 留下的遗留:`Client.BinPath` 与 `NewClientWithPath` **已删除**;`claude/security.go` 的 `BuildSecureArgs`/`BuildSecureEnv`/`DangerousDisallowedTools` 三个垫片**已删除**,`invariant_test` 的两条豁免已摘除且仍全绿
+- [x] `api/{documents,query,raw,rss,sections,translate,web,newsletter,blog}.go`:删除 `ClaudeBin string` 字段及其构造处(**实际是 7 个 struct,比计划列的 5 个多**;`sections.go` 与 `documents.go` 共用 `DocHandler`)
+- [x] `api/documents.go` 的 PDF 逐页转换改走 `agent.Current()` + `OnceArgs("", []string{"Read"}, false, "sonnet")` + `proto.Bin()` + prompt 入 stdin(D2/D3);`claude.BuildSecureEnv(tempDir)` 改为 `proto.Env(tempDir)`
+- [x] `ingest/{pipeline,sections,summary}.go`:`claudeBin string` 形参删除。~~改为用 `agent.Current()` 构造的 Client~~ → **改为 `claude.NewClient()`**,原因见下方完成记录
+- [x] 连带修正所有调用点签名(含 5 个测试文件里的 handler 字面量)
 
-**闸门:** 全局闸门 + `pytest tests/e2e/test_chat_streaming.py` 12 passed
-**提交:** `refactor(agent): main 与 ingest/api 去除 ClaudeBin 注入`
+**闸门:** 全局闸门 + `pytest tests/e2e/test_chat_streaming.py` 12 passed —— **均已满足**(e2e 12 passed / 117s,重建二进制并重启服务后跑)
+**提交:** `refactor: 收口 Plan 1 遗留接缝,once 调用链路全部改走 resolver`(`8cf8aa7`;计划原文的提交消息是 `refactor(agent): main 与 ingest/api 去除 ClaudeBin 注入`,实际改动范围比它大,改用更准确的描述)
+
+### ✅ Task 8 已完成(`8cf8aa7`,2026-09-13)
+
+**一处比计划描述更简单的发现:** 计划 Step 3 要求把 ingest/api 从 `NewClientWithPath` 迁到 `agent.Current()`,Step 1 还给了一个 `agent.NewClient()` 的草案。实际不需要:Task 5 已经让 `Client.protocol()` 在 `Proto` 为 nil 时惰性走 `agent.Current()`,所以 **`claude.NewClient()`(无参)本身就是后端中立的**。改动于是退化成「`NewClientWithPath(x)` → `NewClient()`」+ 摘掉形参,不必新增任何 API。
+
+计划草案里那个 `agent.NewClient()` 出错时返回 `nil`,是个地雷(调用方会 nil-deref)。既然不需要它,就没有引入 —— 也就没把这个地雷带进代码库。
+
+**比计划更大的一块:`ClaudeBin` 同时是功能开关。** `h.ClaudeBin != ""` 在 10 处被当作「LLM 是否可用」的开关(异步摘要生成的入口),`api/sections.go` 另有 2 处 `== ""` 的 503 早退。**只删 main.go 的注入而保留这些 gate,会让条件恒假、异步摘要生成静默停摆** —— 这是本任务最容易踩的坑。
+
+先确认再动手:`config.go:46-48` 把 `ClaudeBin` 兜底成 `"claude"`、永不为空,所以 `!= ""` 恒真、`== ""` 恒假,它们全是死条件。删字段与删 gate 必须同批完成。「LLM 到底可不可用」现在由 resolver 在实际调用时判定并返回错误,比在入口处靠一个字符串是否为空来猜更准确(切到 pi 之后,那个字符串检查压根不反映真实后端)。
+
+**垫片删除时保住了测试覆盖。** `claude/security_test.go` 里有 12 个测试,其中 5 个与垫片无关且必须留(`TestCleanupStaleSettings_AgeGated`、`TestPathValidator_WebFetchSSRF`、`TestDangerousToolsCrossLanguageSync`,以及 Task 6 的两个 `TestPiPathValidator_*`),所以不能整文件删。剩下 7 个分两类:4 个在 agent 包已有等价覆盖(底层都是同一个 `SecureArgs`/`Env`)直接删;**3 个没有 agent 对应物**(`EmptyAllowedToolsOmitsFlag`、`BypassFlagPresent`、`DangerousDisallowedTools_CoversKnownAttackVectors`)**搬进** `agent/claude_args_test.go`。先逐个核对覆盖再删,否则「删垫片」会顺手删掉唯一的安全断言。
+
+另:`DangerousDisallowedTools` 别名不只为兼容外部,`security.go:146` 内部也在用,且 Task 6/10 的跳语言漂移测试依赖它 —— 全部改为直连 `agent.ClaudeDangerousDisallowedTools`。
+
+**测试。** 新增 `TestClientProtocol_FollowsResolver`:同一个 Client 实例、只换 resolver 指向,断言 `protocol()` 分别返回 claude 与 pi。这是 Task 8 的核心性质。配套的 `TestNewClient_DoesNotPinABackend` 只证明「构造时没钉死」,证明不了「真的会跟随」(一个恒返回 claude 的 `protocol()` 同样能通过它),所以两个都要。变异验证:把 `protocol()` 改成恒返回 `ClaudeProtocol` → 两个后端分支都判红。原 `TestNewClient` 断言的是 `BinPath == "claude"`(即「默认钉死 claude」),与后端开关直接矛盾,随字段一并删除。
+
+**额外闸门:** `go test ./api/ -race` 无数据竞争。这是针对本任务特有风险的:测试里原先用 `ClaudeBin: ""` 让 gate 恒假、从而跳过异步 ingest goroutine;gate 删掉后这些测试可能开始真的起 goroutine。
+
+**我自己犯的一个错,已回退。** 图省事跑了 `gofmt -w ingest/` 和 `gofmt -w claude/`(整目录),波及 5 个我本不想改的文件,其中 `claude/stream.go` 里正是 **SSEEvent 结构体** —— 那是「前端聊天代码零 diff」的关键文件。虽然 JSON tag 没变、只是注释对齐,但这种噪音必须避免:已全部 `git checkout` 回退。
+
+同理,`api/{newsletter,raw,rss,web}.go` 在 HEAD 本来就不合规(`gofmt -l` 命中),所以对它们跑整文件 gofmt 会混进无关重排(实测确实混进了 `childrenCount-1`、结构体字段对齐、整块重缩进)。已回退重做,改成只让**我碰的区域**合规,并用 `gofmt -d <file> | grep <我改的标识符>` 逐个确认为 0。**教训:在这个仓库里不能用 `gofmt -w <目录>`,因为部分文件在 HEAD 就不合规。**
+
+顺带发现 `api/newsletter.go` 那个 gate 在 HEAD 就多缩进了一层(3 tab,而外层作用域是 2 tab)—— 这正是它不合规的原因。这些行已在本次 diff 内,顺手对齐。
+
+**遗留(记入 Task 11):** PDF 逐页转换这条路径没有任何自动化覆盖(e2e 与 go test 都碰不到,它需要真实 LLM + PDF + 逐页 PNG)。本次只做了逐行复核,确认与 `SendSimpleWithRead` 的既有模式一致(`-p` + stdin + text 输出),且 `TestClaudeOnceArgs_TextModeMatchesSendSimpleWithRead` 已钉住 arg 形状。Task 11 应补一个用假二进制的测试:断言 prompt 确实从 stdin 进去、且用的是 `proto.Bin()`。
 
 ## Task 9: 前端 Settings 开关 + i18n
 
@@ -609,7 +635,8 @@ frontend/node_modules/.bin/tsc --noEmit --strict --target es2022 --module esnext
 - [ ] 留意既有脆弱用例 `api.TestDocChat_PersistsChatSessionIDOnInit`:`api/docchat_test.go:17-29` 的假 claude 脚本 `printf` init 事件后 `sleep 5`,而测试等 `onRealSessionID` 的预算只有 `3 * time.Second`(`:71-78`),`go test ./...` 多包并行时 spawn `/bin/sh` + 调度即可超时(Task 1 修复轮实测到一次,单独跑与连跑 10 次均 PASS,且基线同样偶发)。**它恰好是 D1「把 pi 的 `get_state` 响应归一化成 `system/init`」最直接的回归护栏**,Task 5 必须保持它绿;本任务顺手把预算放宽到 8s
   - **✅ 已提前完成(`a815e62`,2026-09-13)**:预算已放宽到 8s。提前做的原因是 Task 2~5 的闸门都是 `go test ./...` 全绿,而实测它在多包并行时以 3.01s 撞满预算失败(单独跑 5/5 PASS、仅 0.52s),一个会随机红的护栏等于没有护栏。**同文件仍有 4 处同类 3s 预算未动**(`:236` 的 `TestDocChat_ResumeFailureClearsCachedID` 是 `time.After`,`:125`/`:175`/`:367` 是 `deadline := time.Now().Add(...)` 轮询),均未观测到 flake,按最小改动不一并放宽;若 Task 5/11 期间偶发红,应先怀疑这几处
 - [ ] **扩展命令注入面验证(R9)**:用部署模板的 `web-search.json` spawn 真实 pi,发一条 `/curator hello` 与一条 `/search foo` 作为文档问答消息,断言**没有任何扩展命令被执行**(浏览器不被拉起、命令的 `response` 不出现),消息按普通文本进 LLM。对照组:临时把 `commands.curator.enabled` 改成 `true`,断言命令**确实**会被执行 —— 没有对照组就无法区分「被关掉了」与「本来就没触发」
-- [ ] 手工验收(**两种后端各跑一遍**,由人执行,不消耗配额的自动化不得替代):文档问答多轮 + SSE 断线重连、自由问答带图片、中途 interrupt、ingest 摘要与分节
+- [ ] **PDF 逐页转 Markdown 的覆盖缺口**(Task 8 遗留):`api/documents.go` 的 `LLMExtract` 已改走 `agent.Current()` + `OnceArgs` + `proto.Bin()` + prompt 入 stdin,但这条路径**没有任何自动化测试**(e2e 与 go test 都碰不到,它需要真实 LLM + PDF + 逐页 PNG)。Task 8 只做了逐行复核。补一个用假二进制的测试:断言 prompt 确实从 **stdin** 进去(而不是 argv)、用的是 `proto.Bin()`、且 `--model sonnet` 在 claude 侧出现而在 pi 侧被忽略(D3)
+- [ ] 手工验收(**两种后端各跑一遍**,由人执行,不消耗配额的自动化不得替代):文档问答多轮 + SSE 断线重连、自由问答带图片、中途 interrupt、ingest 摘要与分节。**补上 PDF 逐页转 Markdown**(同上条,它是 Task 8 改动里唯一既无测试又难自动化的路径)
 - [ ] resume 往返验收(两种后端各一遍):第一轮后查 DB 确认 `chat_session_id`/`session_id` 写入的是**该后端自己的** ID 格式;重启进程或等 30s 清理后再提问,确认走 `--resume`/`--session` 且上下文续接成功
 - [ ] `LLMBackend=pi` 时把 Settings 切到 pi,重跑 e2e 的聊天用例,确认前端零改动即可工作
 
