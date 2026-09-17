@@ -41,7 +41,6 @@ var openAIListenRe = regexp.MustCompile(`^Listen to article \d+:\d+$`)
 
 type WebHandler struct {
 	DataDir     string
-	ClaudeBin   string
 	BrowserPool *browser.Pool
 }
 
@@ -2127,17 +2126,15 @@ func (h *WebHandler) saveWebDocument(c echo.Context, req WebUploadRequest, origi
 	docID := docRecord.ID
 
 	// Trigger async summary generation if ClaudeBin is configured
-	if h.ClaudeBin != "" {
-		go func() {
-			summary, err := ingest.GenerateSummary(userDir, "raw/web/"+title, h.ClaudeBin)
-			if err != nil {
-				fmt.Printf("[api] summary generation failed for %s: %v\n", title, err)
-			} else {
-				db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
-				fmt.Printf("[api] summary generated for %s\n", title)
-			}
-		}()
-	}
+	go func() {
+		summary, err := ingest.GenerateSummary(userDir, "raw/web/"+title)
+		if err != nil {
+			fmt.Printf("[api] summary generation failed for %s: %v\n", title, err)
+		} else {
+			db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
+			fmt.Printf("[api] summary generated for %s\n", title)
+		}
+	}()
 
 	return c.JSON(200, echo.Map{
 		"id":       docRecord.ID,
@@ -2312,17 +2309,15 @@ func (h *WebHandler) uploadXTwitter(c echo.Context, req WebUploadRequest) error 
 	docID := docRecord.ID
 
 	// Async summary
-	if h.ClaudeBin != "" {
-		go func() {
-			summary, err := ingest.GenerateSummary(userDir, "raw/web/"+title, h.ClaudeBin)
-			if err != nil {
-				fmt.Printf("[api] summary generation failed for %s: %v\n", title, err)
-			} else {
-				db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
-				fmt.Printf("[api] summary generated for %s\n", title)
-			}
-		}()
-	}
+	go func() {
+		summary, err := ingest.GenerateSummary(userDir, "raw/web/"+title)
+		if err != nil {
+			fmt.Printf("[api] summary generation failed for %s: %v\n", title, err)
+		} else {
+			db.DB.Model(&db.Document{}).Where("id = ?", docID).Update("summary", summary)
+			fmt.Printf("[api] summary generated for %s\n", title)
+		}
+	}()
 
 	return c.JSON(200, echo.Map{
 		"id":       docRecord.ID,

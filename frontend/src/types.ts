@@ -123,6 +123,9 @@ export interface UserSettings {
 // Global settings types (admin only)
 export interface GlobalSettings {
   id: number
+  // 生效的 LLM 后端:"claude" | "pi"。后端在 PUT 时会校验取值,切到 pi 前还会探测
+  // 可用性(不可用返回 400),所以这里不需要第三个取值来代表"未知"。
+  llmBackend: string
   translationEnabled: boolean
   translationApiBase: string
   translationApiKey: string

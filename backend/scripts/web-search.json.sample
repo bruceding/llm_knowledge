@@ -1,0 +1,32 @@
+{
+  "allowBrowserCookies": false,
+  "ssrf": {
+    "allowRanges": [],
+    "trustEnvProxy": false
+  },
+  "tools": {
+    "sourceCheck": {
+      "enabled": false
+    }
+  },
+  "commands": {
+    "websearch": {
+      "enabled": false
+    },
+    "curator": {
+      "enabled": false
+    },
+    "search": {
+      "enabled": false
+    },
+    "google-account": {
+      "enabled": false
+    }
+  },
+  "fetchContent": {
+    "domainPolicy": {
+      "allow": [],
+      "deny": []
+    }
+  }
+}

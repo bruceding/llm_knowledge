@@ -15,7 +15,8 @@ This security hook restricts Claude CLI's file-access tools (Read, Glob, Grep, L
 │  /opt/llm-knowledge/                                            │
 │  ├── backend                    # Go binary                      │
 │  ├── scripts/                                                   │
-│  │   └── path-validator.py     # Security hook script           │
+│  │   ├── path-validator.py     # Claude CLI security hook       │
+│  │   └── pi-path-validator.ts  # pi sandbox extension           │
 │  └── data/                                                      │
 │      └── users/{userId}/        # Per-user isolated directories  │
 │          ├── raw/                                               │
@@ -89,6 +90,15 @@ mkdir -p /opt/llm-knowledge/scripts
 # Copy from repository
 cp backend/scripts/path-validator.py /opt/llm-knowledge/scripts/
 chmod +x /opt/llm-knowledge/scripts/path-validator.py
+
+# pi sandbox extension (only needed when the pi backend is selected in
+# Settings → LLM Backend). pi loads it as a module via `-e <path>`, so it does
+# not need the executable bit.
+#
+# This file is NOT optional for the pi backend: PiProtocol refuses to build the
+# spawn argv when it is missing, because a pi session without it would have no
+# tool-call interception at all (fail-open).
+cp backend/scripts/pi-path-validator.ts /opt/llm-knowledge/scripts/
 ```
 
 ### 2. Initialize Security Config at Startup
@@ -121,6 +131,11 @@ func main() {
 |----------|-------------|---------|
 | `LLM_SCRIPTS_DIR` | Directory containing hook scripts | `/opt/llm-knowledge/scripts` |
 | `ALLOWED_DIR` | Per-user allowed directory (set by Go code, **required**) | User's data directory |
+| `PI_WEB_TOOLS` | Comma-separated `pi-web-access` tool names (set by Go code, read by `pi-path-validator.ts` to build its allowlist) | none — no web tool is allowed |
+
+`ALLOWED_DIR` and `PI_WEB_TOOLS` are injected per subprocess by the Go side, not
+configured here. They are listed because both validators read them and deny by
+default when they are absent.
 
 ### 4. Docker/Container Deployment
 
@@ -128,6 +143,7 @@ func main() {
 # In Dockerfile
 COPY backend/scripts/path-validator.py /opt/llm-knowledge/scripts/
 RUN chmod +x /opt/llm-knowledge/scripts/path-validator.py
+COPY backend/scripts/pi-path-validator.ts /opt/llm-knowledge/scripts/
 
 # Environment variable
 ENV LLM_SCRIPTS_DIR=/opt/llm-knowledge/scripts

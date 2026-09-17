@@ -19,9 +19,8 @@ import (
 
 // QueryHandler handles query/QA operations with SSE streaming
 type QueryHandler struct {
-	DataDir   string
-	ClaudeBin string
-	Pool      *claude.QuerySessionPool
+	DataDir string
+	Pool    *claude.QuerySessionPool
 }
 
 // CreateConversationRequest represents the request for creating a new conversation

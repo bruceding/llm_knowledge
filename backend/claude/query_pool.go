@@ -260,20 +260,20 @@ func (qs *QuerySession) SSEState() (int, time.Time) {
 // QuerySessionPool manages interactive sessions for the Query system,
 // keyed by conversation ID. Sessions expire after 30 seconds of SSE disconnect.
 type QuerySessionPool struct {
-	sessions  map[uint]*QuerySession
-	mu        sync.RWMutex
-	dataDir   string
-	claudeBin string
-	done      chan struct{}
+	sessions map[uint]*QuerySession
+	mu       sync.RWMutex
+	dataDir  string
+	done     chan struct{}
 }
 
 // NewQuerySessionPool creates a new pool with 30s SSE-disconnect cleanup timeout.
-func NewQuerySessionPool(dataDir, claudeBin string) *QuerySessionPool {
+//
+// 不再接受 claudeBin:后端与二进制路径统一由 agent.Current() 在每次 spawn 前解析。
+func NewQuerySessionPool(dataDir string) *QuerySessionPool {
 	p := &QuerySessionPool{
-		sessions:  make(map[uint]*QuerySession),
-		dataDir:   dataDir,
-		claudeBin: claudeBin,
-		done:      make(chan struct{}),
+		sessions: make(map[uint]*QuerySession),
+		dataDir:  dataDir,
+		done:     make(chan struct{}),
 	}
 	go p.cleanupLoop()
 	return p
@@ -359,7 +359,7 @@ func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSes
 
 	// Try resume first if a previous session_id is available and looks real
 	if prevSessionID != "" && !strings.HasPrefix(prevSessionID, "local-") {
-		session, err = StartResumedSession(ctx, p.claudeBin, userDir, prevSessionID, systemPrompt)
+		session, err = StartResumedSession(ctx, userDir, prevSessionID, systemPrompt)
 		if err != nil {
 			log.Printf("[query-pool] Resume failed for conversation %d (%v), creating fresh session", convID, err)
 			session = nil // fall through to create new
@@ -369,7 +369,7 @@ func (p *QuerySessionPool) GetOrResume(ctx context.Context, convID uint, prevSes
 	}
 
 	if session == nil {
-		session, err = StartSession(ctx, p.claudeBin, userDir, systemPrompt)
+		session, err = StartSession(ctx, userDir, systemPrompt)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to start session: %w", err)
 		}
@@ -410,7 +410,7 @@ func (p *QuerySessionPool) GetOrCreate(ctx context.Context, convID uint, systemP
 		return qs, nil
 	}
 
-	session, err := StartSession(ctx, p.claudeBin, userDir, systemPrompt)
+	session, err := StartSession(ctx, userDir, systemPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start session: %w", err)
 	}
@@ -435,7 +435,7 @@ func (p *QuerySessionPool) ResumeSession(ctx context.Context, convID uint, prevS
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	session, err := StartResumedSession(ctx, p.claudeBin, userDir, prevSessionID, systemPrompt)
+	session, err := StartResumedSession(ctx, userDir, prevSessionID, systemPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resume session: %w", err)
 	}
@@ -473,11 +473,14 @@ func (p *QuerySessionPool) Remove(convID uint) {
 // No init message is sent — the first real user message triggers system.init,
 // so session creation returns immediately without waiting for Claude CLI to boot.
 // userDir is the user's directory (cmd.Dir) for Claude session isolation and security restriction.
-func StartSession(ctx context.Context, claudeBin string, userDir string, systemPrompt string) (*InteractiveSession, error) {
+func StartSession(ctx context.Context, userDir string, systemPrompt string) (*InteractiveSession, error) {
 	if userDir == "" {
 		return nil, fmt.Errorf("userDir is required for session isolation")
 	}
-	proto := agent.NewClaudeProtocol(claudeBin, GetSettingsPath())
+	proto, err := agent.Current()
+	if err != nil {
+		return nil, fmt.Errorf("resolve agent backend: %w", err)
+	}
 	args, err := proto.SessionArgs(systemPrompt, []string{"Read", "Glob", "Grep", "LS"})
 	if err != nil {
 		return nil, fmt.Errorf("build session args: %w", err)
@@ -487,7 +490,7 @@ func StartSession(ctx context.Context, claudeBin string, userDir string, systemP
 	env := proto.Env(userDir)
 
 	ctx, cancel := context.WithCancel(ctx)
-	cmd := buildCmdWithEnv(ctx, claudeBin, args, userDir, env)
+	cmd := buildCmdWithEnv(ctx, proto, args, userDir, env)
 
 	stdinPipe, stdoutPipe, stderrPipe, err := createPipes(cmd)
 	if err != nil {
@@ -508,18 +511,27 @@ func StartSession(ctx context.Context, claudeBin string, userDir string, systemP
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return nil, fmt.Errorf("failed to start claude: %w", err)
+		return nil, fmt.Errorf("failed to start agent process: %w", err)
 	}
 
 	// Start goroutine to log stderr output (helps debug Claude CLI crashes)
 	go func() {
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
-			log.Printf("[query-session] Claude stderr: %s", scanner.Text())
+			log.Printf("[query-session] agent stderr: %s", scanner.Text())
 		}
 	}()
 
 	// Start reading events — session_id will be auto-captured from system.init
+	// D1:握手命令必须在 cmd.Start() 之后、go readEvents() 之前写入。
+	// 本函数是先 readEvents 再 waitForInit,而 waitForInit 等的正是这个响应 ——
+	// 写晚了 pi 的 get_state 响应就没人读,5s 超时白等一轮。
+	// Claude 返回 nil,故对 claude 路径是 no-op,既有行为逐字不变。
+	if err := writeInitCommands(proto, stdinPipe); err != nil {
+		cancel()
+		return nil, err
+	}
+
 	// when the first real user message is sent via Ask(). No init message needed.
 	go session.readEvents()
 
@@ -541,8 +553,11 @@ func StartSession(ctx context.Context, claudeBin string, userDir string, systemP
 // StartResumedSession creates a new InteractiveSession that resumes a previous conversation.
 // No init message is sent — the first real user message triggers system.init.
 // userDir is the user's directory (cmd.Dir) for Claude session isolation and security restriction.
-func StartResumedSession(ctx context.Context, claudeBin string, userDir string, prevSessionID string, systemPrompt string) (*InteractiveSession, error) {
-	proto := agent.NewClaudeProtocol(claudeBin, GetSettingsPath())
+func StartResumedSession(ctx context.Context, userDir string, prevSessionID string, systemPrompt string) (*InteractiveSession, error) {
+	proto, err := agent.Current()
+	if err != nil {
+		return nil, fmt.Errorf("resolve agent backend: %w", err)
+	}
 	args, err := proto.ResumeArgs(prevSessionID, systemPrompt, []string{"Read", "Glob", "Grep", "LS"})
 	if err != nil {
 		return nil, fmt.Errorf("build resume args: %w", err)
@@ -552,7 +567,7 @@ func StartResumedSession(ctx context.Context, claudeBin string, userDir string, 
 	env := proto.Env(userDir)
 
 	ctx, cancel := context.WithCancel(ctx)
-	cmd := buildCmdWithEnv(ctx, claudeBin, args, userDir, env)
+	cmd := buildCmdWithEnv(ctx, proto, args, userDir, env)
 
 	stdinPipe, stdoutPipe, stderrPipe, err := createPipes(cmd)
 	if err != nil {
@@ -573,16 +588,25 @@ func StartResumedSession(ctx context.Context, claudeBin string, userDir string, 
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return nil, fmt.Errorf("failed to start claude: %w", err)
+		return nil, fmt.Errorf("failed to start agent process: %w", err)
 	}
 
 	// Start goroutine to log stderr output (helps debug Claude CLI crashes)
 	go func() {
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
-			log.Printf("[query-session] Claude stderr: %s", scanner.Text())
+			log.Printf("[query-session] agent stderr: %s", scanner.Text())
 		}
 	}()
+
+	// D1:握手命令必须在 cmd.Start() 之后、go readEvents() 之前写入。
+	// 本函数是先 readEvents 再 waitForInit,而 waitForInit 等的正是这个响应 ——
+	// 写晚了 pi 的 get_state 响应就没人读,5s 超时白等一轮。
+	// Claude 返回 nil,故对 claude 路径是 no-op,既有行为逐字不变。
+	if err := writeInitCommands(proto, stdinPipe); err != nil {
+		cancel()
+		return nil, err
+	}
 
 	// Start reading events — session_id will be auto-captured from system.init
 	go session.readEvents()

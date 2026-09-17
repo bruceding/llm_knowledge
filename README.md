@@ -24,7 +24,8 @@ LLM Knowledge is a personal knowledge base that helps you collect, understand, a
 
 - **Go** 1.25+
 - **Node.js & npm** (for building frontend)
-- **[Claude CLI](https://docs.anthropic.com/en/docs/claude-code/overview)** — available in PATH
+- **[Claude CLI](https://docs.anthropic.com/en/docs/claude-code/overview)** — available in PATH (the default LLM backend)
+- **[pi](https://github.com/earendil-works/pi-coding-agent)** (optional) — alternative LLM backend, `npm install -g @earendil-works/pi-coding-agent`; also needs the `pi-web-access` extension (pin `0.29.0`). Only one backend is active at a time, chosen by an admin in Settings — see [LLM Backend Switch](#llm-backend-switch-claude--pi)
 - **Python 3.12** (optional) — for PDF translation via pdf2zh (PEP 695 syntax required)
 - **qpdf** (optional) — pdf2zh dependency for pikepdf
 
@@ -41,7 +42,9 @@ The `start.sh` script automatically:
 - Checks and installs **pdftotext** (poppler) for PDF text extraction
 - Checks **Python 3.12** availability (prints warning if missing, PDF translation disabled)
 - Checks and installs **qpdf** for pdf2zh dependency
+- Checks whether **pi** and **pi-web-access** are present (optional backend; warns only, never blocks)
 - Builds backend and frontend
+- Deploys `path-validator.py` and `pi-path-validator.ts` into the runtime `scripts/` dir (i.e. `LLM_SCRIPTS_DIR`)
 - Starts the server on port 9999
 
 ```bash
@@ -65,6 +68,81 @@ Data is stored in `~/.llm-knowledge/` (configurable via `DATA_DIR` env var).
 | `PORT` | `3456` | Server port |
 | `DATA_DIR` | `~/.llm-knowledge` | Data and database directory |
 | `PDF2ZH_VENV_DIR` | `$DATA_DIR/.venv` | pdf2zh Python venv path |
+
+## LLM Backend Switch (claude / pi)
+
+Two LLM backends are supported and **exactly one is active at a time**, selected by an admin under Settings → "LLM Backend" (the `llmBackend` field of `GET/PUT /api/admin/settings`). Document chat, free-form Q&A, ingest summarisation/sectionisation and per-page PDF extraction all follow the same switch — no code change or restart needed.
+
+- Defaults to `claude`; the only accepted values are `claude` and `pi`, anything else is a 400
+- Switching to `pi` **probes before saving**; if the probe fails the API returns 400 and the stored value is left alone
+- A successful save takes effect immediately (the resolver cache is 5s and is invalidated on save)
+- Switching back to `claude` is **never probed** — it is the escape hatch for when pi is broken, and probing would block it
+
+### Deploying the pi backend
+
+1. `npm install -g @earendil-works/pi-coding-agent` (verified on 0.85.1; its `engines` field requires **Node.js >= 22.19.0**)
+2. Install the `pi-web-access` extension and **pin its version** (verified on 0.29.0)
+3. Pin down `web-search.json`: copy the repo's `backend/scripts/web-search.json.sample` to
+   `$PI_CODING_AGENT_DIR/web-search.json`, or to
+   `<service account HOME>/.pi/agent/web-search.json` when that env var is unset.
+   It is **not** `$XDG_CONFIG_HOME/pi/` — pi does not read that location.
+4. `pi-path-validator.ts` is copied into the runtime `scripts/` dir (i.e. `LLM_SCRIPTS_DIR`)
+   automatically by `make build` and `start.sh`; there is no manual step. Without it the pi
+   backend is **fail-closed**: the switch returns 400 and spawning is refused, rather than
+   silently degrading to "no sandbox".
+
+`start.sh` reports whether pi and pi-web-access are present. Missing ones only warn and never
+block startup (the claude backend does not need pi).
+
+### Operational warnings
+
+**① Switching backends invalidates context resumption for in-flight conversations — in both directions.**
+`chat_session_id` / `session_id` hold **that backend's own** session ID and the two formats are not interchangeable. After a switch, old conversations cannot be resumed: the history is still in the database and still readable, it just cannot be continued. **"Switch back and the conversation resumes" does NOT hold** — messages produced while the other backend was active forked the two sessions. Do not switch while conversations are in flight.
+
+**② Only the `admin` account can flip the switch. Do not rename or delete it.**
+The control renders inside `{isAdmin && ...}` and `isAdmin` comes from `users.role`. `db/db.go:38` contains an **unguarded** migration:
+
+```sql
+UPDATE users SET role='admin'
+ WHERE username='admin' AND (role IS NULL OR role='' OR role='user')
+```
+
+It only re-promotes a row whose username is **literally `admin`**. So if that account is renamed, this migration will not restore it and nobody will be able to see the backend switch in the UI again (only a direct database edit would).
+
+**③ `--tools` does not stop code that runs at extension load time.**
+pi's `--tools` constrains **tool calls** only; an extension executes its top-level code as soon as it is loaded. So pin the `pi-web-access` version and control the `packages` list in `settings.json` — every loaded package is code running inside the service process.
+
+**④ `web-search.json` must explicitly disable the extension commands, or any user can run extension code.**
+In rpc mode pi **dispatches user messages that start with `/` as extension commands**. So an ordinary document-chat message (e.g. `/search foo`) can trigger one directly. The deployment template disables all four:
+
+```json
+"commands": {
+  "websearch":      { "enabled": false },
+  "curator":        { "enabled": false },
+  "search":         { "enabled": false },
+  "google-account": { "enabled": false }
+}
+```
+
+**The default is all-enabled**, so "no config file at all" is not a safe state — it is the most dangerous one.
+
+Why none of the four existing defences stop this:
+
+| Defence | Why it does not help |
+|---|---|
+| `--tools` | Governs **tool calls**; command dispatch never goes through it |
+| `--no-skills` / `--no-prompt-templates` | Only disable skills and prompt templates, unrelated to extension commands |
+| the sandbox extension's `input` hook | Fires **after** the command has been dispatched, i.e. once it is already running |
+| filtering message content server-side | Not viable — it would break legitimate questions that start with `/` |
+
+Commands registered by *other* loaded packages can only be covered by ③ (pinned versions + a controlled `packages` list). The Go side validates this config at startup and warns; the Settings switch rejects a fatally broken config with a 400.
+
+**⑤ A malformed `toolNames` makes the entire pi backend `exit 1` — not just the web features.**
+pi-web-access throws inside `resolveToolNames` → the extension fails to load → pi exits with code 1. That kills the **ingest paths that never touch web tools** (summarisation, sectionisation, PDF extraction) as well.
+
+On whether the probe can detect this: `pi --version` **cannot** — it exits 0 early at pi's `main.js:483-486` and never loads extensions. So besides `pi --version`, the switch probe runs a **static pre-check** using the same parsing logic as the Go side (both read the very same file, see step 3 above), rejecting bad `toolNames` shapes, values and cross-key duplicates with a 400 at switch time.
+
+The static pre-check does **not** cover: `pi-web-access` not being installed at all, or **another** package throwing at load time. `start.sh` warns about the former; only ③ covers the latter.
 
 ## Keyboard Shortcuts
 
